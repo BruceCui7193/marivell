@@ -1,4 +1,5 @@
 import { Extension } from '@tiptap/core';
+import type { JSONContent } from '@tiptap/core';
 import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model';
 import { Plugin } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
@@ -53,12 +54,59 @@ function parseContentFromMarkdown(markdown: string) {
     return null;
   }
 
-  const content = parseMarkdownFragment(markdown);
-  return content.length > 0 ? content : null;
+  try {
+    const content = parseMarkdownFragment(markdown);
+    return content.length > 0 ? content : null;
+  } catch {
+    return null;
+  }
 }
 
 function insertPlainTextFallback(text: string) {
-  return parseContentFromMarkdown(text.replace(/\r\n/g, '\n'));
+  if (!text) {
+    return null;
+  }
+
+  try {
+    return parseContentFromMarkdown(text.replace(/\r\n/g, '\n'));
+  } catch {
+    return null;
+  }
+}
+
+/** Last-resort fallback: insert plain text as a single paragraph, preserving line breaks */
+function createPlainTextContent(text: string): JSONContent[] {
+  const normalized = text.replace(/\r\n/g, '\n');
+  if (!normalized.trim()) {
+    return [{ type: 'paragraph' }];
+  }
+
+  // Split by double-newlines into paragraphs, preserve single newlines as hard breaks
+  const paragraphs = normalized.split(/\n{2,}/);
+  const content: JSONContent[] = [];
+
+  for (const paragraph of paragraphs) {
+    const lines = paragraph.split('\n');
+    if (lines.length === 0) continue;
+
+    const inlineContent = lines.flatMap((line, index) => {
+      const nodes: JSONContent[] = [];
+      if (index > 0) {
+        nodes.push({ type: 'hardBreak' });
+      }
+      if (line) {
+        nodes.push({ type: 'text', text: line });
+      }
+      return nodes;
+    });
+
+    content.push({
+      type: 'paragraph',
+      content: inlineContent.length > 0 ? inlineContent : undefined,
+    });
+  }
+
+  return content.length > 0 ? content : [{ type: 'paragraph' }];
 }
 
 function escapeMarkdownTableCell(text: string): string {
@@ -176,47 +224,53 @@ export function createMarkdownPasteExtension() {
                 const content =
                   parseContentFromMarkdown(convertHtmlToMarkdown(html)) ??
                   insertPlainTextFallback(text);
-                if (!content) {
-                  return false;
+                if (content) {
+                  event.preventDefault();
+                  this.editor.commands.insertContent(content);
+                  return true;
                 }
-
-                event.preventDefault();
-                this.editor.commands.insertContent(content);
-                return true;
+                // Fall through to plain text fallback below
               }
 
               if (hasTabularText) {
                 const content = parseContentFromMarkdown(tabularTextToMarkdown(text));
-                if (!content) {
-                  return false;
+                if (content) {
+                  event.preventDefault();
+                  this.editor.commands.insertContent(content);
+                  return true;
                 }
-
-                event.preventDefault();
-                this.editor.commands.insertContent(content);
-                return true;
+                // Fall through to plain text fallback below
               }
 
               if (looksLikeMarkdown(text)) {
                 const content = parseContentFromMarkdown(text);
-                if (!content) {
-                  return false;
+                if (content) {
+                  event.preventDefault();
+                  this.editor.commands.insertContent(content);
+                  return true;
                 }
-
-                event.preventDefault();
-                this.editor.commands.insertContent(content);
-                return true;
+                // Fall through to plain text fallback below
               }
 
               if (hasStructuredHtml) {
                 const content =
                   parseContentFromMarkdown(convertHtmlToMarkdown(html)) ??
                   insertPlainTextFallback(text);
-                if (!content) {
-                  return false;
+                if (content) {
+                  event.preventDefault();
+                  this.editor.commands.insertContent(content);
+                  return true;
                 }
+                // Fall through to plain text fallback below
+              }
 
+              // Final fallback: insert plain text so nothing is lost.
+              // This handles cases where the content doesn't match any of the
+              // markdown/HTML patterns above, or where parsing failed for any reason.
+              if (text) {
+                const fallbackContent = createPlainTextContent(text);
                 event.preventDefault();
-                this.editor.commands.insertContent(content);
+                this.editor.commands.insertContent(fallbackContent);
                 return true;
               }
 
