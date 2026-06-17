@@ -226,30 +226,32 @@ export function createMarkdownPasteExtension() {
                   insertPlainTextFallback(text);
                 if (content) {
                   event.preventDefault();
-                  this.editor.commands.insertContent(content);
+                  try { this.editor.commands.insertContent(content); } catch { /* fall through */ }
                   return true;
                 }
-                // Fall through to plain text fallback below
               }
 
               if (hasTabularText) {
                 const content = parseContentFromMarkdown(tabularTextToMarkdown(text));
                 if (content) {
                   event.preventDefault();
-                  this.editor.commands.insertContent(content);
+                  try { this.editor.commands.insertContent(content); } catch { /* fall through */ }
                   return true;
                 }
-                // Fall through to plain text fallback below
               }
 
               if (looksLikeMarkdown(text)) {
                 const content = parseContentFromMarkdown(text);
                 if (content) {
                   event.preventDefault();
-                  this.editor.commands.insertContent(content);
-                  return true;
+                  try {
+                    this.editor.commands.insertContent(content);
+                    return true;
+                  } catch {
+                    // insertContent may throw on schema mismatch (e.g. duplicate marks).
+                    // Fall through to plain text fallback so content is never silently lost.
+                  }
                 }
-                // Fall through to plain text fallback below
               }
 
               if (hasStructuredHtml) {
@@ -258,19 +260,17 @@ export function createMarkdownPasteExtension() {
                   insertPlainTextFallback(text);
                 if (content) {
                   event.preventDefault();
-                  this.editor.commands.insertContent(content);
+                  try { this.editor.commands.insertContent(content); } catch { /* fall through */ }
                   return true;
                 }
-                // Fall through to plain text fallback below
               }
 
-              // Final fallback: insert plain text so nothing is lost.
-              // This handles cases where the content doesn't match any of the
-              // markdown/HTML patterns above, or where parsing failed for any reason.
+              // Final fallback: insert plain text so nothing is ever lost
               if (text) {
-                const fallbackContent = createPlainTextContent(text);
                 event.preventDefault();
-                this.editor.commands.insertContent(fallbackContent);
+                try {
+                  this.editor.commands.insertContent(createPlainTextContent(text));
+                } catch { /* nothing more we can do */ }
                 return true;
               }
 

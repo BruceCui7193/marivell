@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>剪贴板粘贴诊断工具</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #f5f5f5; padding: 24px; color: #222; }
+  h1 { font-size: 20px; margin-bottom: 8px; }
+  .subtitle { color: #666; margin-bottom: 24px; font-size: 14px; }
+  .step { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  .step h2 { font-size: 15px; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+  .badge { font-size: 12px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+  .badge-ok { background: #d4edda; color: #155724; }
+  .badge-fail { background: #f8d7da; color: #721c24; }
+  .badge-warn { background: #fff3cd; color: #856404; }
+  .paste-area { border: 2px dashed #ccc; border-radius: 12px; padding: 32px; text-align: center; cursor: pointer; transition: all 0.2s; }
+  .paste-area:hover { border-color: #888; background: #fafafa; }
+  .paste-area.active { border-color: #4a90d9; background: #eef5fb; }
+  pre { background: #f0f0f0; border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 13px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+  .empty { color: #999; font-style: italic; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 12px; border-bottom: 1px solid #eee; }
+  th { color: #666; font-weight: 600; white-space: nowrap; vertical-align: top; }
+  td { word-break: break-all; }
+  .path-label { font-size: 11px; color: #888; }
+  .reset-btn { margin-top: 16px; padding: 8px 18px; border: 1px solid #ccc; border-radius: 8px; background: #fff; cursor: pointer; font-size: 13px; }
+  .reset-btn:hover { background: #f0f0f0; }
+</style>
+</head>
+<body>
+
+<h1>🔬 剪贴板粘贴诊断工具</h1>
+<p class="subtitle">先复制你要粘贴的 markdown 内容，然后回到此页面点击下方区域粘贴（或 Ctrl+V）。</p>
+
+<div class="step">
+  <h2>📋 请在这里粘贴（点击后 Ctrl+V）</h2>
+  <div class="paste-area" id="pasteArea" tabindex="0">
+    <strong>点击此处，然后按 Ctrl+V 粘贴</strong><br>
+    <small style="color:#888">你的内容不会被上传到任何地方，所有分析都在本地浏览器中完成</small>
+  </div>
+  <button class="reset-btn" onclick="resetAll()">🔄 重新检测</button>
+</div>
+
+<div class="step" id="step1" style="display:none">
+  <h2>1️⃣ 剪贴板 MIME 类型 <span class="badge" id="badge1"></span></h2>
+  <table><tbody id="t1"></tbody></table>
+</div>
+
+<div class="step" id="step2" style="display:none">
+  <h2>2️⃣ text/plain 内容 <span class="badge" id="badge2"></span></h2>
+  <p class="path-label">长度: <span id="textLen"></span> 字符 / <span id="textLineCount"></span> 行</p>
+  <pre id="pre2" class="empty">(空)</pre>
+</div>
+
+<div class="step" id="step3" style="display:none">
+  <h2>3️⃣ text/html 内容 <span class="badge" id="badge3"></span></h2>
+  <p class="path-label">长度: <span id="htmlLen"></span> 字符</p>
+  <pre id="pre3" class="empty">(空)</pre>
+</div>
+
+<div class="step" id="step4" style="display:none">
+  <h2>4️⃣ 粘贴处理器决策流程 <span class="badge" id="badge4"></span></h2>
+  <div id="t4"></div>
+</div>
+
+<div class="step" id="step5" style="display:none">
+  <h2>5️⃣ 结论 <span class="badge" id="badge5"></span></h2>
+  <div id="t5"></div>
+</div>
+
+<script>
+// --- Replicated detection logic from markdown-paste.ts ---
+
+function hasMarkdownListStructure(text) {
+  const bulletMatches = text.match(/^(?:[-*+])\s+\S.+$/gm) ?? [];
+  if (bulletMatches.length >= 2) return true;
+  const orderedMatches = text.match(/^\d+\.\s+\S.+$/gm) ?? [];
+  return orderedMatches.length >= 2;
+}
+
+function hasExclusiveMarkdownStructure(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  return [
+    /^#{1,6}\s+/m,
+    /^>\s+/m,
+    /^```[\s\S]*```$/m,
+    /^~~~[\s\S]*~~~$/m,
+    /!\[[^\]]*]\([^)]+\)/,
+    /\[[^\]]+]\([^)]+\)/,
+    /^\|.+\|$/m,
+    /^\[\^[^\]]+]:/m,
+  ].some(p => p.test(trimmed));
+}
+
+function looksLikeMarkdown(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (hasExclusiveMarkdownStructure(trimmed) || hasMarkdownListStructure(trimmed)) return true;
+  return [/\\\([\s\S]+\\\)/, /\\\[[\s\S]+\\\]/, /\$[^$\n]+\$/].some(p => p.test(trimmed));
+}
+
+function looksLikeStructuredHtml(html) {
+  const trimmed = html.trim();
+  if (!trimmed) return false;
+  return /<(h[1-6]|p|div|blockquote|ul|ol|li|pre|code|strong|b|em|i|table|tr|td|th|a|img|hr|math|annotation)\b/i.test(trimmed);
+}
+
+function extractHtmlTableElement(html) {
+  if (!html.trim()) return null;
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return doc.querySelector('table');
+  } catch { return null; }
+}
+
+function looksLikeTabularPlainText(text) {
+  const rows = text.replace(/\r\n/g, '\n').split('\n').map(r => r.trimEnd()).filter(r => r.length > 0);
+  return rows.length >= 2 && rows.every(r => r.includes('\t'));
+}
+
+// --- Main handler ---
+const pasteArea = document.getElementById('pasteArea');
+
+pasteArea.addEventListener('click', () => {
+  pasteArea.classList.add('active');
+  pasteArea.focus();
+});
+
+pasteArea.addEventListener('blur', () => {
+  pasteArea.classList.remove('active');
+});
+
+pasteArea.addEventListener('paste', (event) => {
+  event.preventDefault();
+  pasteArea.classList.remove('active');
+
+  const text = event.clipboardData?.getData('text/plain') ?? '';
+  const html = event.clipboardData?.getData('text/html') ?? '';
+  const types = event.clipboardData?.types ?? [];
+  const files = Array.from(event.clipboardData?.files ?? []).filter(f => f.type.startsWith('image/'));
+
+  // Step 1: MIME types
+  showStep('step1');
+  const t1 = document.getElementById('t1');
+  t1.innerHTML = types.map(t => `<tr><td>${t}</td><td style="color:#666">${getTypeDescription(event.clipboardData, t)}</td></tr>`).join('');
+
+  // Step 2: text/plain
+  showStep('step2');
+  document.getElementById('textLen').textContent = text.length;
+  document.getElementById('textLineCount').textContent = text ? text.split(/\r?\n/).length : 0;
+  const pre2 = document.getElementById('pre2');
+  pre2.textContent = text || '(空)';
+  pre2.className = text ? '' : 'empty';
+
+  // Step 3: text/html
+  showStep('step3');
+  document.getElementById('htmlLen').textContent = html.length;
+  const pre3 = document.getElementById('pre3');
+  pre3.textContent = html || '(空)';
+  pre3.className = html ? '' : 'empty';
+
+  // Step 4: Decision flow
+  showStep('step4');
+  const hasSH = looksLikeStructuredHtml(html);
+  const hasEM = hasExclusiveMarkdownStructure(text);
+  const htmlTable = extractHtmlTableElement(html);
+  const hasTab = looksLikeTabularPlainText(text);
+  const looksMd = looksLikeMarkdown(text);
+
+  let decisionPath = '';
+  let finalAction = '';
+
+  // Check: inside code block? Can't tell from here
+  decisionPath += `<div style="margin-bottom:4px">🔍 <b>isInsideCodeBlock</b>: 未知 (需在实际编辑器中判断)</div>`;
+
+  // Check: image files
+  decisionPath += `<div style="margin-bottom:4px">🖼️ <b>图片文件</b>: ${files.length > 0 ? `<span style="color:#e67e22">${files.length} 个</span>` : '无'}</div>`;
+
+  // Decision flow
+  decisionPath += `<div style="margin:8px 0;font-weight:600">决策流程：</div>`;
+
+  decisionPath += `<div style="margin-bottom:2px">1. <b>hasStructuredHtml</b>: ${badge(hasSH)}</div>`;
+  decisionPath += `<div style="margin-bottom:2px">2. <b>hasExclusiveMarkdown</b>: ${badge(hasEM)}</div>`;
+  decisionPath += `<div style="margin-bottom:2px">3. <b>htmlTable</b>: ${htmlTable ? badge(true, '有 table') : badge(false)}</div>`;
+  decisionPath += `<div style="margin-bottom:2px">4. <b>hasTabularText</b>: ${badge(hasTab)}</div>`;
+  decisionPath += `<div style="margin-bottom:2px">5. <b>looksLikeMarkdown(text)</b>: ${badge(looksMd)}</div>`;
+
+  decisionPath += `<div style="margin:8px 0;font-weight:600">执行路径：</div>`;
+
+  if (files.length > 0 && !htmlTable && !hasSH && !hasTab) {
+    decisionPath += `<div>→ <span style="color:#e67e22">图片粘贴路径</span>（交给 imageDropPaste 插件处理）</div>`;
+    finalAction = '由 imageDropPaste 插件处理图片';
+  } else if (htmlTable && !hasEM) {
+    decisionPath += `<div>→ <span style="color:#27ae60">HTML 表格路径</span>：直接插入 ProseMirror 表格</div>`;
+    finalAction = '✅ 应该能粘贴（HTML 表格）';
+  } else if (hasSH && !hasEM) {
+    decisionPath += `<div>→ <span style="color:#27ae60">结构化 HTML 路径</span>：convertHtmlToMarkdown → parseContentFromMarkdown</div>`;
+    decisionPath += `<div style="margin-top:2px;color:#666;font-size:13px">   HTML 转换为 markdown 后的内容预览：</div>`;
+    try {
+      const converted = convertHtmlToMarkdownSimple(html);
+      decisionPath += `<pre style="font-size:12px;max-height:120px;margin-top:4px">${escapeHtml(converted || '(转换结果为空)')}</pre>`;
+    } catch(e) {
+      decisionPath += `<div style="color:red">   转换异常: ${e.message}</div>`;
+    }
+    finalAction = '✅ 应该能粘贴（结构化 HTML）';
+  } else if (hasTab) {
+    decisionPath += `<div>→ <span style="color:#27ae60">Tab 分隔文本路径</span>：tabularTextToMarkdown → parseContentFromMarkdown</div>`;
+    finalAction = '✅ 应该能粘贴（表格文本）';
+  } else if (looksMd) {
+    decisionPath += `<div>→ <span style="color:#27ae60">Markdown 路径</span>：直接 parseContentFromMarkdown(text)</div>`;
+    finalAction = '✅ 应该能粘贴（Markdown 解析）';
+  } else if (hasSH) {
+    decisionPath += `<div>→ <span style="color:#27ae60">结构化 HTML（二次）</span>：convertHtmlToMarkdown → parseContentFromMarkdown</div>`;
+    finalAction = '✅ 应该能粘贴（HTML 二次）';
+  } else if (text) {
+    decisionPath += `<div>→ <span style="color:#2980b9">纯文本兜底</span>：createPlainTextContent(text)</div>`;
+    finalAction = '✅ 应该能粘贴（纯文本兜底）';
+  } else {
+    decisionPath += `<div>→ <span style="color:#c0392b">无内容可粘贴</span></div>`;
+    finalAction = '❌ 剪贴板没有任何文本内容';
+  }
+
+  document.getElementById('t4').innerHTML = decisionPath;
+
+  // Step 5: Conclusion
+  showStep('step5');
+
+  let conclusion = '';
+  // Check for potential problems
+  const problems = [];
+
+  if (!text && !html) {
+    problems.push('剪贴板中既没有 text/plain 也没有 text/html — 可能有特殊的剪贴板格式');
+  }
+  if (!text && html) {
+    problems.push('⚠️ <b>关键问题</b>：剪贴板只有 text/html 没有 text/plain！如果你粘贴的是 Markdown 源码，复制来源没有提供纯文本版本。编辑器需要 text/plain 来检测 Markdown 语法。');
+    problems.push('→ 试试：在源码模式下粘贴可能也是依赖 text/html 转换的。');
+  }
+  if (text && !looksMd && !hasSH && !hasTab) {
+    problems.push('文本既不像 Markdown 也不像结构化 HTML。使用纯文本兜底（已修复），但之前的老代码会直接丢弃。');
+  }
+  if (looksMd && hasSH) {
+    problems.push('文本同时包含 Markdown 语法和结构化 HTML。会优先走 Markdown 路径（用 text/plain 解析）。');
+  }
+  if (!text && !html && files.length === 0) {
+    problems.push('剪贴板似乎是空的或格式不被支持。');
+  }
+
+  conclusion += `<div style="margin-bottom:8px;font-size:16px;font-weight:600">${finalAction}</div>`;
+  if (problems.length > 0) {
+    conclusion += `<div style="font-weight:600;margin-top:12px">⚠️ 发现问题：</div>`;
+    problems.forEach(p => {
+      conclusion += `<div style="margin:4px 0;padding:6px 10px;background:#fff3cd;border-radius:6px">${p}</div>`;
+    });
+  } else {
+    conclusion += `<div style="color:#27ae60">✅ 未检测到明显问题，此内容应该可以正常粘贴。</div>`;
+  }
+  conclusion += `<div style="margin-top:16px;font-size:13px;color:#888">如果此诊断显示"应该能粘贴"但实际仍然不行，问题可能出在：<br>1. ProseMirror 插件链中其他插件拦截了粘贴事件<br>2. insertContent 命令执行失败（schema 不匹配）<br>3. 浏览器/Electron 的剪贴板安全策略<br>请将此诊断结果截图发给我。</div>`;
+
+  document.getElementById('t5').innerHTML = conclusion;
+});
+
+// --- Helpers ---
+function getTypeDescription(clipboardData, type) {
+  try {
+    const data = clipboardData.getData(type);
+    return `${data.length} 字符`;
+  } catch { return '(无法读取)'; }
+}
+
+function badge(value, label) {
+  if (value) return `<span style="color:#27ae60">true${label ? ' ('+label+')' : ''}</span>`;
+  return `<span style="color:#c0392b">false</span>`;
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function convertHtmlToMarkdownSimple(html) {
+  // Very simple HTML-to-text for diagnostic preview
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  return doc.body.textContent?.trim() ?? '';
+}
+
+function showStep(id) {
+  document.getElementById(id).style.display = 'block';
+}
+
+function resetAll() {
+  ['step1','step2','step3','step4','step5'].forEach(id => {
+    document.getElementById(id).style.display = 'none';
+  });
+  document.getElementById('t1').innerHTML = '';
+  document.getElementById('t4').innerHTML = '';
+  document.getElementById('t5').innerHTML = '';
+  pasteArea.classList.remove('active');
+}
+</script>
+
+</body>
+</html>

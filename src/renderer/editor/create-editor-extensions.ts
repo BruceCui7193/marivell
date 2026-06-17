@@ -13,6 +13,7 @@ import { CodeBlock } from './extensions/code-block';
 import { EditableImage } from './extensions/editable-image';
 import { FootnoteDefinition } from './extensions/footnote-definition';
 import { FootnoteReference } from './extensions/footnote-reference';
+import { HtmlBlock } from './extensions/html-block';
 import { MathBlock } from './extensions/math-block';
 import { MathInline } from './extensions/math-inline';
 import { MermaidBlock } from './extensions/mermaid-block';
@@ -123,6 +124,7 @@ export function createEditorExtensions({
     MathInline,
     MathBlock,
     MermaidBlock,
+    HtmlBlock,
     TypingShortcuts,
     FootnoteReference,
     FootnoteDefinition,

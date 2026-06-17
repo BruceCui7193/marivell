@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
   ExportStatus,
+  ExternalFileChangeEvent,
   MarkdownEditorApi,
   MenuAction,
   OpenedDocument,
@@ -79,6 +80,16 @@ const api: MarkdownEditorApi = {
     ipcRenderer.on('menu:action', listener);
     return () => {
       ipcRenderer.removeListener('menu:action', listener);
+    };
+  },
+  onExternalFileChange: (callback: (event: ExternalFileChangeEvent) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, event: ExternalFileChangeEvent) => {
+      callback(event);
+    };
+
+    ipcRenderer.on('file:external-change', listener);
+    return () => {
+      ipcRenderer.removeListener('file:external-change', listener);
     };
   },
 };

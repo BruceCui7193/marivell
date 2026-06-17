@@ -548,6 +548,73 @@ async function writeDocument(targetPath: string, markdown: string): Promise<Save
   };
 }
 
+// --- External file change detection ---
+
+const fileWatchers = new Map<string, fs.FSWatcher>();
+const fileChangeTimers = new Map<string, NodeJS.Timeout>();
+
+function stopWatchingFile(filePath: string): void {
+  const watcher = fileWatchers.get(filePath);
+  if (watcher) {
+    watcher.close();
+    fileWatchers.delete(filePath);
+  }
+
+  const timer = fileChangeTimers.get(filePath);
+  if (timer) {
+    clearTimeout(timer);
+    fileChangeTimers.delete(filePath);
+  }
+}
+
+function startWatchingFile(
+  filePath: string,
+  window: BrowserWindow,
+): void {
+  stopWatchingFile(filePath);
+
+  if (!existsSync(filePath)) {
+    return;
+  }
+
+  try {
+    const watcher = fs.watch(filePath, (_eventType) => {
+      // Debounce: coalesce rapid successive events
+      const existingTimer = fileChangeTimers.get(filePath);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+      }
+
+      fileChangeTimers.set(
+        filePath,
+        setTimeout(() => {
+          fileChangeTimers.delete(filePath);
+
+          if (window.isDestroyed()) {
+            stopWatchingFile(filePath);
+            return;
+          }
+
+          const deleted = !existsSync(filePath);
+          window.webContents.send('file:external-change', {
+            path: filePath,
+            kind: deleted ? 'deleted' : 'changed',
+            title: path.basename(filePath),
+          });
+
+          if (deleted) {
+            stopWatchingFile(filePath);
+          }
+        }, 300),
+      );
+    });
+
+    fileWatchers.set(filePath, watcher);
+  } catch {
+    // fs.watch may fail on some filesystems; ignore silently
+  }
+}
+
 function getDocumentTitleFromWindow(window: BrowserWindow): string {
   const suffix = ` - ${APP_NAME}`;
   const title = window.getTitle();
@@ -1158,6 +1225,12 @@ async function openDocumentInWindow(window: BrowserWindow, filePath: string): Pr
     return;
   }
 
+  // Stop watching previous file for this window
+  const previousState = getWindowDocumentState(window);
+  if (previousState.path) {
+    stopWatchingFile(previousState.path);
+  }
+
   const document = await readDocument(filePath);
   updateWindowTitle(window, document.title);
   markWindowDirty(window, false);
@@ -1167,6 +1240,9 @@ async function openDocumentInWindow(window: BrowserWindow, filePath: string): Pr
     dirty: false,
   });
   window.webContents.send('document:opened', document);
+
+  // Start watching for external changes
+  startWatchingFile(filePath, window);
 }
 
 async function openDocumentInPreferredWindow(
@@ -1302,6 +1378,12 @@ async function createMainWindow(options: WindowInitOptions = {}): Promise<Browse
     if (windowStateSaveTimer) {
       clearTimeout(windowStateSaveTimer);
       windowStateSaveTimer = null;
+    }
+
+    // Stop all file watchers for this window
+    const state = getWindowDocumentState(windowInstance);
+    if (state.path) {
+      stopWatchingFile(state.path);
     }
 
     windows.delete(windowInstance);
@@ -1572,11 +1654,19 @@ function registerIpcHandlers(): void {
 
       const document = await writeDocument(saveResult.filePath, payload.markdown);
       updateWindowTitle(parentWindow, document.title);
+      // Restart file watcher for the new path
+      if (parentWindow && !parentWindow.isDestroyed()) {
+        startWatchingFile(document.path, parentWindow);
+      }
       return document;
     }
 
     const document = await writeDocument(payload.currentPath, payload.markdown);
     updateWindowTitle(parentWindow, document.title);
+    // Restart file watcher after our own write
+    if (parentWindow && !parentWindow.isDestroyed()) {
+      startWatchingFile(document.path, parentWindow);
+    }
     return document;
   });
 
@@ -1595,6 +1685,10 @@ function registerIpcHandlers(): void {
 
     const document = await writeDocument(saveResult.filePath, payload.markdown);
     updateWindowTitle(parentWindow, document.title);
+    // Restart file watcher for the new path
+    if (parentWindow && !parentWindow.isDestroyed()) {
+      startWatchingFile(document.path, parentWindow);
+    }
     return document;
   });
 

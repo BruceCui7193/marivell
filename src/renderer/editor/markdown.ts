@@ -234,12 +234,22 @@ function collectDefinitions(root: MarkdownNode): DefinitionContext {
   return { definitions };
 }
 
-function markify(content: JSONContent[], mark: NonNullable<JSONContent['marks']>[number]): JSONContent[] {
+function markify(
+  content: JSONContent[],
+  mark: NonNullable<JSONContent['marks']>[number],
+): JSONContent[] {
   return content.map((node) => {
     if (node.type === 'text') {
+      const existingMarks = node.marks ?? [];
+      // Skip if this mark type is already present — prevents duplicate marks
+      // from nested same-type emphasis (e.g. **outer **inner** outer**)
+      if (existingMarks.some((m) => m.type === mark.type)) {
+        return node;
+      }
+
       return {
         ...node,
-        marks: [...(node.marks ?? []), mark],
+        marks: [...existingMarks, mark],
       };
     }
 
@@ -506,8 +516,10 @@ function flowToTiptap(
     case 'html':
       return [
         {
-          type: 'paragraph',
-          content: node.value ? [{ type: 'text', text: String(node.value) }] : [],
+          type: 'htmlBlock',
+          attrs: {
+            html: String(node.value ?? ''),
+          },
         },
       ];
     default:
@@ -693,6 +705,8 @@ function flowToMarkdown(node: JSONContent): MarkdownNode[] {
           children: flowChildrenToMarkdown(node.content),
         },
       ];
+    case 'htmlBlock':
+      return [{ type: 'html', value: node.attrs?.html ?? '' }];
     default:
       return [];
   }

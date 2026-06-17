@@ -168,19 +168,27 @@ export function findVisualSearchMatches(
   return matches;
 }
 
-export function selectVisualSearchMatch(editor: Editor, match: VisualSearchMatch): void {
+export function selectVisualSearchMatch(
+  editor: Editor,
+  match: VisualSearchMatch,
+  focusEditor = true,
+): void {
   const { state, view } = editor;
 
   if (match.kind === 'text') {
     const selection = TextSelection.create(state.doc, match.from, match.to);
     view.dispatch(state.tr.setSelection(selection).scrollIntoView());
-    view.focus();
+    if (focusEditor) {
+      view.focus();
+    }
     return;
   }
 
   const selection = NodeSelection.create(state.doc, match.pos);
   view.dispatch(state.tr.setSelection(selection).scrollIntoView());
-  view.focus();
+  if (focusEditor) {
+    view.focus();
+  }
 }
 
 export function replaceVisualSearchMatch(

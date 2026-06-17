@@ -84,4 +84,11 @@ export interface MarkdownEditorApi {
   onExportStatus: (callback: (status: ExportStatus) => void) => () => void;
   onRequestSaveBeforeClose: (callback: () => void) => () => void;
   onMenuAction: (callback: (action: MenuAction) => void) => () => void;
+  onExternalFileChange: (callback: (event: ExternalFileChangeEvent) => void) => () => void;
+}
+
+export interface ExternalFileChangeEvent {
+  path: string;
+  kind: 'changed' | 'deleted';
+  title: string;
 }

@@ -1479,26 +1479,28 @@ export default function EditorShell({
     visualSearchRevision,
   ]);
 
-  const revealSourceMatch = useCallback((match: SourceSearchMatch) => {
+  const revealSourceMatch = useCallback((match: SourceSearchMatch, focusEditor = true) => {
     requestAnimationFrame(() => {
       const input = sourceTextareaRef.current;
       if (!input) {
         return;
       }
 
-      input.focus();
+      if (focusEditor) {
+        input.focus();
+      }
       input.setSelectionRange(match.start, match.end);
     });
   }, []);
 
   const revealVisualMatch = useCallback(
-    (match: VisualSearchMatch) => {
+    (match: VisualSearchMatch, focusEditor = true) => {
       if (!editor) {
         return;
       }
 
-      selectVisualSearchMatch(editor, match);
-      if (match.kind === 'math') {
+      selectVisualSearchMatch(editor, match, focusEditor);
+      if (match.kind === 'math' && focusEditor) {
         window.dispatchEvent(
           new CustomEvent('markdown-editor:focus-math-search-match', {
             detail: {
@@ -1514,7 +1516,7 @@ export default function EditorShell({
   );
 
   const jumpToSearchMatch = useCallback(
-    (nextIndex: number) => {
+    (nextIndex: number, focusEditor = true) => {
       if (!searchMatches.length) {
         setSearchCurrentIndex(0);
         return;
@@ -1526,9 +1528,9 @@ export default function EditorShell({
 
       const match = searchMatches[normalized];
       if (sourceMode) {
-        revealSourceMatch(match as SourceSearchMatch);
+        revealSourceMatch(match as SourceSearchMatch, focusEditor);
       } else {
-        revealVisualMatch(match as VisualSearchMatch);
+        revealVisualMatch(match as VisualSearchMatch, focusEditor);
       }
     },
     [revealSourceMatch, revealVisualMatch, searchMatches, sourceMode],
@@ -1686,7 +1688,8 @@ export default function EditorShell({
     }
 
     searchAutoRevealSignatureRef.current = signature;
-    jumpToSearchMatch(0);
+    // Don't steal focus during incremental search — the user is still typing
+    jumpToSearchMatch(0, false);
   }, [jumpToSearchMatch, searchCaseSensitive, searchMatches.length, searchOpen, searchQuery, sourceMode]);
 
   const searchPanel = (
@@ -1960,6 +1963,34 @@ export default function EditorShell({
     searchOpen,
     toggleSourceModeWithTransition,
   ]);
+
+  useEffect(() => {
+    return window.markdownEditor.onExternalFileChange((event) => {
+      if (event.kind === 'deleted') {
+        const shouldSave = window.confirm(
+          `文档 "${event.title}" 已被外部程序删除。\n\n是否另存为以保留当前内容？`,
+        );
+        if (shouldSave) {
+          const visualState = sourceModeRef.current ? null : flushVisualSync();
+          void onSaveDocumentAs(
+            sourceModeRef.current ? sourceDraftRef.current : visualState?.markdown,
+            sourceModeRef.current
+              ? computeSourceStats(sourceDraftRef.current)
+              : visualState?.stats,
+          );
+        }
+        return;
+      }
+
+      // File changed externally
+      const shouldReload = window.confirm(
+        `文档 "${event.title}" 已被外部程序修改。\n\n是否重新加载最新内容？\n\n注意：重新加载将丢弃当前未保存的修改。`,
+      );
+      if (shouldReload) {
+        void window.markdownEditor.openDocumentPath(event.path);
+      }
+    });
+  }, [onSaveDocumentAs, editor]);
 
   useEffect(() => {
     return window.markdownEditor.onRequestSaveBeforeClose(() => {
