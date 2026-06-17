@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Markdown Editor Pro
+Comment=A professional Markdown editor
+Exec=/usr/local/bin/markdown-editor-pro %F
+Icon=markdown-editor-pro
+Terminal=false
+Type=Application
+Categories=Office;TextEditor;
+MimeType=text/markdown;
+StartupWMClass=markdown-editor-pro
+Keywords=markdown;editor;text;document;

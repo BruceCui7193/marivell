@@ -1233,9 +1233,20 @@ async function openFolderPickerInNewWindow(parentWindow?: BrowserWindow): Promis
   return true;
 }
 
+function resolveWindowIcon(): string | undefined {
+  const platform = process.platform;
+  const iconName = platform === 'win32' ? 'icon.ico' : 'icon.png';
+  const iconPath = path.join(process.cwd(), 'build', iconName);
+
+  if (existsSync(iconPath)) {
+    return iconPath;
+  }
+
+  return undefined;
+}
+
 async function createMainWindow(options: WindowInitOptions = {}): Promise<BrowserWindow> {
   const { filePath = null, folderPath = null } = options;
-  const iconPath = path.join(process.cwd(), 'build', 'icon.ico');
   const windowState = await readWindowState();
   const windowInstance = new BrowserWindow({
     width: windowState.width,
@@ -1246,7 +1257,7 @@ async function createMainWindow(options: WindowInitOptions = {}): Promise<Browse
     minHeight: 680,
     show: false,
     backgroundColor: '#f3f4f2',
-    icon: existsSync(iconPath) ? iconPath : undefined,
+    icon: resolveWindowIcon(),
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.mjs'),
       contextIsolation: true,

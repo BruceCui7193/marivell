@@ -50,7 +50,7 @@ build/         图标等打包资源
 
 - Node.js 20 及以上
 - npm 10 及以上
-- Windows 10 / 11
+- Windows 10 / 11 或 Ubuntu 20.04+ (Linux)
 
 ## 安装依赖
 
@@ -68,25 +68,65 @@ npm run dev
 
 ## 构建应用
 
+### Windows
+
 ```bash
-npm run build
+npm run build:win
+```
+
+### Linux (Ubuntu/Debian)
+
+```bash
+npm run build:linux
 ```
 
 如果只想生成目录版产物用于本地测试，可以执行：
 
 ```bash
-npm run build:dir
+npm run build:linux:dir
+```
+
+## 安装到系统 (Linux)
+
+构建完成后，可以一键安装到系统：
+
+```bash
+npm run install:linux
+```
+
+或手动执行安装脚本：
+
+```bash
+bash scripts/install-linux.sh
+```
+
+安装后，可以在应用菜单中找到 Markdown Editor Pro，也可以直接在终端运行：
+
+```bash
+markdown-editor-pro
+markdown-editor-pro document.md
+```
+
+**卸载：**
+
+```bash
+sudo rm /usr/local/bin/markdown-editor-pro \
+  /usr/local/share/icons/hicolor/512x512/apps/markdown-editor-pro.png \
+  /usr/local/share/applications/markdown-editor-pro.desktop
 ```
 
 ## 构建产物
 
 构建完成后，常见产物位于 `dist/` 目录：
 
-- `dist/win-unpacked/`：目录版应用
+- `dist/win-unpacked/`：Windows 目录版应用
+- `dist/linux-unpacked/`：Linux 目录版应用
 - `dist/*.exe`：Windows 安装包
+- `dist/*.AppImage`：Linux AppImage 安装包
+- `dist/*.deb`：Linux deb 安装包
 
 ## 文件关联
 
-`.md` 和 `.markdown` 文件关联配置位于 \[electron-builder.yml]。
+`.md` 和 `.markdown` 文件关联配置位于 \[electron-builder.yml] 和 \[electron-builder.config.mjs]。
 
-安装完成后，Windows 中可将 Markdown 文件默认打开方式设置为本应用。
+安装完成后，Windows/Linux 中可将 Markdown 文件默认打开方式设置为本应用。
