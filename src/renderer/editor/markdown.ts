@@ -14,6 +14,7 @@ const parser = unified()
 const compiler = unified()
   .use(remarkStringify, {
     bullet: '-',
+    emphasis: '*',
     fences: true,
     incrementListMarker: false,
     listItemIndent: 'one',
