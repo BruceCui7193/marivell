@@ -8,24 +8,17 @@ interface Token {
   class: string;
 }
 
-/**
- * Very simple LaTeX tokenizer for syntax highlighting.
- * Recognizes commands, braces, sub/superscript markers, and comments.
- */
 function tokenizeLatex(text: string): Token[] {
   const tokens: Token[] = [];
   let i = 0;
 
   while (i < text.length) {
-    // Backslash-command: \name or \name{...} — highlight the backslash + name
     if (text[i] === '\\') {
       const start = i;
       i += 1;
-      // Consume command name (letters only, e.g. \frac, \alpha)
       while (i < text.length && /[a-zA-Z]/.test(text[i])) {
         i += 1;
       }
-      // Also consume a following * (e.g. \begin*)
       if (i < text.length && text[i] === '*') {
         i += 1;
       }
@@ -33,21 +26,18 @@ function tokenizeLatex(text: string): Token[] {
       continue;
     }
 
-    // Braces
     if (text[i] === '{' || text[i] === '}') {
       tokens.push({ from: i, to: i + 1, class: 'math-syntax-brace' });
       i += 1;
       continue;
     }
 
-    // Subscript / superscript
     if (text[i] === '_' || text[i] === '^') {
       tokens.push({ from: i, to: i + 1, class: 'math-syntax-special' });
       i += 1;
       continue;
     }
 
-    // Comment: % to end of line
     if (text[i] === '%') {
       const start = i;
       while (i < text.length && text[i] !== '\n') {
@@ -63,10 +53,57 @@ function tokenizeLatex(text: string): Token[] {
   return tokens;
 }
 
-function buildDecorations(): DecorationSet {
-  // We don't have access to the document here, so we return an empty set.
-  // The actual decorations are built in the plugin's state.apply method.
-  return DecorationSet.empty;
+function buildDecorationsForDoc(doc: any): DecorationSet {
+  const decorations: Decoration[] = [];
+
+  doc.descendants((node: any, pos: number) => {
+    if (node.type.name !== 'inlineMath') {
+      return true;
+    }
+
+    const text = node.textContent;
+    const base = pos + 1;
+
+    for (const token of tokenizeLatex(text)) {
+      const from = base + token.from;
+      const to = base + token.to;
+      if (from < to) {
+        decorations.push(Decoration.inline(from, to, { class: token.class }));
+      }
+    }
+
+    return false;
+  });
+
+  return decorations.length > 0
+    ? DecorationSet.create(doc, decorations)
+    : DecorationSet.empty;
+}
+
+/**
+ * Check whether any step in the transaction touched content inside an
+ * inlineMath node — only then do we need to rebuild syntax tokens.
+ */
+function transactionTouchesMath(tr: any, oldState: any): boolean {
+  if (!tr.docChanged) return false;
+
+  for (const step of tr.steps) {
+    const map = step.getMap();
+    if (!map) continue;
+
+    // `map.ranges` gives the ranges in the old doc that were replaced
+    const ranges = map.ranges || [];
+    for (const [from, to] of ranges) {
+      const resolved = oldState.doc.resolve(from);
+      for (let d = resolved.depth; d >= 0; d--) {
+        if (resolved.node(d)?.type?.name === 'inlineMath') {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
 }
 
 export const MathSyntaxHighlight = Extension.create({
@@ -79,46 +116,23 @@ export const MathSyntaxHighlight = Extension.create({
           init(): DecorationSet {
             return DecorationSet.empty;
           },
-          apply(tr, oldDecorations, _oldState, newState): DecorationSet {
-            // Only recompute when the document changed (not on selection changes)
+          apply(tr, oldDecorations, oldState, newState): DecorationSet {
             if (!tr.docChanged) {
-              // Map decorations through the transaction to keep positions in sync
               return oldDecorations.map(tr.mapping, tr.doc);
             }
 
-            const decorations: Decoration[] = [];
-            const doc = newState.doc;
+            // Only rebuild syntax tokens when a math node was actually edited.
+            // For all other edits, just map positions through the transaction.
+            if (transactionTouchesMath(tr, oldState)) {
+              return buildDecorationsForDoc(newState.doc);
+            }
 
-            doc.descendants((node, pos) => {
-              if (node.type.name !== 'inlineMath') {
-                return true;
-              }
-
-              // The content starts at pos + 1 (after the node opening marker)
-              const text = node.textContent;
-              const base = pos + 1;
-
-              for (const token of tokenizeLatex(text)) {
-                const from = base + token.from;
-                const to = base + token.to;
-                if (from < to) {
-                  decorations.push(
-                    Decoration.inline(from, to, { class: token.class }),
-                  );
-                }
-              }
-
-              // Don't descend into inlineMath's content (it only has text)
-              return false;
-            });
-
-            return DecorationSet.create(doc, decorations);
+            return oldDecorations.map(tr.mapping, tr.doc);
           },
         },
 
         props: {
           decorations(state) {
-            // Return the current decoration set from the plugin state
             return this.getState(state) ?? DecorationSet.empty;
           },
         },

@@ -81,7 +81,13 @@ export const MathInline = Node.create({
       dom.appendChild(contentDOM);
       dom.appendChild(previewDOM);
 
+      // Cache last rendered text to skip redundant KaTeX renders
+      let lastRenderedText = '';
+      let wasEditing = false;
+
       const renderPreview = (text: string) => {
+        if (text === lastRenderedText) return; // Skip if unchanged
+        lastRenderedText = text;
         try {
           katex.render(text || '\\text{?}', previewDOM, {
             displayMode: isBlock,
@@ -93,23 +99,23 @@ export const MathInline = Node.create({
         }
       };
 
-      const updateView = () => {
+      const updateEditingState = () => {
         if (typeof getPos !== 'function') return;
 
         const pos = getPos();
-        const { state } = editor;
-        const { from, to } = state.selection;
-
+        const { from, to } = editor.state.selection;
         const nodeSize = node.nodeSize;
-        const isFocused = (from >= pos + 1 && to <= pos + nodeSize - 1) || 
+        const isFocused = (from >= pos + 1 && to <= pos + nodeSize - 1) ||
                           (from === pos && to === pos + nodeSize);
+        const editing = isFocused && editor.isEditable;
 
-        renderPreview(node.textContent);
-
-        if (isFocused && editor.isEditable) {
-          dom.classList.add('is-editing');
-        } else {
-          dom.classList.remove('is-editing');
+        if (editing !== wasEditing) {
+          wasEditing = editing;
+          if (editing) {
+            dom.classList.add('is-editing');
+          } else {
+            dom.classList.remove('is-editing');
+          }
         }
       };
 
@@ -130,40 +136,44 @@ export const MathInline = Node.create({
       });
 
       const onSelectionUpdate = () => {
-        updateView();
+        updateEditingState();
+      };
+      const onTransaction = () => {
+        renderPreview(node.textContent);
+        updateEditingState();
+      };
+      const onFocusChange = () => {
+        updateEditingState();
       };
       editor.on('selectionUpdate', onSelectionUpdate);
-      editor.on('transaction', onSelectionUpdate);
-      editor.on('focus', onSelectionUpdate);
-      editor.on('blur', onSelectionUpdate);
+      editor.on('transaction', onTransaction);
+      editor.on('focus', onFocusChange);
+      editor.on('blur', onFocusChange);
 
-      updateView();
+      renderPreview(node.textContent);
 
       return {
         dom,
         contentDOM,
         update(newNode) {
-          if (newNode.type !== node.type) {
-            return false;
-          }
-          if (newNode.attrs.display !== node.attrs.display) {
-            return false;
-          }
+          if (newNode.type !== node.type) return false;
+          if (newNode.attrs.display !== node.attrs.display) return false;
           node = newNode;
-          updateView();
+          renderPreview(node.textContent);
+          updateEditingState();
           return true;
         },
         selectNode() {
-          updateView();
+          updateEditingState();
         },
         deselectNode() {
-          updateView();
+          updateEditingState();
         },
         destroy() {
           editor.off('selectionUpdate', onSelectionUpdate);
-          editor.off('transaction', onSelectionUpdate);
-          editor.off('focus', onSelectionUpdate);
-          editor.off('blur', onSelectionUpdate);
+          editor.off('transaction', onTransaction);
+          editor.off('focus', onFocusChange);
+          editor.off('blur', onFocusChange);
         },
       };
     };
