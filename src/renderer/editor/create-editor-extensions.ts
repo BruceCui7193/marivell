@@ -14,10 +14,11 @@ import { EditableImage } from './extensions/editable-image';
 import { FootnoteDefinition } from './extensions/footnote-definition';
 import { FootnoteReference } from './extensions/footnote-reference';
 import { HtmlBlock } from './extensions/html-block';
-import { MathBlock } from './extensions/math-block';
-import { MathInline } from './extensions/math-inline';
 import { MermaidBlock } from './extensions/mermaid-block';
 import { TypingShortcuts } from './extensions/typing-shortcuts';
+import { MathInline } from './extensions/math-inline';
+import { TextSelection } from '@tiptap/pm/state';
+
 import { createImageDropPasteExtension } from './plugins/image-drop-paste';
 import { createMarkdownPasteExtension } from './plugins/markdown-paste';
 import { SearchHighlight } from './plugins/search-highlight';
@@ -122,8 +123,9 @@ export function createEditorExtensions({
     CodeBlock.configure({
       lowlight,
     }),
-    MathInline,
-    MathBlock,
+    MathInline.configure({
+      evaluation: false,
+    }),
     MermaidBlock,
     HtmlBlock,
     TypingShortcuts,

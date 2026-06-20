@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import type { CSSProperties, KeyboardEventHandler, MutableRefObject } from 'react';
+import type { CSSProperties, FocusEventHandler, KeyboardEventHandler, MutableRefObject } from 'react';
 
 interface HighlightedTextareaProps {
   autoFocus?: boolean;
@@ -7,7 +7,7 @@ interface HighlightedTextareaProps {
   highlightedHtml: string;
   inputClassName?: string;
   minHeight?: number;
-  onBlur: () => void;
+  onBlur: FocusEventHandler<HTMLTextAreaElement>;
   onChange: (value: string) => void;
   onKeyDown: KeyboardEventHandler<HTMLTextAreaElement>;
   placeholder?: string;

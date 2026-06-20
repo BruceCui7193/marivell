@@ -1,4 +1,4 @@
-﻿import {
+import {
   memo,
   useCallback,
   useEffect,
@@ -1502,8 +1502,8 @@ export default function EditorShell({
 
     const visualMatches = searchMatches as VisualSearchMatch[];
     const decorationRanges = visualMatches.map((m) => {
-      if (m.kind === 'text') return { from: m.from, to: m.to };
-      return { from: m.pos, to: m.pos + m.nodeSize };
+      if (m.kind === 'text') return { from: m.from, to: m.to, isNode: false };
+      return { from: m.pos, to: m.pos + m.nodeSize, isNode: true };
     });
 
     setSearchHighlights(editor.view, {
@@ -1579,8 +1579,8 @@ export default function EditorShell({
       if (!sourceMode && editor) {
         const visualMatches = searchMatches as VisualSearchMatch[];
         const decorationRanges = visualMatches.map((m) => {
-          if (m.kind === 'text') return { from: m.from, to: m.to };
-          return { from: m.pos, to: m.pos + m.nodeSize };
+          if (m.kind === 'text') return { from: m.from, to: m.to, isNode: false };
+          return { from: m.pos, to: m.pos + m.nodeSize, isNode: true };
         });
         setSearchHighlights(editor.view, {
           matches: decorationRanges,

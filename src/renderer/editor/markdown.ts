@@ -171,9 +171,10 @@ function splitTextWithMathPlaceholders(
     const placeholder = placeholders.get(token);
     if (placeholder?.kind === 'inline') {
       parts.push({
-        type: 'mathInline',
+        type: 'inlineMath',
         attrs: {
-          value: placeholder.value,
+          latex: placeholder.value,
+          display: 'no',
         },
       });
     } else {
@@ -333,10 +334,11 @@ function inlineToTiptap(
     case 'inlineMath':
       return [
         {
-          type: 'mathInline',
+          type: 'inlineMath',
           attrs: {
-            value: String(node.value ?? ''),
+            display: 'no',
           },
+          content: node.value ? [{ type: 'text', text: String(node.value) }] : undefined,
         },
       ];
     case 'footnoteReference':
@@ -395,10 +397,11 @@ function flowToTiptap(
       if (blockMathValue !== null) {
         return [
           {
-            type: 'mathBlock',
+            type: 'inlineMath',
             attrs: {
-              value: blockMathValue,
+              display: 'yes',
             },
+            content: blockMathValue ? [{ type: 'text', text: blockMathValue }] : undefined,
           },
         ];
       }
@@ -467,9 +470,10 @@ function flowToTiptap(
     case 'math':
       return [
         {
-          type: 'mathBlock',
+          type: 'inlineMath',
           attrs: {
-            value: String(node.value ?? ''),
+            latex: String(node.value ?? ''),
+            display: 'yes',
           },
         },
       ];
@@ -543,6 +547,13 @@ function applyTextMarks(text: string, marks: NonNullable<JSONContent['marks']> =
   return current;
 }
 
+function getMathValue(node: JSONContent): string {
+  if (node.content && node.content.length > 0) {
+    return node.content.map((child) => child.text ?? '').join('');
+  }
+  return String(node.attrs?.latex ?? node.attrs?.value ?? '');
+}
+
 function inlineToMarkdown(node: JSONContent): MarkdownNode[] {
   switch (node.type) {
     case 'text':
@@ -558,8 +569,8 @@ function inlineToMarkdown(node: JSONContent): MarkdownNode[] {
           title: node.attrs?.title ?? null,
         },
       ];
-    case 'mathInline':
-      return [{ type: 'inlineMath', value: node.attrs?.value ?? '' }];
+    case 'inlineMath':
+      return [{ type: 'inlineMath', value: getMathValue(node) }];
     case 'footnoteReference':
       return [
         {
@@ -663,8 +674,8 @@ function flowToMarkdown(node: JSONContent): MarkdownNode[] {
           value: node.content?.map((child) => child.text ?? '').join('') ?? '',
         },
       ];
-    case 'mathBlock':
-      return [{ type: 'math', value: node.attrs?.value ?? '' }];
+    case 'inlineMath':
+      return [{ type: 'math', value: getMathValue(node) }];
     case 'mermaidBlock':
       return [{ type: 'code', lang: 'mermaid', value: node.attrs?.code ?? '' }];
     case 'horizontalRule':
@@ -707,7 +718,7 @@ export function parseMarkdown(markdown: string): JSONContent {
   const context = collectDefinitions(tree);
   const content = flowChildrenToTiptap(tree.children ?? [], context, normalized.placeholders);
 
-  return {
+  const doc = {
     type: 'doc',
     content: content.length
       ? content
@@ -717,6 +728,55 @@ export function parseMarkdown(markdown: string): JSONContent {
           },
         ],
   };
+  return migrateJSON(doc);
+}
+
+export function migrateJSON(node: any): any {
+  if (!node) {
+    return node;
+  }
+
+  if (node.type === 'mathInline') {
+    return {
+      type: 'inlineMath',
+      attrs: {
+        display: 'no',
+        evaluate: 'no',
+      },
+      content: node.attrs?.value ? [{ type: 'text', text: String(node.attrs.value) }] : undefined,
+    };
+  }
+
+  if (node.type === 'mathBlock') {
+    return {
+      type: 'inlineMath',
+      attrs: {
+        display: 'yes',
+        evaluate: 'no',
+      },
+      content: node.attrs?.value ? [{ type: 'text', text: String(node.attrs.value) }] : undefined,
+    };
+  }
+
+  if (node.type === 'inlineMath' && node.attrs?.latex !== undefined && !node.content) {
+    const latexVal = String(node.attrs.latex);
+    const nextAttrs = { ...node.attrs };
+    delete nextAttrs.latex;
+    return {
+      ...node,
+      attrs: nextAttrs,
+      content: [{ type: 'text', text: latexVal }],
+    };
+  }
+
+  if (node.content && Array.isArray(node.content)) {
+    return {
+      ...node,
+      content: node.content.map(migrateJSON),
+    };
+  }
+
+  return node;
 }
 
 export function parseMarkdownFragment(markdown: string): JSONContent[] {

@@ -145,23 +145,6 @@ export function findVisualSearchMatches(
       return true;
     }
 
-    if (node.type.name === 'mathInline' || node.type.name === 'mathBlock') {
-      const value = String(node.attrs.value ?? '');
-      for (const match of collectOffsets(value, query, caseSensitive)) {
-        matches.push({
-          kind: 'math',
-          anchor: pos,
-          start: match.start,
-          end: match.end,
-          pos,
-          nodeSize: node.nodeSize,
-          nodeType: node.type.name,
-        });
-      }
-
-      return false;
-    }
-
     return true;
   });
 

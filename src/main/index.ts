@@ -1,4 +1,4 @@
-﻿import { existsSync, promises as fs } from 'node:fs';
+import { existsSync, promises as fs, watch, type FSWatcher } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
@@ -550,7 +550,7 @@ async function writeDocument(targetPath: string, markdown: string): Promise<Save
 
 // --- External file change detection ---
 
-const fileWatchers = new Map<string, fs.FSWatcher>();
+const fileWatchers = new Map<string, FSWatcher>();
 const fileChangeTimers = new Map<string, NodeJS.Timeout>();
 
 function stopWatchingFile(filePath: string): void {
@@ -578,7 +578,7 @@ function startWatchingFile(
   }
 
   try {
-    const watcher = fs.watch(filePath, (_eventType) => {
+    const watcher = watch(filePath, (_eventType) => {
       // Debounce: coalesce rapid successive events
       const existingTimer = fileChangeTimers.get(filePath);
       if (existingTimer) {

@@ -75,3 +75,51 @@ export function highlightLatex(value: string): string {
 export function highlightMermaid(value: string): string {
   return highlightWithRules(value, mermaidRules);
 }
+
+export function highlightSearchInHtml(
+  html: string,
+  query: string,
+  getPos: () => number,
+  pluginState: any,
+): string {
+  if (!query) return html;
+
+  const pos = getPos();
+  const matches = pluginState?.search.matches || [];
+  const currentIndex = pluginState?.search.currentIndex ?? -1;
+
+  // Find the list of global matches that belong to this node
+  const nodeMatchIndices: number[] = [];
+  matches.forEach((m: any, idx: number) => {
+    if (m.from === pos) {
+      nodeMatchIndices.push(idx);
+    }
+  });
+
+  // Find which of these matches is the active one
+  const activeLocalIdx = nodeMatchIndices.indexOf(currentIndex);
+
+  // Split HTML by tags, keeping the tags in the array
+  const parts = html.split(/(<\/?[^>]+>)/g);
+  const escapedQuery = query.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+  const regex = new RegExp(`(${escapedQuery})`, 'gi');
+
+  let matchCounter = 0;
+
+  return parts
+    .map((part) => {
+      // If the part is an HTML tag, don't modify it
+      if (part.startsWith('<') && part.endsWith('>')) {
+        return part;
+      }
+      
+      // Otherwise, it's text content. Replace matches with highlight span.
+      return part.replace(regex, (match) => {
+        const isCurrent = matchCounter === activeLocalIdx;
+        matchCounter++;
+        const className = isCurrent ? 'search-highlight-in-editor-current' : 'search-highlight-in-editor';
+        return `<mark class="${className}">${match}</mark>`;
+      });
+    })
+    .join('');
+}

@@ -18,6 +18,7 @@
     "install:linux": "bash scripts/install-linux.sh"
   },
   "dependencies": {
+    "@aarkue/tiptap-math-extension": "^1.4.0",
     "@tiptap/core": "^2.11.5",
     "@tiptap/extension-code-block-lowlight": "^2.11.5",
     "@tiptap/extension-image": "^2.11.5",
