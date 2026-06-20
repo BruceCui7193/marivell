@@ -1847,7 +1847,8 @@ export default function EditorShell({
       if (
         searchOpen &&
         event.key === 'Enter' &&
-        (activeInSearchPanel || activeInEditorSurface) &&
+        activeInEditorSurface &&
+        !activeInSearchPanel &&
         !event.ctrlKey &&
         !event.metaKey &&
         !event.altKey
