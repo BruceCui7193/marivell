@@ -548,10 +548,15 @@ function applyTextMarks(text: string, marks: NonNullable<JSONContent['marks']> =
 }
 
 function getMathValue(node: JSONContent): string {
+  let value: string;
   if (node.content && node.content.length > 0) {
-    return node.content.map((child) => child.text ?? '').join('');
+    value = node.content.map((child) => child.text ?? '').join('');
+  } else {
+    value = String(node.attrs?.latex ?? node.attrs?.value ?? '');
   }
-  return String(node.attrs?.latex ?? node.attrs?.value ?? '');
+  // Strip any leftover normalizer placeholder tokens that may have leaked
+  // into the text content (can happen with malformed math delimiters).
+  return value.replace(/@@MARKDOWN_EDITOR_MATH_\d+@@/g, '');
 }
 
 function inlineToMarkdown(node: JSONContent): MarkdownNode[] {
@@ -569,8 +574,14 @@ function inlineToMarkdown(node: JSONContent): MarkdownNode[] {
           title: node.attrs?.title ?? null,
         },
       ];
-    case 'inlineMath':
-      return [{ type: 'inlineMath', value: getMathValue(node) }];
+    case 'inlineMath': {
+      const mathValue = getMathValue(node);
+      // Block math (display=yes) → $$...$$; inline math → $...$
+      if (node.attrs?.display === 'yes') {
+        return [{ type: 'math', value: mathValue }];
+      }
+      return [{ type: 'inlineMath', value: mathValue }];
+    }
     case 'footnoteReference':
       return [
         {
@@ -674,8 +685,13 @@ function flowToMarkdown(node: JSONContent): MarkdownNode[] {
           value: node.content?.map((child) => child.text ?? '').join('') ?? '',
         },
       ];
-    case 'inlineMath':
-      return [{ type: 'math', value: getMathValue(node) }];
+    case 'inlineMath': {
+      const mathValue = getMathValue(node);
+      if (node.attrs?.display === 'yes') {
+        return [{ type: 'math', value: mathValue }];
+      }
+      return [{ type: 'inlineMath', value: mathValue }];
+    }
     case 'mermaidBlock':
       return [{ type: 'code', lang: 'mermaid', value: node.attrs?.code ?? '' }];
     case 'horizontalRule':
