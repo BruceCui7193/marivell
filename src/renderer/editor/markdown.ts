@@ -833,6 +833,8 @@ function stringifyInlineNode(node: MarkdownNode): string {
       return '\n';
     case 'inlineMath':
       return `$${String(node.value ?? '')}$`;
+    case 'math':
+      return `$$\n${String(node.value ?? '')}\n$$`;
     case 'footnoteReference':
       return `[^${String(node.label ?? node.identifier ?? '')}]`;
     case 'html':
