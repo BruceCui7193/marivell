@@ -80,32 +80,6 @@ function buildDecorationsForDoc(doc: any): DecorationSet {
     : DecorationSet.empty;
 }
 
-/**
- * Check whether any step in the transaction touched content inside an
- * inlineMath node — only then do we need to rebuild syntax tokens.
- */
-function transactionTouchesMath(tr: any, oldState: any): boolean {
-  if (!tr.docChanged) return false;
-
-  for (const step of tr.steps) {
-    const map = step.getMap();
-    if (!map) continue;
-
-    // `map.ranges` gives the ranges in the old doc that were replaced
-    const ranges = map.ranges || [];
-    for (const [from, to] of ranges) {
-      const resolved = oldState.doc.resolve(from);
-      for (let d = resolved.depth; d >= 0; d--) {
-        if (resolved.node(d)?.type?.name === 'inlineMath') {
-          return true;
-        }
-      }
-    }
-  }
-
-  return false;
-}
-
 export const MathSyntaxHighlight = Extension.create({
   name: 'mathSyntaxHighlight',
 
@@ -116,18 +90,11 @@ export const MathSyntaxHighlight = Extension.create({
           init(): DecorationSet {
             return DecorationSet.empty;
           },
-          apply(tr, oldDecorations, oldState, newState): DecorationSet {
+          apply(tr, oldDecorations, _oldState, newState): DecorationSet {
             if (!tr.docChanged) {
               return oldDecorations.map(tr.mapping, tr.doc);
             }
-
-            // Only rebuild syntax tokens when a math node was actually edited.
-            // For all other edits, just map positions through the transaction.
-            if (transactionTouchesMath(tr, oldState)) {
-              return buildDecorationsForDoc(newState.doc);
-            }
-
-            return oldDecorations.map(tr.mapping, tr.doc);
+            return buildDecorationsForDoc(newState.doc);
           },
         },
 
