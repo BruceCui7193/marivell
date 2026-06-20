@@ -2,25 +2,28 @@
 
 `markdown-editor-pro` 是一个面向桌面场景的所见即所得（WYSIWYG）Markdown 编辑器，使用 Electron、React、TypeScript、Vite 和 Tiptap 构建。
 
-项目目标不是简单实现 Markdown 渲染，而是提供一套更接近成熟桌面编辑器的使用体验，包括实时编辑、数学公式、Mermaid、文件夹浏览、多窗口、主题切换、导出能力和 Windows 集成。
+项目目标不是简单实现 Markdown 渲染，而是提供一套更接近成熟桌面编辑器的使用体验，包括实时编辑、数学公式、Mermaid、文件夹浏览、多窗口、主题切换、导出能力和跨平台桌面集成。
 
 ## 主要功能
 
 - 所见即所得编辑，不使用传统分栏预览
 - 支持常用 Markdown 语法：标题、列表、任务列表、引用、表格、代码块、图片、链接、脚注等
-- 支持数学公式：`$...$`、`$$...$$`、`\(...\)`、`\[...\]`
+- 支持数学公式：`$...$`、`$$...$$`、`\(...\)`、`\[...\]`，编辑时含 LaTeX 语法高亮
 - 支持 Mermaid 图表渲染与单击编辑
+- 支持粘贴 Markdown 文本自动转换为富文本
+- 支持 Ctrl+F 搜索，全部匹配高亮（装饰层）+ 当前匹配深色高亮，导航不抢占焦点
 - 支持源码模式
 - 支持图片拖拽、粘贴和本地资源落盘
 - 支持打开文件夹，并在侧栏查看当前目录中的 Markdown 文件
 - 支持文档大纲侧栏
-- 支持浅色、深色、跟随系统以及多套配色方案
+- 支持外部文件变更检测（提示重新加载或另存）
+- 支持浅色、深色、跟随系统以及 9 套配色方案（自然/森林/海湾/暖纸/石墨/北极光/春樱/薰衣草/赛博朋克）
 - 支持多窗口
 - 支持未保存修改保护
 - 支持记住上次窗口大小、位置和最大化状态
 - 支持导出 PDF
 - 支持导出整篇图片长图，并显示导出进度
-- 支持 Windows 文件关联，可将 `.md` / `.markdown` 文件默认关联到本应用
+- 支持 Windows/Linux 文件关联，可将 `.md` / `.markdown` 文件默认关联到本应用
 
 ## 技术栈
 
@@ -29,7 +32,7 @@
 - React
 - TypeScript
 - Tiptap / ProseMirror
-- unified / remark-parse / remark-gfm / remark-math / remark-stringify
+- unified / remark-parse / remark-gfm / remark-math
 - KaTeX
 - Mermaid
 - lowlight
@@ -110,7 +113,8 @@ markdown-editor-pro document.md
 **卸载：**
 
 ```bash
-sudo rm /usr/local/bin/markdown-editor-pro \
+sudo rm -rf /opt/markdown-editor-pro \
+  /usr/local/bin/markdown-editor-pro \
   /usr/local/share/icons/hicolor/512x512/apps/markdown-editor-pro.png \
   /usr/local/share/applications/markdown-editor-pro.desktop
 ```
@@ -127,6 +131,6 @@ sudo rm /usr/local/bin/markdown-editor-pro \
 
 ## 文件关联
 
-`.md` 和 `.markdown` 文件关联配置位于 \[electron-builder.yml] 和 \[electron-builder.config.mjs]。
+`.md` 和 `.markdown` 文件关联配置位于 \[electron-builder.config.mjs]。
 
-安装完成后，Windows/Linux 中可将 Markdown 文件默认打开方式设置为本应用。
+Windows 下通过 NSIS 安装包注册，Linux 下通过 desktop entry + MIME 类型实现。安装后可直接双击 `.md` 文件打开。
