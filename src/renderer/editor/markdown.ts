@@ -3,23 +3,11 @@ import { unified } from 'unified';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import remarkParse from 'remark-parse';
-import remarkStringify from 'remark-stringify';
 
 type MarkdownNode = Record<string, any>;
 
 const parser = unified()
   .use(remarkParse)
-  .use(remarkGfm)
-  .use(remarkMath, { singleDollarTextMath: true });
-const compiler = unified()
-  .use(remarkStringify, {
-    bullet: '-',
-    emphasis: '*',
-    fences: true,
-    incrementListMarker: false,
-    listItemIndent: 'one',
-    strong: '*',
-  })
   .use(remarkGfm)
   .use(remarkMath, { singleDollarTextMath: true });
 
@@ -735,14 +723,134 @@ export function parseMarkdownFragment(markdown: string): JSONContent[] {
   return parseMarkdown(markdown).content ?? [];
 }
 
-export function serializeMarkdown(document: JSONContent): string {
-  const tree = {
-    type: 'root',
-    children: flowChildrenToMarkdown(document.content),
-  };
+// ---- Custom AST-to-markdown stringifier (no escaping) ----
 
-  const serialized = String(compiler.stringify(tree as any)).trimEnd();
-  return serialized.length === 0 ? '' : `${serialized}\n`;
+function escapeMarkdownLinkText(value: string): string {
+  return value.replace(/[\\[\]]/g, '\\$&');
+}
+
+function escapeMarkdownLinkUrl(value: string): string {
+  return value.replace(/[\\()]/g, '\\$&');
+}
+
+function stringifyInlineNodes(children: MarkdownNode[] = []): string {
+  return children.map((child) => stringifyInlineNode(child)).join('');
+}
+
+function stringifyInlineNode(node: MarkdownNode): string {
+  switch (node.type) {
+    case 'text':
+      return String(node.value ?? '');
+    case 'strong':
+      return `**${stringifyInlineNodes(node.children)}**`;
+    case 'emphasis':
+      return `*${stringifyInlineNodes(node.children)}*`;
+    case 'inlineCode':
+      return `\`${String(node.value ?? '')}\``;
+    case 'delete':
+      return `~~${stringifyInlineNodes(node.children)}~~`;
+    case 'link':
+      return `[${escapeMarkdownLinkText(stringifyInlineNodes(node.children))}](${escapeMarkdownLinkUrl(String(node.url ?? ''))}${node.title ? ` "${node.title}"` : ''})`;
+    case 'image':
+      return `![${String(node.alt ?? '')}](${String(node.url ?? '')}${node.title ? ` "${node.title}"` : ''})`;
+    case 'break':
+      return '\n';
+    case 'inlineMath':
+      return `$${String(node.value ?? '')}$`;
+    case 'footnoteReference':
+      return `[^${String(node.label ?? node.identifier ?? '')}]`;
+    case 'html':
+      return String(node.value ?? '');
+    default:
+      return '';
+  }
+}
+
+function stringifyBlockNodes(children: MarkdownNode[] = []): string {
+  return children.map((child) => stringifyBlockNode(child)).join('\n\n');
+}
+
+function stringifyBlockNode(node: MarkdownNode): string {
+  switch (node.type) {
+    case 'paragraph':
+      return stringifyInlineNodes(node.children);
+    case 'heading':
+      return `${'#'.repeat(node.depth ?? 1)} ${stringifyInlineNodes(node.children)}`;
+    case 'blockquote': {
+      const inner = stringifyBlockNodes(node.children);
+      return inner
+        .split('\n')
+        .map((line) => (line ? `> ${line}` : '>'))
+        .join('\n');
+    }
+    case 'code':
+      return `\`\`\`${node.lang ?? ''}\n${String(node.value ?? '')}\n\`\`\``;
+    case 'math':
+      return `$$\n${String(node.value ?? '')}\n$$`;
+    case 'list': {
+      const ordered = Boolean(node.ordered);
+      const start = node.start ?? 1;
+      return (node.children ?? []).map((item: MarkdownNode, index: number) => {
+        const marker = ordered ? `${start + index}. ` : '- ';
+        const itemContent = stringifyBlockNodes(item.children);
+        const lines = itemContent.split('\n');
+        const firstLine = `${marker}${lines[0] ?? ''}`;
+        const restLines = lines.slice(1).map((line) => (line ? `  ${line}` : ''));
+        return [firstLine, ...restLines].join('\n');
+      }).join('\n');
+    }
+    case 'listItem': {
+      const checked = node.checked;
+      const marker = checked === true ? '[x]' : checked === false ? '[ ]' : null;
+      const inner = stringifyBlockNodes(node.children);
+      const prefix = marker ? `- ${marker} ` : '- ';
+      const lines = inner.split('\n');
+      const firstLine = `${prefix}${lines[0] ?? ''}`;
+      const restLines = lines.slice(1).map((line) => (line ? `  ${line}` : ''));
+      return [firstLine, ...restLines].join('\n');
+    }
+    case 'table': {
+      const rows = (node.children ?? []).map((row: MarkdownNode) =>
+        (row.children ?? []).map((cell: MarkdownNode) =>
+          stringifyInlineNodes(cell.children).replace(/\|/g, '\\|').replace(/\n/g, ' '),
+        ),
+      );
+      if (rows.length === 0) return '';
+      const colCount = Math.max(...rows.map((r: string[]) => r.length));
+      const padRow = (r: string[]) =>
+        Array.from({ length: colCount }, (_, i) => r[i] ?? '');
+      const header = padRow(rows[0]!);
+      const sep = Array.from({ length: colCount }, () => '---');
+      const body = rows.slice(1).map(padRow);
+      return [
+        `| ${header.join(' | ')} |`,
+        `| ${sep.join(' | ')} |`,
+        ...body.map((r: string[]) => `| ${r.join(' | ')} |`),
+      ].join('\n');
+    }
+    case 'tableRow':
+      return (node.children ?? []).map((cell: MarkdownNode) =>
+        stringifyInlineNodes(cell.children),
+      ).join(' | ');
+    case 'tableCell':
+      return stringifyInlineNodes(node.children);
+    case 'thematicBreak':
+      return '---';
+    case 'html':
+      return String(node.value ?? '');
+    case 'footnoteDefinition':
+      return `[^${String(node.label ?? node.identifier ?? '')}]: ${stringifyBlockNodes(node.children)}`;
+    case 'definition':
+      return `[${String(node.identifier ?? '')}]: ${String(node.url ?? '')}${node.title ? ` "${node.title}"` : ''}`;
+    default:
+      return '';
+  }
+}
+
+export function serializeMarkdown(document: JSONContent): string {
+  const children = flowChildrenToMarkdown(document.content);
+  const markdown = stringifyBlockNodes(children).trimEnd();
+  return markdown.length === 0 ? '' : `${markdown}\n`;
 }
 
 export function serializeMarkdownFragment(content: JSONContent[] = []): string {
