@@ -1,6 +1,7 @@
 import { createLowlight } from 'lowlight';
 import type { AnyExtension } from '@tiptap/core';
 import Link from '@tiptap/extension-link';
+import Code from '@tiptap/extension-code';
 import Table from '@tiptap/extension-table';
 import TableCell from '@tiptap/extension-table-cell';
 import TableHeader from '@tiptap/extension-table-header';
@@ -90,9 +91,15 @@ export function createEditorExtensions({
   return [
     StarterKit.configure({
       codeBlock: false,
+      code: false,
       gapcursor: false,
       heading: {
         levels: [1, 2, 3, 4, 5, 6],
+      },
+    }),
+    Code.extend({
+      renderHTML({ HTMLAttributes }) {
+        return ['code', { ...HTMLAttributes, spellcheck: 'false' }, 0];
       },
     }),
     Underline,
