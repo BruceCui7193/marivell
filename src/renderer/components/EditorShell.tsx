@@ -1491,6 +1491,14 @@ export default function EditorShell({
         input.focus();
       }
       input.setSelectionRange(match.start, match.end);
+
+      // Scroll the match into view within the textarea
+      const textBefore = input.value.slice(0, match.start);
+      const lineHeight = Math.max(parseInt(getComputedStyle(input).lineHeight) || 20, 16);
+      const targetLine = textBefore.split('\n').length - 1;
+      const visibleLines = Math.floor(input.clientHeight / lineHeight);
+      const scrollTarget = Math.max(0, (targetLine - Math.floor(visibleLines / 3)) * lineHeight);
+      input.scrollTop = scrollTarget;
     });
   }, []);
 
@@ -1530,23 +1538,34 @@ export default function EditorShell({
       if (!editor) return;
 
       const { state, view } = editor;
-      let tr = state.tr;
+      const pos = match.kind === 'text' ? match.from : match.pos;
 
+      // Set the selection (for visual cursor placement)
+      let tr = state.tr;
       if (match.kind === 'text') {
-        const selection = TextSelection.create(state.doc, match.from, match.to);
-        tr = tr.setSelection(selection);
+        tr = tr.setSelection(TextSelection.create(state.doc, match.from, match.to));
       } else {
-        const selection = NodeSelection.create(state.doc, match.pos);
-        tr = tr.setSelection(selection);
+        tr = tr.setSelection(NodeSelection.create(state.doc, match.pos));
         window.dispatchEvent(
           new CustomEvent('markdown-editor:focus-math-search-match', {
             detail: { pos: match.pos, start: match.start, end: match.end },
           }),
         );
       }
+      view.dispatch(tr);
 
-      view.dispatch(tr.scrollIntoView());
-      // Deliberately NOT calling view.focus() — focus stays in search input
+      // Scroll to the match position using the DOM, which is more reliable
+      // than tr.scrollIntoView() when the editor doesn't have focus.
+      requestAnimationFrame(() => {
+        try {
+          const resolved = view.domAtPos(Math.min(pos, state.doc.content.size));
+          const node = resolved.node;
+          const element = node.nodeType === Node.TEXT_NODE
+            ? node.parentElement
+            : node as HTMLElement;
+          element?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        } catch { /* ignore scroll failures */ }
+      });
     },
     [editor],
   );
