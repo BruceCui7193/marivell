@@ -207,7 +207,15 @@ function getBlockMathPlaceholder(node: MarkdownNode, placeholders: Map<string, M
     return null;
   }
 
-  const token = String(children[0].value ?? '').trim();
+  // Use regex to extract the math token, so surrounding text
+  // (e.g. selection markers) doesn't break the lookup.
+  const text = String(children[0].value ?? '').trim();
+  const match = text.match(/@@MARKDOWN_EDITOR_MATH_\d+@@/);
+  if (!match) {
+    return null;
+  }
+
+  const token = match[0];
   const placeholder = placeholders.get(token);
   return placeholder?.kind === 'block' ? placeholder.value : null;
 }

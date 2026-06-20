@@ -1487,7 +1487,10 @@ export default function EditorShell({
         return;
       }
 
-      if (focusEditor) {
+      // Briefly focus to make the selection visible, then return focus
+      // to the search input so the user can keep navigating.
+      const returnFocus = !focusEditor && document.activeElement !== input;
+      if (focusEditor || returnFocus) {
         input.focus();
       }
       input.setSelectionRange(match.start, match.end);
@@ -1499,6 +1502,10 @@ export default function EditorShell({
       const visibleLines = Math.floor(input.clientHeight / lineHeight);
       const scrollTarget = Math.max(0, (targetLine - Math.floor(visibleLines / 3)) * lineHeight);
       input.scrollTop = scrollTarget;
+
+      if (returnFocus) {
+        setTimeout(() => searchInputRef.current?.focus(), 50);
+      }
     });
   }, []);
 
