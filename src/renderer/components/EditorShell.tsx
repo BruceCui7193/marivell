@@ -1495,7 +1495,7 @@ export default function EditorShell({
 
   const applySearchDecorations = useCallback(() => {
     if (!editor || sourceMode || !searchOpen || !searchQuery) {
-      try { editor?.storage?.searchHighlight?.clearHighlights?.(); } catch { /* ok */ }
+      try { editor?.commands.clearSearchHighlights?.(); } catch { /* ok */ }
       return;
     }
 
@@ -1508,11 +1508,11 @@ export default function EditorShell({
     });
 
     try {
-      editor.storage.searchHighlight?.updateHighlights?.(
-        decorationRanges,
-        searchCurrentIndex,
-        searchQuery,
-      );
+      editor.commands.updateSearchHighlights({
+        matches: decorationRanges,
+        currentIndex: searchCurrentIndex,
+        query: searchQuery,
+      });
     } catch { /* plugin may not be ready yet */ }
   }, [editor, searchMatches, searchCurrentIndex, searchOpen, searchQuery, sourceMode]);
 
@@ -1524,7 +1524,7 @@ export default function EditorShell({
   // Clear decorations when search closes
   useEffect(() => {
     if (!searchOpen) {
-      try { editor?.storage?.searchHighlight?.clearHighlights?.(); } catch { /* ok */ }
+      try { editor?.commands.clearSearchHighlights?.(); } catch { /* ok */ }
     }
   }, [searchOpen, editor]);
 
@@ -1578,6 +1578,23 @@ export default function EditorShell({
         ((nextIndex % searchMatches.length) + searchMatches.length) % searchMatches.length;
       setSearchCurrentIndex(normalized);
 
+      // Immediately update decorations with new current index so the user
+      // sees the highlight change without waiting for React re-render
+      if (!sourceMode && editor) {
+        const visualMatches = searchMatches as VisualSearchMatch[];
+        const decorationRanges = visualMatches.map((m) => {
+          if (m.kind === 'text') return { from: m.from, to: m.to };
+          return { from: m.pos, to: m.pos + m.nodeSize };
+        });
+        try {
+          editor.commands.updateSearchHighlights({
+            matches: decorationRanges,
+            currentIndex: normalized,
+            query: searchQuery,
+          });
+        } catch { /* ok */ }
+      }
+
       const match = searchMatches[normalized];
       if (sourceMode) {
         revealSourceMatch(match as SourceSearchMatch, focusEditor);
@@ -1585,7 +1602,7 @@ export default function EditorShell({
         revealVisualMatch(match as VisualSearchMatch, focusEditor);
       }
     },
-    [revealSourceMatch, revealVisualMatch, searchMatches, sourceMode],
+    [revealSourceMatch, revealVisualMatch, searchMatches, searchQuery, sourceMode, editor],
   );
 
   const getSelectedSearchText = useCallback(() => {
