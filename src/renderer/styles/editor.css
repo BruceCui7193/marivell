@@ -2150,3 +2150,41 @@
   width: 100%;
 }
 
+/* --- Math LaTeX syntax highlighting --- */
+
+.math-syntax-cmd {
+  color: #7c3aed;
+  font-weight: 600;
+}
+
+.math-syntax-brace {
+  color: #db2777;
+  font-weight: 600;
+}
+
+.math-syntax-special {
+  color: #059669;
+  font-weight: 600;
+}
+
+.math-syntax-comment {
+  color: #9ca3af;
+  font-style: italic;
+}
+
+:root[data-theme='dark'] .math-syntax-cmd {
+  color: #a78bfa;
+}
+
+:root[data-theme='dark'] .math-syntax-brace {
+  color: #f472b6;
+}
+
+:root[data-theme='dark'] .math-syntax-special {
+  color: #34d399;
+}
+
+:root[data-theme='dark'] .math-syntax-comment {
+  color: #6b7280;
+}
+

@@ -22,6 +22,7 @@ import { TextSelection } from '@tiptap/pm/state';
 import { createImageDropPasteExtension } from './plugins/image-drop-paste';
 import { createMarkdownPasteExtension } from './plugins/markdown-paste';
 import { SearchHighlight } from './plugins/search-highlight';
+import { MathSyntaxHighlight } from './plugins/math-syntax-highlight';
 import bash from 'highlight.js/lib/languages/bash';
 import cpp from 'highlight.js/lib/languages/cpp';
 import csharp from 'highlight.js/lib/languages/csharp';
@@ -134,5 +135,6 @@ export function createEditorExtensions({
     createMarkdownPasteExtension(),
     createImageDropPasteExtension(onUploadImage),
     SearchHighlight,
+    MathSyntaxHighlight,
   ];
 }
