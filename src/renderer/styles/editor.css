@@ -1929,3 +1929,27 @@
   border-style: solid;
   background: var(--ui-bg-hover, #f0f5f4);
 }
+
+/* --- Search highlights (decoration-based, visible even when unfocused) --- */
+
+.search-highlight {
+  background-color: rgba(255, 213, 0, 0.35);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(255, 213, 0, 0.18);
+}
+
+.search-highlight-current {
+  background-color: rgba(255, 140, 0, 0.55);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(255, 140, 0, 0.4);
+}
+
+:root[data-theme='dark'] .search-highlight {
+  background-color: rgba(255, 213, 0, 0.25);
+  box-shadow: 0 0 0 1px rgba(255, 213, 0, 0.12);
+}
+
+:root[data-theme='dark'] .search-highlight-current {
+  background-color: rgba(255, 140, 0, 0.45);
+  box-shadow: 0 0 0 1px rgba(255, 140, 0, 0.3);
+}

@@ -1493,26 +1493,78 @@ export default function EditorShell({
     });
   }, []);
 
-  const revealVisualMatch = useCallback(
-    (match: VisualSearchMatch, focusEditor = true) => {
-      if (!editor) {
-        return;
-      }
+  const applySearchDecorations = useCallback(() => {
+    if (!editor || sourceMode || !searchOpen || !searchQuery) {
+      try { editor?.storage?.searchHighlight?.clearHighlights?.(); } catch { /* ok */ }
+      return;
+    }
 
-      selectVisualSearchMatch(editor, match, focusEditor);
-      if (match.kind === 'math' && focusEditor) {
+    const visualMatches = searchMatches as VisualSearchMatch[];
+    const decorationRanges = visualMatches.map((m) => {
+      if (m.kind === 'text') {
+        return { from: m.from, to: m.to };
+      }
+      return { from: m.pos, to: m.pos + m.nodeSize };
+    });
+
+    try {
+      editor.storage.searchHighlight?.updateHighlights?.(
+        decorationRanges,
+        searchCurrentIndex,
+        searchQuery,
+      );
+    } catch { /* plugin may not be ready yet */ }
+  }, [editor, searchMatches, searchCurrentIndex, searchOpen, searchQuery, sourceMode]);
+
+  // Sync decorations whenever matches or current index change
+  useEffect(() => {
+    applySearchDecorations();
+  }, [applySearchDecorations]);
+
+  // Clear decorations when search closes
+  useEffect(() => {
+    if (!searchOpen) {
+      try { editor?.storage?.searchHighlight?.clearHighlights?.(); } catch { /* ok */ }
+    }
+  }, [searchOpen, editor]);
+
+  const scrollToVisualMatch = useCallback(
+    (match: VisualSearchMatch) => {
+      if (!editor) return;
+
+      const { state, view } = editor;
+      let tr = state.tr;
+
+      if (match.kind === 'text') {
+        const selection = TextSelection.create(state.doc, match.from, match.to);
+        tr = tr.setSelection(selection);
+      } else {
+        const selection = NodeSelection.create(state.doc, match.pos);
+        tr = tr.setSelection(selection);
         window.dispatchEvent(
           new CustomEvent('markdown-editor:focus-math-search-match', {
-            detail: {
-              pos: match.pos,
-              start: match.start,
-              end: match.end,
-            },
+            detail: { pos: match.pos, start: match.start, end: match.end },
           }),
         );
       }
+
+      view.dispatch(tr.scrollIntoView());
+      // Deliberately NOT calling view.focus() — focus stays in search input
     },
     [editor],
+  );
+
+  const revealVisualMatch = useCallback(
+    (match: VisualSearchMatch, focusEditor = true) => {
+      if (!editor) return;
+      if (focusEditor) {
+        selectVisualSearchMatch(editor, match, true);
+        return;
+      }
+      // When focusEditor is false, just scroll — decorations handle the highlight
+      scrollToVisualMatch(match);
+    },
+    [editor, scrollToVisualMatch],
   );
 
   const jumpToSearchMatch = useCallback(
@@ -1698,16 +1750,8 @@ export default function EditorShell({
       currentMatchLabel={searchQuery ? `${searchMatches.length ? searchCurrentIndex + 1 : 0}/${searchMatches.length}` : '输入关键词'}
       onCaseSensitiveChange={() => setSearchCaseSensitive((current) => !current)}
       onClose={closeSearchPanel}
-      onNext={() => {
-        jumpToSearchMatch(searchCurrentIndex + 1, true);
-        // Wait for the browser to paint the selection highlight, then
-        // return focus to search input so user can keep navigating
-        setTimeout(() => searchInputRef.current?.focus(), 80);
-      }}
-      onPrevious={() => {
-        jumpToSearchMatch(searchCurrentIndex - 1, true);
-        setTimeout(() => searchInputRef.current?.focus(), 80);
-      }}
+      onNext={() => jumpToSearchMatch(searchCurrentIndex + 1, false)}
+      onPrevious={() => jumpToSearchMatch(searchCurrentIndex - 1, false)}
       onQueryChange={(event) => setSearchQuery(event.target.value)}
       onReplaceAll={handleReplaceAll}
       onReplaceCurrent={handleReplaceCurrent}
