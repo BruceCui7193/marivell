@@ -1,4 +1,4 @@
-export type ThemePalette = 'natural' | 'forest' | 'ocean' | 'sepia' | 'graphite';
+export type ThemePalette = 'natural' | 'forest' | 'ocean' | 'sepia' | 'graphite' | 'nord' | 'sakura' | 'lavender' | 'cyberpunk';
 
 export interface ThemePaletteOption {
   id: ThemePalette;
@@ -10,33 +10,57 @@ export interface ThemePaletteOption {
 export const THEME_PALETTE_OPTIONS: ThemePaletteOption[] = [
   {
     id: 'natural',
-    label: '\u81ea\u7136',
-    description: '\u67d4\u548c\u7684\u7c73\u767d\u4e0e\u82d4\u7eff',
+    label: '自然',
+    description: '柔和的米白与苔绿',
     swatch: 'linear-gradient(135deg, #f6f1e6 0%, #7ba48f 100%)',
   },
   {
     id: 'forest',
-    label: '\u68ee\u6797',
-    description: '\u66f4\u6df1\u4e00\u4e9b\u7684\u7eff\u8c03',
+    label: '森林',
+    description: '郁郁葱葱的深翠绿调',
     swatch: 'linear-gradient(135deg, #e7efe8 0%, #3f6f5f 100%)',
   },
   {
     id: 'ocean',
-    label: '\u6d77\u6e7e',
-    description: '\u6e05\u723d\u7684\u84dd\u7070\u6c14\u8d28',
+    label: '海湾',
+    description: '清爽温润的深海蓝灰',
     swatch: 'linear-gradient(135deg, #edf3f8 0%, #4d7592 100%)',
   },
   {
     id: 'sepia',
-    label: '\u6696\u7eb8',
-    description: '\u63a5\u8fd1\u7eb8\u5f20\u7684\u6696\u8c03',
+    label: '暖纸',
+    description: '护眼复古的琥珀沙色',
     swatch: 'linear-gradient(135deg, #f6ead7 0%, #9a6e45 100%)',
   },
   {
     id: 'graphite',
-    label: '\u77f3\u58a8',
-    description: '\u66f4\u4e2d\u6027\u7684\u7070\u9636\u914d\u8272',
+    label: '石墨',
+    description: '极简中性的冷静灰阶',
     swatch: 'linear-gradient(135deg, #eceef0 0%, #56606b 100%)',
+  },
+  {
+    id: 'nord',
+    label: '北极光',
+    description: '极地之境的清冷霜蓝',
+    swatch: 'linear-gradient(135deg, #e5e9f0 0%, #88c0d0 100%)',
+  },
+  {
+    id: 'sakura',
+    label: '春樱',
+    description: '浪漫梦幻的樱粉暖沙',
+    swatch: 'linear-gradient(135deg, #fff5f6 0%, #e87a90 100%)',
+  },
+  {
+    id: 'lavender',
+    label: '薰衣草',
+    description: '静谧高贵的暮色丁香紫',
+    swatch: 'linear-gradient(135deg, #f3f0fc 0%, #8b5cf6 100%)',
+  },
+  {
+    id: 'cyberpunk',
+    label: '赛博朋克',
+    description: '未来科技感的暗夜霓虹',
+    swatch: 'linear-gradient(135deg, #0f172a 0%, #ec4899 100%)',
   },
 ];
 

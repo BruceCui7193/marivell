@@ -1489,7 +1489,7 @@ export default function EditorShell({
 
       // Briefly focus to make the selection visible, then return focus
       // to the search input so the user can keep navigating.
-      const returnFocus = !focusEditor && document.activeElement !== input;
+      const returnFocus = !focusEditor && window.document.activeElement !== input;
       if (focusEditor || returnFocus) {
         input.focus();
       }

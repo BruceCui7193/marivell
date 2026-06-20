@@ -3,7 +3,10 @@
   "version": "0.2.0",
   "description": "A Markdown editor built with Electron, React, TypeScript, and Vite.",
   "main": "./out/main/index.js",
-  "author": "CRH",
+  "author": {
+    "name": "CRH",
+    "email": "crh@example.com"
+  },
   "license": "MIT",
   "private": true,
   "type": "module",
