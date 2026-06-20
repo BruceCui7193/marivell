@@ -23,6 +23,7 @@ import { createImageDropPasteExtension } from './plugins/image-drop-paste';
 import { createMarkdownPasteExtension } from './plugins/markdown-paste';
 import { SearchHighlight } from './plugins/search-highlight';
 import { MathSyntaxHighlight } from './plugins/math-syntax-highlight';
+import { MathFocusDecoration } from './plugins/math-selection';
 import bash from 'highlight.js/lib/languages/bash';
 import cpp from 'highlight.js/lib/languages/cpp';
 import csharp from 'highlight.js/lib/languages/csharp';
@@ -136,5 +137,6 @@ export function createEditorExtensions({
     createImageDropPasteExtension(onUploadImage),
     SearchHighlight,
     MathSyntaxHighlight,
+    MathFocusDecoration,
   ];
 }

@@ -89,7 +89,7 @@ export default function CodeBlockView({ node, updateAttributes }: NodeViewProps)
       className={node.attrs.language ? 'code-block-node has-language' : 'code-block-node'}
       data-language={String(node.attrs.language ?? '').trim() || undefined}
     >
-      <NodeViewContent as="pre" className="node-code-surface code-block-node__pre" />
+      <NodeViewContent as="pre" className="node-code-surface code-block-node__pre" spellCheck={false} />
       <div className="code-block-node__toolbar" contentEditable={false}>
         <span className="code-block-node__toolbar-label">Lang</span>
         <div

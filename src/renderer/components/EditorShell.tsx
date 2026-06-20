@@ -528,6 +528,9 @@ export default function EditorShell({
   const pendingSourceSelectionRef = useRef<SourceSearchMatch | null>(null);
   const pendingVisualSelectionRestoreRef = useRef(false);
   const startupCaretPlacedRef = useRef(false);
+  const scrollMemoryRef = useRef<Map<string, number>>(new Map());
+  const prevDocPathRef = useRef(document.path);
+  const pendingScrollRestoreRef = useRef<number | null>(null);
   const modeSwitchOverlayTimerRef = useRef<number | null>(null);
   const sourceSelectionRef = useRef<SourceSearchMatch>({
     start: 0,
@@ -1199,6 +1202,23 @@ export default function EditorShell({
     };
   }, []);
 
+  // Save scroll position when switching away from a document, so we can
+  // restore it when switching back. Runs before the loading effect so the
+  // old scroll position is captured before content is replaced.
+  useEffect(() => {
+    if (document.path === prevDocPathRef.current) {
+      return;
+    }
+
+    const scrollEl = sourceModeRef.current
+      ? sourceTextareaRef.current
+      : editorFrameRef.current;
+    if (scrollEl) {
+      scrollMemoryRef.current.set(prevDocPathRef.current, computeScrollRatio(scrollEl));
+    }
+    prevDocPathRef.current = document.path;
+  }, [document.path]);
+
   useEffect(() => {
     if (!editor || sourceMode) {
       return;
@@ -1212,7 +1232,14 @@ export default function EditorShell({
     const loadId = latestExternalLoadRef.current + 1;
     latestExternalLoadRef.current = loadId;
     setLoadingExternalDocument(true);
+    startupCaretPlacedRef.current = false;
     editor.setEditable(false);
+
+    // Queue scroll restoration for after the content loads.
+    const savedRatio = scrollMemoryRef.current.get(document.path);
+    if (savedRatio != null) {
+      pendingScrollRestoreRef.current = savedRatio;
+    }
 
     if (document.markdown.length < LARGE_DOCUMENT_THRESHOLD) {
       void import('../editor/markdown')
@@ -1447,7 +1474,19 @@ export default function EditorShell({
       }
 
       editor.chain().focus('start').run();
-      editorFrameRef.current?.scrollTo({ top: 0 });
+
+      // Restore saved scroll position if available; otherwise scroll to top.
+      const savedRatio = pendingScrollRestoreRef.current;
+      if (savedRatio != null) {
+        pendingScrollRestoreRef.current = null;
+        const frame = editorFrameRef.current;
+        if (frame) {
+          const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+          frame.scrollTop = maxScrollTop * savedRatio;
+        }
+      } else {
+        editorFrameRef.current?.scrollTo({ top: 0 });
+      }
       startupCaretPlacedRef.current = true;
     });
   }, [editor, loadingExternalDocument, sourceMode]);
@@ -2163,7 +2202,10 @@ export default function EditorShell({
       ) {
         event.preventDefault();
         if (editor) {
-          focusWritableDocumentEnd(editor);
+          // Just restore focus to the existing selection without jumping.
+          // Previously this called focusWritableDocumentEnd which jumped to
+          // the document end — jarring when clicking padding near the top.
+          editor.chain().focus().run();
         }
       }
     },

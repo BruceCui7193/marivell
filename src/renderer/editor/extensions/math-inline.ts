@@ -13,6 +13,13 @@ declare module '@tiptap/core' {
   }
 }
 
+// Debug flag — toggle via localStorage.setItem('__mathDebug','1') in DevTools.
+let __mathDebug = false;
+try { __mathDebug = localStorage.getItem('__mathDebug') === '1'; } catch {}
+function mathLog(...args: unknown[]): void {
+  if (__mathDebug) console.log('[math]', ...args);
+}
+
 export const MathInline = Node.create({
   name: 'inlineMath',
   group: 'inline',
@@ -72,6 +79,7 @@ export const MathInline = Node.create({
       // Create editable content element
       const contentDOM = document.createElement('span');
       contentDOM.className = 'math-node-content';
+      contentDOM.setAttribute('spellcheck', 'false');
 
       // Create preview element
       const previewDOM = document.createElement('span');
@@ -81,10 +89,11 @@ export const MathInline = Node.create({
       dom.appendChild(contentDOM);
       dom.appendChild(previewDOM);
 
-      // Cache last rendered text to skip redundant KaTeX renders
+      // Cache last rendered text to skip redundant KaTeX renders.
       let lastRenderedText = '';
+      let destroyed = false;
 
-      const renderPreview = (text: string) => {
+      const doRender = (text: string) => {
         if (text === lastRenderedText) return;
         lastRenderedText = text;
         try {
@@ -93,32 +102,20 @@ export const MathInline = Node.create({
             throwOnError: false,
             strict: 'ignore',
           });
-        } catch {
+          mathLog('rendered:', text, 'children:', previewDOM.childNodes.length);
+        } catch (err) {
           previewDOM.textContent = text;
+          mathLog('render error:', err);
         }
       };
 
-      const updateView = () => {
-        if (typeof getPos !== 'function') return;
-
-        let pos: number;
-        try { pos = getPos(); } catch { return; }
-
-        const { from, to } = editor.state.selection;
-        const nodeSize = node.nodeSize;
-        const isFocused = (from >= pos + 1 && to <= pos + nodeSize - 1) ||
-                          (from === pos && to === pos + nodeSize);
-
-        renderPreview(node.textContent);
-
-        if (isFocused && editor.isEditable) {
-          dom.classList.add('is-editing');
-        } else {
-          dom.classList.remove('is-editing');
-        }
+      const renderPreview = (text: string) => {
+        doRender(text);
       };
 
       // Handle clicking anywhere on the formula to enter edit mode.
+      // The is-editing class is managed by the MathFocusDecoration plugin,
+      // so the node view no longer needs to subscribe to editor events.
       dom.addEventListener('click', (event) => {
         if (!editor.isEditable) return;
         if (typeof getPos !== 'function') return;
@@ -130,13 +127,8 @@ export const MathInline = Node.create({
         event.stopPropagation();
       });
 
-      const onUpdate = () => updateView();
-      editor.on('selectionUpdate', onUpdate);
-      editor.on('transaction', onUpdate);
-      editor.on('focus', onUpdate);
-      editor.on('blur', onUpdate);
-
-      updateView();
+      mathLog('nodeView created:', node.textContent);
+      renderPreview(node.textContent);
 
       return {
         dom,
@@ -144,18 +136,18 @@ export const MathInline = Node.create({
         update(newNode) {
           if (newNode.type !== node.type) return false;
           if (newNode.attrs.display !== node.attrs.display) return false;
+          const textChanged = newNode.textContent !== node.textContent;
           node = newNode;
-          lastRenderedText = ''; // force re-render on content change
-          updateView();
+          if (textChanged) {
+            lastRenderedText = ''; // force re-render only when content actually changed
+          }
+          renderPreview(node.textContent);
           return true;
         },
-        selectNode() { updateView(); },
-        deselectNode() { updateView(); },
+        selectNode() {},
+        deselectNode() {},
         destroy() {
-          editor.off('selectionUpdate', onUpdate);
-          editor.off('transaction', onUpdate);
-          editor.off('focus', onUpdate);
-          editor.off('blur', onUpdate);
+          destroyed = true;
         },
       };
     };

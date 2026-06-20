@@ -1,6 +1,6 @@
 import { Extension } from '@tiptap/core';
 import type { JSONContent } from '@tiptap/core';
-import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model';
+import { DOMParser as ProseMirrorDOMParser, Fragment, Slice } from '@tiptap/pm/model';
 import { Plugin } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
 import { convertHtmlToMarkdown, looksLikeStructuredHtml } from '../html-to-markdown';
@@ -188,6 +188,24 @@ function isInsideCodeBlock(view: EditorView): boolean {
   return false;
 }
 
+/**
+ * Insert parsed markdown content directly via a ProseMirror transaction.
+ * Uses tr.replaceSelectionWith a Slice built from the content fragment.
+ * This avoids insertContent's special-casing of block-only content
+ * (which can interact badly with ProseMirror's view diff when many
+ * nodes are inserted at once, causing React NodeViews to not mount).
+ */
+function insertContentDirect(editor: any, content: JSONContent[]): boolean {
+  const { state, view } = editor;
+  const fragment = Fragment.from(content.map((node) => state.schema.nodeFromJSON(node)));
+  const slice = new Slice(fragment, 0, 0);
+  const tr = state.tr.replaceSelection(slice);
+  // Move cursor to end of inserted content
+  tr.setSelection(state.selection.constructor.near(tr.doc.resolve(tr.selection.to)));
+  view.dispatch(tr.scrollIntoView());
+  return true;
+}
+
 export function createMarkdownPasteExtension() {
   return Extension.create({
     name: 'markdownPaste',
@@ -226,7 +244,10 @@ export function createMarkdownPasteExtension() {
                   insertPlainTextFallback(text);
                 if (content) {
                   event.preventDefault();
-                  try { this.editor.commands.insertContent(content); } catch { /* fall through */ }
+                  try { insertContentDirect(this.editor, content); } catch {
+                    try { this.editor.chain().insertContent(content).scrollIntoView().run(); } catch { /* fall through */ }
+                  }
+                  flushNodeViews(this.editor);
                   return true;
                 }
               }
@@ -235,7 +256,10 @@ export function createMarkdownPasteExtension() {
                 const content = parseContentFromMarkdown(tabularTextToMarkdown(text));
                 if (content) {
                   event.preventDefault();
-                  try { this.editor.commands.insertContent(content); } catch { /* fall through */ }
+                  try { insertContentDirect(this.editor, content); } catch {
+                    try { this.editor.chain().insertContent(content).scrollIntoView().run(); } catch { /* fall through */ }
+                  }
+                  flushNodeViews(this.editor);
                   return true;
                 }
               }
@@ -245,11 +269,18 @@ export function createMarkdownPasteExtension() {
                 if (content) {
                   event.preventDefault();
                   try {
-                    this.editor.commands.insertContent(content);
+                    insertContentDirect(this.editor, content);
+                    flushNodeViews(this.editor);
                     return true;
                   } catch {
-                    // insertContent may throw on schema mismatch (e.g. duplicate marks).
-                    // Fall through to plain text fallback so content is never silently lost.
+                    // Fall back to insertContent if direct insertion fails
+                    try {
+                      this.editor.chain().insertContent(content).scrollIntoView().run();
+                      flushNodeViews(this.editor);
+                      return true;
+                    } catch {
+                      // insertContent may throw on schema mismatch (e.g. duplicate marks).
+                    }
                   }
                 }
               }
@@ -260,7 +291,10 @@ export function createMarkdownPasteExtension() {
                   insertPlainTextFallback(text);
                 if (content) {
                   event.preventDefault();
-                  try { this.editor.commands.insertContent(content); } catch { /* fall through */ }
+                  try { insertContentDirect(this.editor, content); } catch {
+                    try { this.editor.chain().insertContent(content).scrollIntoView().run(); } catch { /* fall through */ }
+                  }
+                  flushNodeViews(this.editor);
                   return true;
                 }
               }
@@ -269,8 +303,11 @@ export function createMarkdownPasteExtension() {
               if (text) {
                 event.preventDefault();
                 try {
-                  this.editor.commands.insertContent(createPlainTextContent(text));
-                } catch { /* nothing more we can do */ }
+                  insertContentDirect(this.editor, createPlainTextContent(text));
+                } catch {
+                  try { this.editor.chain().insertContent(createPlainTextContent(text)).scrollIntoView().run(); } catch { /* nothing more we can do */ }
+                }
+                flushNodeViews(this.editor);
                 return true;
               }
 
@@ -280,5 +317,23 @@ export function createMarkdownPasteExtension() {
         }),
       ];
     },
+  });
+}
+
+/**
+ * Work around a Tiptap React timing issue: when block-level nodes with custom
+ * React NodeViews (e.g. code blocks) are inserted via insertContent, the
+ * contentDOM element may not get attached to the DOM because the NodeViewContent
+ * ref callback runs inside a React render that is deferred by the event-loop
+ * batching. Re-dispatching the same transaction after a microtask forces
+ * ProseMirror to re-evaluate node views and attach contentDOM.
+ */
+function flushNodeViews(editor: any): void {
+  if (editor.isDestroyed) return;
+  const { state, view } = editor;
+  // A no-op transaction that still triggers view re-sync.
+  queueMicrotask(() => {
+    if (editor.isDestroyed) return;
+    view.dispatch(state.tr.setMeta('pasteFlush', true));
   });
 }

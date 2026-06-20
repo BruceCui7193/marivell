@@ -32,6 +32,13 @@ const DIALOG_MARKDOWN_FILTERS = [
   { name: '\u004d\u0061\u0072\u006b\u0064\u006f\u0077\u006e \u6587\u6863', extensions: ['md', 'markdown'] },
   { name: '\u6240\u6709\u6587\u4ef6', extensions: ['*'] },
 ];
+
+function getDialogParent(parentWindow: any): any {
+  if (process.platform === 'linux') {
+    return undefined;
+  }
+  return parentWindow;
+}
 const EXPORT_PAGE_CSS = `
   :root {
     color-scheme: light;
@@ -498,7 +505,7 @@ async function promptBeforeClose(window: BrowserWindow): Promise<void> {
   closePromptWindows.add(window);
 
   try {
-    const { response } = await dialog.showMessageBox(window, {
+    const { response } = await dialog.showMessageBox(getDialogParent(window), {
       type: 'warning',
       buttons: ['\u4fdd\u5b58\u5e76\u5173\u95ed', '\u4e0d\u4fdd\u5b58', '\u53d6\u6d88'],
       defaultId: 0,
@@ -959,7 +966,7 @@ async function exportWindowAsPdf(window: BrowserWindow): Promise<void> {
     message: '\u6b63\u5728\u51c6\u5907 PDF \u5bfc\u51fa\u2026',
   });
 
-  const saveResult = await dialog.showSaveDialog(window, {
+  const saveResult = await dialog.showSaveDialog(getDialogParent(window), {
     title: '\u5bfc\u51fa PDF',
     defaultPath: buildExportFileName(window, 'pdf'),
     filters: [{ name: 'PDF', extensions: ['pdf'] }],
@@ -1026,7 +1033,7 @@ async function exportWindowAsImage(window: BrowserWindow): Promise<void> {
     message: '\u6b63\u5728\u5bfc\u51fa\u56fe\u7247\u2026',
   });
 
-  const saveResult = await dialog.showSaveDialog(window, {
+  const saveResult = await dialog.showSaveDialog(getDialogParent(window), {
     title: '\u5bfc\u51fa\u56fe\u7247',
     defaultPath: buildExportFileName(window, 'png'),
     filters: [{ name: 'PNG Image', extensions: ['png'] }],
@@ -1264,7 +1271,7 @@ async function openDocumentInPreferredWindow(
 }
 
 async function openDocumentPicker(parentWindow?: BrowserWindow): Promise<string | null> {
-  const result = await dialog.showOpenDialog(parentWindow as any, {
+  const result = await dialog.showOpenDialog(getDialogParent(parentWindow), {
     title: '\u6253\u5f00 Markdown \u6587\u6863',
     properties: ['openFile'],
     filters: DIALOG_MARKDOWN_FILTERS,
@@ -1278,7 +1285,7 @@ async function openDocumentPicker(parentWindow?: BrowserWindow): Promise<string 
 }
 
 async function openFolderPicker(parentWindow?: BrowserWindow): Promise<string | null> {
-  const result = await dialog.showOpenDialog(parentWindow as any, {
+  const result = await dialog.showOpenDialog(getDialogParent(parentWindow), {
     title: '\u6253\u5f00\u6587\u4ef6\u5939',
     properties: ['openDirectory'],
   });
@@ -1642,7 +1649,7 @@ function registerIpcHandlers(): void {
     const parentWindow = getWindowFromSender(event.sender);
 
     if (!payload.currentPath) {
-      const saveResult = await dialog.showSaveDialog(parentWindow as any, {
+      const saveResult = await dialog.showSaveDialog(getDialogParent(parentWindow), {
         title: '\u4fdd\u5b58 Markdown \u6587\u6863',
         defaultPath: extractSuggestedDocumentName(payload.markdown),
         filters: DIALOG_MARKDOWN_FILTERS,
@@ -1673,7 +1680,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle('document:save-as', async (event, payload: SaveDocumentPayload) => {
     const parentWindow = getWindowFromSender(event.sender);
     const defaultPath = payload.currentPath ?? extractSuggestedDocumentName(payload.markdown);
-    const saveResult = await dialog.showSaveDialog(parentWindow as any, {
+    const saveResult = await dialog.showSaveDialog(getDialogParent(parentWindow), {
       title: 'Markdown \u6587\u6863\u53e6\u5b58\u4e3a',
       defaultPath,
       filters: DIALOG_MARKDOWN_FILTERS,
