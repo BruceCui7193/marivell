@@ -83,10 +83,9 @@ export const MathInline = Node.create({
 
       // Cache last rendered text to skip redundant KaTeX renders
       let lastRenderedText = '';
-      let wasEditing = false;
 
       const renderPreview = (text: string) => {
-        if (text === lastRenderedText) return; // Skip if unchanged
+        if (text === lastRenderedText) return;
         lastRenderedText = text;
         try {
           katex.render(text || '\\text{?}', previewDOM, {
@@ -99,34 +98,30 @@ export const MathInline = Node.create({
         }
       };
 
-      const updateEditingState = () => {
+      const updateView = () => {
         if (typeof getPos !== 'function') return;
 
-        const pos = getPos();
+        let pos: number;
+        try { pos = getPos(); } catch { return; }
+
         const { from, to } = editor.state.selection;
         const nodeSize = node.nodeSize;
         const isFocused = (from >= pos + 1 && to <= pos + nodeSize - 1) ||
                           (from === pos && to === pos + nodeSize);
-        const editing = isFocused && editor.isEditable;
 
-        if (editing !== wasEditing) {
-          wasEditing = editing;
-          if (editing) {
-            dom.classList.add('is-editing');
-          } else {
-            dom.classList.remove('is-editing');
-          }
+        renderPreview(node.textContent);
+
+        if (isFocused && editor.isEditable) {
+          dom.classList.add('is-editing');
+        } else {
+          dom.classList.remove('is-editing');
         }
       };
 
       // Handle clicking anywhere on the formula to enter edit mode.
-      // (previewDOM's click never fires because contentDOM overlays it
-      //  with position:absolute + pointer-events:auto when not editing.)
       dom.addEventListener('click', (event) => {
         if (!editor.isEditable) return;
         if (typeof getPos !== 'function') return;
-        // Don't interfere with clicks when already editing — the user
-        // needs to place the cursor freely inside the contentDOM.
         if (dom.classList.contains('is-editing')) return;
 
         const pos = getPos();
@@ -135,22 +130,13 @@ export const MathInline = Node.create({
         event.stopPropagation();
       });
 
-      const onSelectionUpdate = () => {
-        updateEditingState();
-      };
-      const onTransaction = () => {
-        renderPreview(node.textContent);
-        updateEditingState();
-      };
-      const onFocusChange = () => {
-        updateEditingState();
-      };
-      editor.on('selectionUpdate', onSelectionUpdate);
-      editor.on('transaction', onTransaction);
-      editor.on('focus', onFocusChange);
-      editor.on('blur', onFocusChange);
+      const onUpdate = () => updateView();
+      editor.on('selectionUpdate', onUpdate);
+      editor.on('transaction', onUpdate);
+      editor.on('focus', onUpdate);
+      editor.on('blur', onUpdate);
 
-      renderPreview(node.textContent);
+      updateView();
 
       return {
         dom,
@@ -159,21 +145,17 @@ export const MathInline = Node.create({
           if (newNode.type !== node.type) return false;
           if (newNode.attrs.display !== node.attrs.display) return false;
           node = newNode;
-          renderPreview(node.textContent);
-          updateEditingState();
+          lastRenderedText = ''; // force re-render on content change
+          updateView();
           return true;
         },
-        selectNode() {
-          updateEditingState();
-        },
-        deselectNode() {
-          updateEditingState();
-        },
+        selectNode() { updateView(); },
+        deselectNode() { updateView(); },
         destroy() {
-          editor.off('selectionUpdate', onSelectionUpdate);
-          editor.off('transaction', onTransaction);
-          editor.off('focus', onFocusChange);
-          editor.off('blur', onFocusChange);
+          editor.off('selectionUpdate', onUpdate);
+          editor.off('transaction', onUpdate);
+          editor.off('focus', onUpdate);
+          editor.off('blur', onUpdate);
         },
       };
     };
