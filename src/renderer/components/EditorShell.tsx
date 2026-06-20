@@ -1700,12 +1700,13 @@ export default function EditorShell({
       onClose={closeSearchPanel}
       onNext={() => {
         jumpToSearchMatch(searchCurrentIndex + 1, true);
-        // Return focus to search input so user can keep navigating with Enter
-        requestAnimationFrame(() => searchInputRef.current?.focus());
+        // Wait for the browser to paint the selection highlight, then
+        // return focus to search input so user can keep navigating
+        setTimeout(() => searchInputRef.current?.focus(), 80);
       }}
       onPrevious={() => {
         jumpToSearchMatch(searchCurrentIndex - 1, true);
-        requestAnimationFrame(() => searchInputRef.current?.focus());
+        setTimeout(() => searchInputRef.current?.focus(), 80);
       }}
       onQueryChange={(event) => setSearchQuery(event.target.value)}
       onReplaceAll={handleReplaceAll}
