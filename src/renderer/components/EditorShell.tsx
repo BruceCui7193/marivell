@@ -1698,8 +1698,8 @@ export default function EditorShell({
       currentMatchLabel={searchQuery ? `${searchMatches.length ? searchCurrentIndex + 1 : 0}/${searchMatches.length}` : '输入关键词'}
       onCaseSensitiveChange={() => setSearchCaseSensitive((current) => !current)}
       onClose={closeSearchPanel}
-      onNext={() => jumpToSearchMatch(searchCurrentIndex + 1)}
-      onPrevious={() => jumpToSearchMatch(searchCurrentIndex - 1)}
+      onNext={() => jumpToSearchMatch(searchCurrentIndex + 1, false)}
+      onPrevious={() => jumpToSearchMatch(searchCurrentIndex - 1, false)}
       onQueryChange={(event) => setSearchQuery(event.target.value)}
       onReplaceAll={handleReplaceAll}
       onReplaceCurrent={handleReplaceCurrent}
