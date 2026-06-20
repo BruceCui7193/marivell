@@ -33,6 +33,7 @@ import {
   type SourceSearchMatch,
   type VisualSearchMatch,
 } from '../editor/search';
+import { setSearchHighlights, clearSearchHighlights } from '../editor/plugins/search-highlight';
 import { calculateDocumentStats, fileToBase64 } from '../editor/utils/helpers';
 import { extractOutline, type OutlineItem } from '../utils/document';
 
@@ -1495,25 +1496,21 @@ export default function EditorShell({
 
   const applySearchDecorations = useCallback(() => {
     if (!editor || sourceMode || !searchOpen || !searchQuery) {
-      try { editor?.commands.clearSearchHighlights?.(); } catch { /* ok */ }
+      if (editor) clearSearchHighlights(editor.view);
       return;
     }
 
     const visualMatches = searchMatches as VisualSearchMatch[];
     const decorationRanges = visualMatches.map((m) => {
-      if (m.kind === 'text') {
-        return { from: m.from, to: m.to };
-      }
+      if (m.kind === 'text') return { from: m.from, to: m.to };
       return { from: m.pos, to: m.pos + m.nodeSize };
     });
 
-    try {
-      editor.commands.updateSearchHighlights({
-        matches: decorationRanges,
-        currentIndex: searchCurrentIndex,
-        query: searchQuery,
-      });
-    } catch { /* plugin may not be ready yet */ }
+    setSearchHighlights(editor.view, {
+      matches: decorationRanges,
+      currentIndex: searchCurrentIndex,
+      query: searchQuery,
+    });
   }, [editor, searchMatches, searchCurrentIndex, searchOpen, searchQuery, sourceMode]);
 
   // Sync decorations whenever matches or current index change
@@ -1523,8 +1520,8 @@ export default function EditorShell({
 
   // Clear decorations when search closes
   useEffect(() => {
-    if (!searchOpen) {
-      try { editor?.commands.clearSearchHighlights?.(); } catch { /* ok */ }
+    if (!searchOpen && editor) {
+      clearSearchHighlights(editor.view);
     }
   }, [searchOpen, editor]);
 
@@ -1578,21 +1575,18 @@ export default function EditorShell({
         ((nextIndex % searchMatches.length) + searchMatches.length) % searchMatches.length;
       setSearchCurrentIndex(normalized);
 
-      // Immediately update decorations with new current index so the user
-      // sees the highlight change without waiting for React re-render
+      // Immediately update decorations with new current index
       if (!sourceMode && editor) {
         const visualMatches = searchMatches as VisualSearchMatch[];
         const decorationRanges = visualMatches.map((m) => {
           if (m.kind === 'text') return { from: m.from, to: m.to };
           return { from: m.pos, to: m.pos + m.nodeSize };
         });
-        try {
-          editor.commands.updateSearchHighlights({
-            matches: decorationRanges,
-            currentIndex: normalized,
-            query: searchQuery,
-          });
-        } catch { /* ok */ }
+        setSearchHighlights(editor.view, {
+          matches: decorationRanges,
+          currentIndex: normalized,
+          query: searchQuery,
+        });
       }
 
       const match = searchMatches[normalized];
