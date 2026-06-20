@@ -18,6 +18,8 @@ interface DefinitionContext {
 interface MathPlaceholder {
   kind: 'inline' | 'block';
   value: string;
+  openDelim: string;
+  closeDelim: string;
 }
 
 function normalizeMathDelimiters(markdown: string): {
@@ -34,9 +36,9 @@ function normalizeMathDelimiters(markdown: string): {
       return token;
     });
 
-  const createMathToken = (kind: 'inline' | 'block', value: string): string => {
+  const createMathToken = (kind: 'inline' | 'block', value: string, openDelim: string, closeDelim: string): string => {
     const token = `@@MARKDOWN_EDITOR_MATH_${mathPlaceholders.size}@@`;
-    mathPlaceholders.set(token, { kind, value });
+    mathPlaceholders.set(token, { kind, value, openDelim, closeDelim });
     return kind === 'block' ? `\n${token}\n` : token;
   };
 
@@ -44,10 +46,10 @@ function normalizeMathDelimiters(markdown: string): {
   normalized = protect(/```[\s\S]*?```/g, normalized);
   normalized = protect(/~~~[\s\S]*?~~~/g, normalized);
   normalized = protect(/`[^`\n]+`/g, normalized);
-  normalized = normalizeBlockMathPairs(normalized, '\\[', '\\]', createMathToken);
-  normalized = normalizeBlockMathPairs(normalized, '$$', '$$', createMathToken);
-  normalized = normalizeInlineMathPairs(normalized, '\\(', '\\)', createMathToken);
-  normalized = normalizeInlineMathPairs(normalized, '$', '$', createMathToken);
+  normalized = normalizeBlockMathPairs(normalized, '\\[', '\\]', createMathToken, '\\[', '\\]');
+  normalized = normalizeBlockMathPairs(normalized, '$$', '$$', createMathToken, '$$', '$$');
+  normalized = normalizeInlineMathPairs(normalized, '\\(', '\\)', createMathToken, '\\(', '\\)');
+  normalized = normalizeInlineMathPairs(normalized, '$', '$', createMathToken, '$', '$');
 
   return {
     markdown: normalized.replace(/@@MARKDOWN_EDITOR_TOKEN_(\d+)@@/g, (_match, index) => {
@@ -61,7 +63,9 @@ function normalizeBlockMathPairs(
   markdown: string,
   open: string,
   close: string,
-  createMathToken: (kind: 'inline' | 'block', value: string) => string,
+  createMathToken: (kind: 'inline' | 'block', value: string, openDelim: string, closeDelim: string) => string,
+  openDelim: string,
+  closeDelim: string,
 ): string {
   let result = '';
   let cursor = 0;
@@ -81,7 +85,7 @@ function normalizeBlockMathPairs(
     }
 
     const expression = markdown.slice(cursor + open.length, closeIndex).trim();
-    result += createMathToken('block', expression);
+    result += createMathToken('block', expression, openDelim, closeDelim);
     cursor = closeIndex + close.length;
   }
 
@@ -92,7 +96,9 @@ function normalizeInlineMathPairs(
   markdown: string,
   open: string,
   close: string,
-  createMathToken: (kind: 'inline' | 'block', value: string) => string,
+  createMathToken: (kind: 'inline' | 'block', value: string, openDelim: string, closeDelim: string) => string,
+  openDelim: string,
+  closeDelim: string,
 ): string {
   let result = '';
   let cursor = 0;
@@ -125,7 +131,7 @@ function normalizeInlineMathPairs(
       continue;
     }
 
-    result += createMathToken('inline', expression);
+    result += createMathToken('inline', expression, openDelim, closeDelim);
     cursor = closeIndex + close.length;
   }
 
@@ -175,6 +181,8 @@ function splitTextWithMathPlaceholders(
         attrs: {
           latex: placeholder.value,
           display: 'no',
+          openDelim: placeholder.openDelim,
+          closeDelim: placeholder.closeDelim,
         },
       });
     } else {
@@ -197,7 +205,7 @@ function splitTextWithMathPlaceholders(
   return parts;
 }
 
-function getBlockMathPlaceholder(node: MarkdownNode, placeholders: Map<string, MathPlaceholder>): string | null {
+function getBlockMathPlaceholder(node: MarkdownNode, placeholders: Map<string, MathPlaceholder>): MathPlaceholder | null {
   if (node.type !== 'paragraph') {
     return null;
   }
@@ -217,7 +225,7 @@ function getBlockMathPlaceholder(node: MarkdownNode, placeholders: Map<string, M
 
   const token = match[0];
   const placeholder = placeholders.get(token);
-  return placeholder?.kind === 'block' ? placeholder.value : null;
+  return placeholder?.kind === 'block' ? placeholder : null;
 }
 
 function collectDefinitions(root: MarkdownNode): DefinitionContext {
@@ -401,15 +409,17 @@ function flowToTiptap(
 ): JSONContent[] {
   switch (node.type) {
     case 'paragraph': {
-      const blockMathValue = getBlockMathPlaceholder(node, mathPlaceholders);
-      if (blockMathValue !== null) {
+      const blockMathPH = getBlockMathPlaceholder(node, mathPlaceholders);
+      if (blockMathPH !== null) {
         return [
           {
             type: 'inlineMath',
             attrs: {
               display: 'yes',
+              openDelim: blockMathPH.openDelim,
+              closeDelim: blockMathPH.closeDelim,
             },
-            content: blockMathValue ? [{ type: 'text', text: blockMathValue }] : undefined,
+            content: blockMathPH.value ? [{ type: 'text', text: blockMathPH.value }] : undefined,
           },
         ];
       }
@@ -584,11 +594,13 @@ function inlineToMarkdown(node: JSONContent): MarkdownNode[] {
       ];
     case 'inlineMath': {
       const mathValue = getMathValue(node);
-      // Block math (display=yes) → $$...$$; inline math → $...$
+      const openDelim = node.attrs?.openDelim;
+      const closeDelim = node.attrs?.closeDelim;
+      // Block math → $$...$$ (or \[...\]); inline math → $...$ (or \(...\))
       if (node.attrs?.display === 'yes') {
-        return [{ type: 'math', value: mathValue }];
+        return [{ type: 'math', value: mathValue, openDelim, closeDelim }];
       }
-      return [{ type: 'inlineMath', value: mathValue }];
+      return [{ type: 'inlineMath', value: mathValue, openDelim, closeDelim }];
     }
     case 'footnoteReference':
       return [
@@ -695,10 +707,12 @@ function flowToMarkdown(node: JSONContent): MarkdownNode[] {
       ];
     case 'inlineMath': {
       const mathValue = getMathValue(node);
+      const openDelim = node.attrs?.openDelim;
+      const closeDelim = node.attrs?.closeDelim;
       if (node.attrs?.display === 'yes') {
-        return [{ type: 'math', value: mathValue }];
+        return [{ type: 'math', value: mathValue, openDelim, closeDelim }];
       }
-      return [{ type: 'inlineMath', value: mathValue }];
+      return [{ type: 'inlineMath', value: mathValue, openDelim, closeDelim }];
     }
     case 'mermaidBlock':
       return [{ type: 'code', lang: 'mermaid', value: node.attrs?.code ?? '' }];
@@ -839,10 +853,23 @@ function stringifyInlineNode(node: MarkdownNode): string {
       return `![${String(node.alt ?? '')}](${String(node.url ?? '')}${node.title ? ` "${node.title}"` : ''})`;
     case 'break':
       return '\n';
-    case 'inlineMath':
-      return `$${String(node.value ?? '')}$`;
-    case 'math':
-      return `$$\n${String(node.value ?? '')}\n$$`;
+    case 'inlineMath': {
+      const val = String(node.value ?? '');
+      const open = (node as any).openDelim || '$';
+      const close = (node as any).closeDelim || '$';
+      return `${open}${val}${close}`;
+    }
+    case 'math': {
+      const val = String(node.value ?? '');
+      const open = (node as any).openDelim || '$$';
+      const close = (node as any).closeDelim || '$$';
+      const delimLen = Math.max(open.length, close.length);
+      // For multi-char delimiters like \[ \], put content on its own lines
+      if (delimLen > 1) {
+        return `${open}\n${val}\n${close}`;
+      }
+      return `${open}${val}${close}`;
+    }
     case 'footnoteReference':
       return `[^${String(node.label ?? node.identifier ?? '')}]`;
     case 'html':
