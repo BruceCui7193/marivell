@@ -1,11 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
+  ExportDocumentPayload,
   ExportStatus,
+  ExternalFileChangeAck,
   ExternalFileChangeEvent,
   MarkdownEditorApi,
   MenuAction,
   OpenedDocument,
   OpenedFolder,
+  PandocExportFormat,
+  PandocExportOptions,
   SaveDocumentPayload,
   SaveImagePayload,
   ThemeMode,
@@ -25,6 +29,18 @@ const api: MarkdownEditorApi = {
   saveImage: (payload: SaveImagePayload) => ipcRenderer.invoke('asset:save-image', payload),
   openExternal: (url: string) => ipcRenderer.invoke('shell:open-external', url),
   exportClipboardDebug: () => ipcRenderer.invoke('clipboard:export-debug'),
+  exportAsPdf: (payload: ExportDocumentPayload) => ipcRenderer.invoke('export:pdf', payload),
+  exportAsImage: (payload: ExportDocumentPayload) => ipcRenderer.invoke('export:image', payload),
+  exportWithPandoc: (
+    payload: ExportDocumentPayload,
+    format: PandocExportFormat,
+    options?: PandocExportOptions,
+  ) => ipcRenderer.invoke('export:pandoc', payload, format, options),
+  getExportCapabilities: () => ipcRenderer.invoke('export:capabilities'),
+  getPandocTemplates: () => ipcRenderer.invoke('export:pandoc-templates'),
+  setPandocTemplate: (format, templatePath) =>
+    ipcRenderer.invoke('export:pandoc-template-set', format, templatePath),
+  choosePandocTemplate: (format) => ipcRenderer.invoke('export:pandoc-template-choose', format),
   setTheme: (theme: ThemeMode) => ipcRenderer.invoke('theme:set', theme),
   setWindowDirty: (dirty: boolean) => ipcRenderer.invoke('window:set-dirty', dirty),
   setWindowDocumentState: (state: WindowDocumentState) =>
@@ -32,6 +48,8 @@ const api: MarkdownEditorApi = {
   respondSaveBeforeClose: (saved: boolean) => {
     ipcRenderer.send('window:save-before-close-result', saved);
   },
+  acknowledgeExternalFileChange: (payload: ExternalFileChangeAck) =>
+    ipcRenderer.invoke('file:external-change-ack', payload),
   onDocumentOpened: (callback: (document: OpenedDocument) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, document: OpenedDocument) => {
       callback(document);
@@ -90,6 +108,22 @@ const api: MarkdownEditorApi = {
     ipcRenderer.on('file:external-change', listener);
     return () => {
       ipcRenderer.removeListener('file:external-change', listener);
+    };
+  },
+  onExportPandocRequest: (
+    callback: (format: PandocExportFormat, options?: PandocExportOptions) => void,
+  ) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      format: PandocExportFormat,
+      options?: PandocExportOptions,
+    ) => {
+      callback(format, options);
+    };
+
+    ipcRenderer.on('export:pandoc-request', listener);
+    return () => {
+      ipcRenderer.removeListener('export:pandoc-request', listener);
     };
   },
 };

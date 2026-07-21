@@ -31,13 +31,23 @@ export const TypingShortcuts = Extension.create({
 
         if (trimmed === '$$' || trimmed === '\\[') {
           return this.editor.commands.command(({ tr, dispatch }) => {
-            const node = state.schema.nodes.mathBlock?.create({ value: '' });
-            if (!node) {
+            // Schema uses inlineMath with display="yes" for block formulas.
+            const mathType = state.schema.nodes.inlineMath;
+            if (!mathType) {
               return false;
             }
 
+            const node = mathType.create({
+              display: 'yes',
+              openDelim: trimmed === '\\[' ? '\\[' : '$$',
+              closeDelim: trimmed === '\\[' ? '\\]' : '$$',
+            });
+
             if (dispatch) {
-              dispatch(tr.replaceWith(from, to, node).scrollIntoView());
+              tr = tr.replaceWith(from, to, node);
+              // Place caret inside the empty math node for immediate editing.
+              tr = tr.setSelection(TextSelection.create(tr.doc, from + 1));
+              dispatch(tr.scrollIntoView());
             }
 
             return true;

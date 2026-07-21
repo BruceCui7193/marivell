@@ -20,8 +20,18 @@ import type { ThemePalette } from '../theme';
 import Toolbar from './Toolbar';
 import StatusBar from './StatusBar';
 import Sidebar from './Sidebar';
+import SourceEditor, { type SourceCursorInfo } from './SourceEditor';
+import ContextMenu, { type ContextMenuState } from './ContextMenu';
 import { createEditorExtensions } from '../editor/create-editor-extensions';
-import { parseMarkdown, serializeMarkdown, serializeMarkdownFragment } from '../editor/markdown';
+import {
+  serializeSliceForClipboard,
+  writeClipboardFromSelection,
+} from '../editor/clipboard';
+import {
+  buildSourceContextMenu,
+  buildVisualContextMenu,
+} from '../editor/context-menu-actions';
+import { parseMarkdown, serializeMarkdown } from '../editor/markdown';
 import {
   findSourceSearchMatches,
   findVisualSearchMatches,
@@ -47,6 +57,8 @@ interface EditorShellProps {
   onDocumentMetaChange: (dirty: boolean) => void;
   onOpenDocument: () => void;
   onOpenDocumentPath: (filePath: string) => void;
+  /** Reload from disk without an extra discard prompt (external change flow). */
+  onReloadDocumentPath: (filePath: string) => void | Promise<void>;
   onOpenFolder: () => void;
   onSaveDocument: (markdown?: string, stats?: DocumentStats) => Promise<boolean> | boolean;
   onSaveDocumentAs: (markdown?: string, stats?: DocumentStats) => Promise<boolean> | boolean;
@@ -120,23 +132,42 @@ function getEditorPlainText(editor: TiptapEditor): string {
 
 function extractOutlineFromEditor(editor: TiptapEditor): OutlineItem[] {
   const items: OutlineItem[] = [];
+  let blockIndex = 0;
 
+  editor.state.doc.forEach((node) => {
+    if (node.type.name === 'heading') {
+      const text = node.textContent.trim();
+      if (text) {
+        items.push({
+          id: `heading-pos-${blockIndex}-${items.length}`,
+          level: Number(node.attrs.level ?? 1),
+          text,
+          line: blockIndex,
+          start: -1,
+        });
+      }
+    }
+    blockIndex += 1;
+  });
+
+  // Prefer precise positions for scroll-to-heading when available.
+  let itemIdx = 0;
   editor.state.doc.descendants((node, position) => {
     if (node.type.name !== 'heading') {
       return true;
     }
-
     const text = node.textContent.trim();
     if (!text) {
       return true;
     }
-
-    items.push({
-      id: `heading-${position}-${items.length}`,
-      level: Number(node.attrs.level ?? 1),
-      text,
-    });
-
+    if (items[itemIdx]) {
+      items[itemIdx] = {
+        ...items[itemIdx],
+        id: `heading-${position}-${itemIdx}`,
+        start: position,
+      };
+      itemIdx += 1;
+    }
     return true;
   });
 
@@ -322,6 +353,9 @@ interface EditorViewportProps {
   onFrameMouseDown: (event: MouseEvent<HTMLDivElement>) => void;
   onSourceChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
   onSourceSelect: (event: SyntheticEvent<HTMLTextAreaElement>) => void;
+  onSourceCursorChange: (info: SourceCursorInfo) => void;
+  onSourceContextMenu: (event: React.MouseEvent<HTMLTextAreaElement>) => void;
+  onVisualContextMenu: (event: React.MouseEvent<HTMLDivElement>) => void;
 }
 
 const EditorViewport = memo(function EditorViewport({
@@ -337,12 +371,16 @@ const EditorViewport = memo(function EditorViewport({
   onFrameMouseDown,
   onSourceChange,
   onSourceSelect,
+  onSourceCursorChange,
+  onSourceContextMenu,
+  onVisualContextMenu,
 }: EditorViewportProps) {
   return (
     <div
       ref={editorFrameRef}
       className={sourceMode ? 'editor-frame is-source' : 'editor-frame'}
       onMouseDown={onFrameMouseDown}
+      onContextMenu={sourceMode ? undefined : onVisualContextMenu}
     >
       {loading ? <div className="editor-loading">正在载入文档...</div> : null}
       {modeSwitching ? (
@@ -353,16 +391,16 @@ const EditorViewport = memo(function EditorViewport({
       ) : null}
       {searchPanel}
       {sourceMode ? (
-        <textarea
+        <SourceEditor
           ref={sourceTextareaRef}
-          className="editor-source"
+          value={sourceDraft}
           onChange={onSourceChange}
           onSelect={onSourceSelect}
-          spellCheck={false}
-          value={sourceDraft}
+          onCursorChange={onSourceCursorChange}
+          onContextMenu={onSourceContextMenu}
         />
       ) : (
-        <div ref={editorHostRef}>
+        <div ref={editorHostRef} onContextMenu={onVisualContextMenu}>
           <EditorContent editor={editor} />
         </div>
       )}
@@ -495,6 +533,7 @@ export default function EditorShell({
   onDocumentMetaChange,
   onOpenDocument,
   onOpenDocumentPath,
+  onReloadDocumentPath,
   onOpenFolder,
   onSaveDocument,
   onSaveDocumentAs,
@@ -522,6 +561,8 @@ export default function EditorShell({
   const windowDirtyRef = useRef(document.dirty);
   const skipNextDocChangeRef = useRef(true);
   const skipNextDocChangeTimerRef = useRef<number | null>(null);
+  /** True only after the user actually edits in visual mode (not mode-switch loads). */
+  const visualDocEditedRef = useRef(false);
   const pendingVisualMetaSyncRef = useRef<number | null>(null);
   const pendingVisualDocumentSyncRef = useRef<IdleHandle | null>(null);
   const pendingModeSwitchScrollRatioRef = useRef<number | null>(null);
@@ -570,6 +611,13 @@ export default function EditorShell({
   const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
   const [searchCurrentIndex, setSearchCurrentIndex] = useState(0);
   const [visualSearchRevision, setVisualSearchRevision] = useState(0);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [sourceCursor, setSourceCursor] = useState<SourceCursorInfo>({
+    line: 1,
+    column: 1,
+    start: 0,
+    end: 0,
+  });
 
   useEffect(() => {
     documentPathRef.current = document.path;
@@ -678,67 +726,66 @@ export default function EditorShell({
 
   const restoreVisualSelectionFromMarkedContent = useCallback((targetEditor: TiptapEditor) => {
     const { state, view } = targetEditor;
-    const removalEntries: Array<
-      | {
-          kind: 'text';
-          from: number;
-          to: number;
-          text: string;
-          startPos?: number;
-          endPos?: number;
-        }
-      | {
-          kind: 'math';
-          pos: number;
-          value: string;
-          startOffset?: number;
-          endOffset?: number;
-        }
-    > = [];
+    const removalEntries: Array<{
+      from: number;
+      to: number;
+      text: string;
+      startPos?: number;
+      endPos?: number;
+      mathPos?: number;
+      mathStartOffset?: number;
+      mathEndOffset?: number;
+    }> = [];
 
     state.doc.descendants((node, pos) => {
-      if (node.isText && node.text && node.text.includes('MDEDITORSELECTION')) {
-        const startIndex = node.text.indexOf(SELECTION_START_MARKER);
-        const endIndex = node.text.indexOf(SELECTION_END_MARKER);
-        removalEntries.push({
-          kind: 'text',
-          from: pos,
-          to: pos + node.text.length,
-          text: node.text
-            .replace(SELECTION_START_MARKER, '')
-            .replace(SELECTION_END_MARKER, ''),
-          startPos: startIndex === -1 ? undefined : pos + startIndex,
-          endPos:
-            endIndex === -1
-              ? undefined
-              : pos +
-                endIndex -
-                (startIndex !== -1 && startIndex < endIndex ? SELECTION_START_MARKER.length : 0),
-        });
+      // Markers always live in text nodes (including text inside inlineMath).
+      if (!node.isText || !node.text || !node.text.includes('MDEDITORSELECTION')) {
         return true;
       }
 
-      if (
-        (node.type.name === 'mathInline' || node.type.name === 'mathBlock') &&
-        String(node.attrs.value ?? '').includes('MDEDITORSELECTION')
-      ) {
-        const value = String(node.attrs.value ?? '');
-        const startIndex = value.indexOf(SELECTION_START_MARKER);
-        const endIndex = value.indexOf(SELECTION_END_MARKER);
-        removalEntries.push({
-          kind: 'math',
-          pos,
-          value: value.replace(SELECTION_START_MARKER, '').replace(SELECTION_END_MARKER, ''),
-          startOffset: startIndex === -1 ? undefined : startIndex,
-          endOffset:
-            endIndex === -1
-              ? undefined
-              : endIndex -
-                (startIndex !== -1 && startIndex < endIndex ? SELECTION_START_MARKER.length : 0),
-        });
-        return false;
+      const startIndex = node.text.indexOf(SELECTION_START_MARKER);
+      const endIndex = node.text.indexOf(SELECTION_END_MARKER);
+      const cleaned = node.text
+        .replace(SELECTION_START_MARKER, '')
+        .replace(SELECTION_END_MARKER, '');
+
+      // After removing markers, cursor offsets within this text node shrink by
+      // the marker lengths that sit before them.
+      let startPos: number | undefined;
+      let endPos: number | undefined;
+      if (startIndex !== -1) {
+        startPos = pos + startIndex;
+      }
+      if (endIndex !== -1) {
+        const adjustment =
+          startIndex !== -1 && startIndex < endIndex ? SELECTION_START_MARKER.length : 0;
+        endPos = pos + endIndex - adjustment;
       }
 
+      const $pos = state.doc.resolve(pos);
+      let mathPos: number | undefined;
+      for (let depth = $pos.depth; depth > 0; depth -= 1) {
+        if ($pos.node(depth).type.name === 'inlineMath') {
+          mathPos = $pos.before(depth);
+          break;
+        }
+      }
+
+      removalEntries.push({
+        from: pos,
+        to: pos + node.text.length,
+        text: cleaned,
+        startPos,
+        endPos,
+        mathPos,
+        mathStartOffset:
+          mathPos !== undefined && startIndex !== -1 ? startIndex : undefined,
+        mathEndOffset:
+          mathPos !== undefined && endIndex !== -1
+            ? endIndex -
+              (startIndex !== -1 && startIndex < endIndex ? SELECTION_START_MARKER.length : 0)
+            : undefined,
+      });
       return true;
     });
 
@@ -746,11 +793,8 @@ export default function EditorShell({
       return false;
     }
 
-    const orderedEntries = [...removalEntries].sort((left, right) => {
-      const leftPos = left.kind === 'text' ? left.from : left.pos;
-      const rightPos = right.kind === 'text' ? right.from : right.pos;
-      return rightPos - leftPos;
-    });
+    // Apply from the end of the document so earlier absolute positions stay valid.
+    const orderedEntries = [...removalEntries].sort((left, right) => right.from - left.from);
 
     let tr = state.tr;
     let startPos: number | null = null;
@@ -758,69 +802,63 @@ export default function EditorShell({
     let mathSelection: { pos: number; start: number; end: number } | null = null;
 
     for (const entry of orderedEntries) {
-      if (entry.kind === 'text') {
-        if (entry.startPos !== undefined) {
-          startPos = entry.startPos;
-        }
-        if (entry.endPos !== undefined) {
-          endPos = entry.endPos;
-        }
-
-        tr = tr.insertText(entry.text, entry.from, entry.to);
-        continue;
+      if (entry.startPos !== undefined) {
+        startPos = entry.startPos;
+      }
+      if (entry.endPos !== undefined) {
+        endPos = entry.endPos;
+      }
+      if (entry.mathPos !== undefined && (entry.mathStartOffset !== undefined || entry.mathEndOffset !== undefined)) {
+        mathSelection = {
+          pos: entry.mathPos,
+          start: entry.mathStartOffset ?? entry.mathEndOffset ?? 0,
+          end: entry.mathEndOffset ?? entry.mathStartOffset ?? 0,
+        };
       }
 
-      if (entry.startOffset !== undefined) {
-        startPos = entry.pos;
-      }
-      if (entry.endOffset !== undefined) {
-        endPos = entry.pos;
-      }
-
-      const node = tr.doc.nodeAt(entry.pos);
-      if (!node) {
-        continue;
-      }
-
-      tr = tr.setNodeMarkup(entry.pos, undefined, {
-        ...node.attrs,
-        value: entry.value,
-      });
-
-      mathSelection = {
-        pos: entry.pos,
-        start: entry.startOffset ?? 0,
-        end: entry.endOffset ?? entry.startOffset ?? 0,
-      };
+      tr = tr.insertText(entry.text, entry.from, entry.to);
     }
 
     if (startPos !== null || endPos !== null) {
-      const mappedStart = tr.mapping.map(startPos ?? endPos ?? 1, -1);
-      const mappedEnd = tr.mapping.map(endPos ?? startPos ?? 1, -1);
-      tr = tr.setSelection(TextSelection.create(tr.doc, mappedStart, mappedEnd));
+      try {
+        // Positions before the first (lowest) replacement are unchanged because
+        // we applied replacements from high → low. Positions inside a replaced
+        // node were computed after marker removal and still point at the caret.
+        const safeStart = Math.max(1, Math.min(startPos ?? endPos ?? 1, tr.doc.content.size));
+        const safeEnd = Math.max(safeStart, Math.min(endPos ?? startPos ?? 1, tr.doc.content.size));
+        tr = tr.setSelection(TextSelection.create(tr.doc, safeStart, safeEnd));
+      } catch {
+        // Keep the content fix even if selection restore fails.
+      }
       view.dispatch(tr);
       view.focus();
       return true;
     }
 
     if (mathSelection) {
-      const mappedPos = tr.mapping.map(mathSelection.pos, -1);
-      tr = tr.setSelection(NodeSelection.create(tr.doc, mappedPos));
-      view.dispatch(tr);
-      view.focus();
-      window.dispatchEvent(
-        new CustomEvent('markdown-editor:focus-math-search-match', {
-          detail: {
-            pos: mappedPos,
-            start: mathSelection.start,
-            end: mathSelection.end,
-          },
-        }),
-      );
-      return true;
+      try {
+        tr = tr.setSelection(NodeSelection.create(tr.doc, mathSelection.pos));
+        view.dispatch(tr);
+        view.focus();
+        window.dispatchEvent(
+          new CustomEvent('markdown-editor:focus-math-search-match', {
+            detail: {
+              pos: mathSelection.pos,
+              start: mathSelection.start,
+              end: mathSelection.end,
+            },
+          }),
+        );
+        return true;
+      } catch {
+        view.dispatch(tr);
+        return true;
+      }
     }
 
-    return false;
+    // Markers removed but no caret positions recovered — still commit the cleanup.
+    view.dispatch(tr);
+    return true;
   }, []);
 
   const parseMarkdownInWorker = useCallback((markdown: string) => {
@@ -922,21 +960,33 @@ export default function EditorShell({
     };
   }, []);
 
+  // Sync source draft only when the document changes externally (open file /
+  // reload). Do NOT reset the caret on every local keystroke — that used to
+  // jump the selection to the end of the file while editing in source mode,
+  // and also fought with the visual↔source selection restore path.
   useEffect(() => {
-    if (sourceMode) {
-      setSourceDraft(document.markdown);
-      sourceSelectionRef.current = {
-        start: document.markdown.length,
-        end: document.markdown.length,
-      };
-      sourcePreviewCacheRef.current = null;
-      const nextStats = computeSourceStats(document.markdown);
-      setLiveStats((current) => (areStatsEqual(current, nextStats) ? current : nextStats));
-      setLiveDirty(document.dirty);
-      const nextOutline = extractOutline(document.markdown);
-      setOutline((current) => (areOutlinesEqual(current, nextOutline) ? current : nextOutline));
-      onDocumentMetaChange(document.dirty);
+    if (!sourceMode) {
+      return;
     }
+
+    // Local source edits already keep sourceDraft / document.markdown in sync.
+    if (document.markdown === sourceDraftRef.current) {
+      setLiveDirty(document.dirty);
+      return;
+    }
+
+    setSourceDraft(document.markdown);
+    sourceSelectionRef.current = {
+      start: document.markdown.length,
+      end: document.markdown.length,
+    };
+    sourcePreviewCacheRef.current = null;
+    const nextStats = computeSourceStats(document.markdown);
+    setLiveStats((current) => (areStatsEqual(current, nextStats) ? current : nextStats));
+    setLiveDirty(document.dirty);
+    const nextOutline = extractOutline(document.markdown);
+    setOutline((current) => (areOutlinesEqual(current, nextOutline) ? current : nextOutline));
+    onDocumentMetaChange(document.dirty);
   }, [document.dirty, document.markdown, onDocumentMetaChange, sourceMode]);
 
   useEffect(() => {
@@ -983,29 +1033,30 @@ export default function EditorShell({
   );
 
   const handleClipboardTextSerialize = useCallback(
-    (slice: { content: { toJSON: () => unknown } }) => {
-      const content = slice.content.toJSON() as Parameters<typeof serializeMarkdownFragment>[0];
-      return serializeMarkdownFragment(content).trimEnd();
+    (slice: { content: { toJSON: () => unknown }; openStart?: number; openEnd?: number }) => {
+      return serializeSliceForClipboard(slice);
     },
     [],
   );
 
   const handleEditorCopy = useCallback((view: TiptapEditor['view'], event: Event) => {
+    return writeClipboardFromSelection(view, event as ClipboardEvent);
+  }, []);
+
+  const handleEditorCut = useCallback((view: TiptapEditor['view'], event: Event) => {
     const clipboardEvent = event as ClipboardEvent;
     if (view.state.selection.empty || !clipboardEvent.clipboardData) {
       return false;
     }
 
-    const content = view.state.selection.content().content.toJSON() as Parameters<
-      typeof serializeMarkdownFragment
-    >[0];
-    const markdown = serializeMarkdownFragment(content).trimEnd();
-    if (!markdown) {
+    const wrote = writeClipboardFromSelection(view, clipboardEvent);
+    if (!wrote) {
       return false;
     }
 
-    clipboardEvent.clipboardData.setData('text/plain', markdown);
-    clipboardEvent.preventDefault();
+    // Delete the selection after writing the clipboard (cut semantics).
+    const { state, dispatch } = view;
+    dispatch(state.tr.deleteSelection().scrollIntoView());
     return true;
   }, []);
 
@@ -1035,10 +1086,11 @@ export default function EditorShell({
       clipboardTextSerializer: handleClipboardTextSerialize,
       handleDOMEvents: {
         copy: handleEditorCopy,
+        cut: handleEditorCut,
       },
       handleClick: handleEditorClick,
     }),
-    [handleClipboardTextSerialize, handleEditorClick, handleEditorCopy],
+    [handleClipboardTextSerialize, handleEditorClick, handleEditorCopy, handleEditorCut],
   );
 
   const editor = useEditor({
@@ -1078,12 +1130,21 @@ export default function EditorShell({
 
       if (skipNextDocChangeRef.current) {
         skipNextDocChangeRef.current = false;
+        // Programmatic setContent from mode switch / file load — not a user edit.
+        visualDocEditedRef.current = false;
         if (!largeDocumentModeRef.current) {
-          const canonicalMarkdown = serializeMarkdown(nextEditor.getJSON());
+          // Keep lastEmittedMarkdownRef as the canonical source string when we
+          // just loaded from source; do not overwrite it with a re-serialize
+          // that may normalize delimiters / spacing and look like "tampering".
           const stats = calculateDocumentStats(getEditorPlainText(nextEditor));
-          visualMarkdownRef.current = canonicalMarkdown;
           visualStatsRef.current = stats;
-          lastEmittedMarkdownRef.current = canonicalMarkdown;
+          if (!lastEmittedMarkdownRef.current) {
+            const canonicalMarkdown = serializeMarkdown(nextEditor.getJSON());
+            visualMarkdownRef.current = canonicalMarkdown;
+            lastEmittedMarkdownRef.current = canonicalMarkdown;
+          } else {
+            visualMarkdownRef.current = lastEmittedMarkdownRef.current;
+          }
         }
         setLiveDirty(false);
         if (searchPanelOpenRef.current) {
@@ -1091,6 +1152,8 @@ export default function EditorShell({
         }
         return;
       }
+
+      visualDocEditedRef.current = true;
 
       if (!windowDirtyRef.current) {
         windowDirtyRef.current = true;
@@ -1173,7 +1236,14 @@ export default function EditorShell({
       pendingVisualDocumentSyncRef.current = null;
     }
 
-    const markdown = serializeMarkdown(targetEditor.getJSON());
+    // If the user only toggled modes without editing visually, prefer the
+    // last canonical markdown (source or last emitted) over a re-serialize
+    // that can rewrite task lists, math delimiters, etc.
+    const markdown = visualDocEditedRef.current
+      ? serializeMarkdown(targetEditor.getJSON())
+      : lastEmittedMarkdownRef.current ||
+        visualMarkdownRef.current ||
+        serializeMarkdown(targetEditor.getJSON());
     const stats = calculateDocumentStats(getEditorPlainText(targetEditor));
     visualMarkdownRef.current = markdown;
     visualStatsRef.current = stats;
@@ -1213,8 +1283,9 @@ export default function EditorShell({
     const scrollEl = sourceModeRef.current
       ? sourceTextareaRef.current
       : editorFrameRef.current;
-    if (scrollEl) {
-      scrollMemoryRef.current.set(prevDocPathRef.current, computeScrollRatio(scrollEl));
+    const previousPath = prevDocPathRef.current;
+    if (scrollEl && previousPath) {
+      scrollMemoryRef.current.set(previousPath, computeScrollRatio(scrollEl));
     }
     prevDocPathRef.current = document.path;
   }, [document.path]);
@@ -1236,7 +1307,8 @@ export default function EditorShell({
     editor.setEditable(false);
 
     // Queue scroll restoration for after the content loads.
-    const savedRatio = scrollMemoryRef.current.get(document.path);
+    const pathKey = document.path;
+    const savedRatio = pathKey ? scrollMemoryRef.current.get(pathKey) : undefined;
     if (savedRatio != null) {
       pendingScrollRestoreRef.current = savedRatio;
     }
@@ -1250,15 +1322,17 @@ export default function EditorShell({
 
           externalUpdateRef.current = true;
           armSkipNextDocChange();
+          visualDocEditedRef.current = false;
           editor.commands.setContent(parseMarkdown(document.markdown), false);
           externalUpdateRef.current = false;
 
-          const canonicalMarkdown = serializeMarkdown(editor.getJSON());
+          // Keep the file's original markdown as canonical so a load+mode-switch
+          // does not rewrite the document via parse/serialize normalization.
           const stats = calculateDocumentStats(getEditorPlainText(editor));
           const nextOutline = extractOutline(document.markdown);
-          visualMarkdownRef.current = canonicalMarkdown;
+          visualMarkdownRef.current = document.markdown;
           visualStatsRef.current = stats;
-          lastEmittedMarkdownRef.current = canonicalMarkdown;
+          lastEmittedMarkdownRef.current = document.markdown;
           setOutline((current) => (areOutlinesEqual(current, nextOutline) ? current : nextOutline));
           setLiveStats((current) => (areStatsEqual(current, stats) ? current : stats));
           setLiveDirty(document.dirty);
@@ -1272,6 +1346,7 @@ export default function EditorShell({
           const emptyStats = computeSourceStats('');
           externalUpdateRef.current = true;
           armSkipNextDocChange();
+          visualDocEditedRef.current = false;
           editor.commands.setContent(createEmptyDocument(), false);
           externalUpdateRef.current = false;
           visualMarkdownRef.current = '';
@@ -1300,14 +1375,14 @@ export default function EditorShell({
 
         externalUpdateRef.current = true;
         armSkipNextDocChange();
+        visualDocEditedRef.current = false;
         editor.commands.setContent(result.content, false);
         externalUpdateRef.current = false;
 
-        const canonicalMarkdown = serializeMarkdown(editor.getJSON());
         const stats = calculateDocumentStats(getEditorPlainText(editor));
-        visualMarkdownRef.current = canonicalMarkdown;
+        visualMarkdownRef.current = document.markdown;
         visualStatsRef.current = stats;
-        lastEmittedMarkdownRef.current = canonicalMarkdown;
+        lastEmittedMarkdownRef.current = document.markdown;
         setOutline((current) => (areOutlinesEqual(current, result.outline) ? current : result.outline));
         setLiveStats((current) => (areStatsEqual(current, stats) ? current : stats));
         setLiveDirty(document.dirty);
@@ -1326,15 +1401,15 @@ export default function EditorShell({
 
           externalUpdateRef.current = true;
           armSkipNextDocChange();
+          visualDocEditedRef.current = false;
           editor.commands.setContent(parseMarkdown(document.markdown), false);
           externalUpdateRef.current = false;
 
-          const canonicalMarkdown = serializeMarkdown(editor.getJSON());
           const stats = calculateDocumentStats(getEditorPlainText(editor));
           const nextOutline = extractOutline(document.markdown);
-          visualMarkdownRef.current = canonicalMarkdown;
+          visualMarkdownRef.current = document.markdown;
           visualStatsRef.current = stats;
-          lastEmittedMarkdownRef.current = canonicalMarkdown;
+          lastEmittedMarkdownRef.current = document.markdown;
           setOutline((current) => (areOutlinesEqual(current, nextOutline) ? current : nextOutline));
           setLiveStats((current) => (areStatsEqual(current, stats) ? current : stats));
           setLiveDirty(document.dirty);
@@ -1348,6 +1423,7 @@ export default function EditorShell({
           const emptyStats = computeSourceStats('');
           externalUpdateRef.current = true;
           armSkipNextDocChange();
+          visualDocEditedRef.current = false;
           editor.commands.setContent(createEmptyDocument(), false);
           externalUpdateRef.current = false;
           visualMarkdownRef.current = '';
@@ -1859,12 +1935,22 @@ export default function EditorShell({
       if (!current) {
         pendingVisualSelectionRestoreRef.current = false;
         if (editor) {
-          flushVisualSync(editor);
+          const hadVisualEdits = visualDocEditedRef.current;
+          const flushed = flushVisualSync(editor);
+          // Marker pass is only used for caret mapping. Content prefers the
+          // canonical flushed string so we do not rewrite unedited documents.
           const sourceState = buildSourceDraftFromVisualSelection(editor);
-          pendingSourceSelectionRef.current = sourceState.selection;
-          sourceSelectionRef.current = sourceState.selection;
-          setSourceDraft(sourceState.markdown);
-          queueSourcePreview(sourceState.markdown, sourceState.selection);
+          const markdown = flushed?.markdown ?? sourceState.markdown;
+          const selection = clampSourceSelection(
+            !hadVisualEdits && sourceState.markdown !== markdown
+              ? { start: markdown.length, end: markdown.length }
+              : sourceState.selection,
+            markdown,
+          );
+          pendingSourceSelectionRef.current = selection;
+          sourceSelectionRef.current = selection;
+          setSourceDraft(markdown);
+          queueSourcePreview(markdown, selection);
           return true;
         }
 
@@ -1896,16 +1982,19 @@ export default function EditorShell({
           cachedPreview.markdown === markdown &&
           isSameSourceSelection(cachedPreview.selection, selection);
 
-        if (!cacheHit) {
-          const markedContent = parseMarkdown(
-            insertSelectionMarkersIntoMarkdown(markdown, selection.start, selection.end),
-          );
+        // Always apply content. The previous cache-hit path skipped setContent,
+        // leaving the visual editor on stale document content after source edits.
+        const markedContent = cacheHit
+          ? cachedPreview.content
+          : parseMarkdown(
+              insertSelectionMarkersIntoMarkdown(markdown, selection.start, selection.end),
+            );
 
-          externalUpdateRef.current = true;
-          armSkipNextDocChange();
-          editor.commands.setContent(markedContent, false);
-          externalUpdateRef.current = false;
-        }
+        externalUpdateRef.current = true;
+        armSkipNextDocChange();
+        visualDocEditedRef.current = false;
+        editor.commands.setContent(markedContent, false);
+        externalUpdateRef.current = false;
 
         pendingVisualSelectionRestoreRef.current = true;
         const stats = computeSourceStats(markdown);
@@ -1955,6 +2044,79 @@ export default function EditorShell({
     });
   }, [toggleSourceModePreservingViewport]);
 
+  const jumpSourceToOffset = useCallback((start: number, end = start) => {
+    const input = sourceTextareaRef.current;
+    const markdown = sourceDraftRef.current;
+    const safeStart = Math.max(0, Math.min(start, markdown.length));
+    const safeEnd = Math.max(safeStart, Math.min(end, markdown.length));
+    sourceSelectionRef.current = { start: safeStart, end: safeEnd };
+
+    requestAnimationFrame(() => {
+      if (!input) {
+        return;
+      }
+      input.focus();
+      input.setSelectionRange(safeStart, safeEnd);
+      const ratio = markdown.length > 0 ? safeStart / markdown.length : 0;
+      const maxScroll = Math.max(input.scrollHeight - input.clientHeight, 0);
+      input.scrollTop = Math.max(0, maxScroll * ratio - input.clientHeight * 0.25);
+    });
+  }, []);
+
+  const handleGoToLine = useCallback(() => {
+    if (!sourceModeRef.current) {
+      if (!editor) {
+        return;
+      }
+      const raw = window.prompt('跳转到行号', '1');
+      if (!raw) {
+        return;
+      }
+      const targetLine = Math.max(1, Number.parseInt(raw, 10) || 1);
+      let line = 1;
+      let found = 1;
+      editor.state.doc.descendants((node, pos) => {
+        if (line > targetLine) {
+          return false;
+        }
+        if (node.isTextblock) {
+          if (line === targetLine) {
+            found = pos + 1;
+            return false;
+          }
+          line += 1;
+        }
+        return true;
+      });
+      try {
+        const selection = TextSelection.create(editor.state.doc, found);
+        editor.view.dispatch(editor.state.tr.setSelection(selection).scrollIntoView());
+        editor.view.focus();
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const raw = window.prompt('跳转到行号', String(sourceCursor.line || 1));
+    if (!raw) {
+      return;
+    }
+    const targetLine = Math.max(1, Number.parseInt(raw, 10) || 1);
+    const markdown = sourceDraftRef.current;
+    let offset = 0;
+    let current = 1;
+    for (const part of markdown.split('\n')) {
+      if (current === targetLine) {
+        jumpSourceToOffset(offset, offset + part.length);
+        return;
+      }
+      offset += part.length + 1;
+      current += 1;
+    }
+    jumpSourceToOffset(Math.max(0, markdown.length));
+  }, [editor, jumpSourceToOffset, sourceCursor.line]);
+
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
@@ -1966,11 +2128,13 @@ export default function EditorShell({
       const activeInEditorSurface =
         activeElement instanceof HTMLElement &&
         (Boolean(activeElement.closest('.ProseMirror')) ||
-          Boolean(activeElement.closest('.editor-source')));
+          Boolean(activeElement.closest('.editor-source')) ||
+          Boolean(activeElement.closest('.source-editor')));
       const activeInEmbeddedInput =
         activeElement instanceof HTMLInputElement ||
         (activeElement instanceof HTMLTextAreaElement &&
-          !activeElement.classList.contains('editor-source'));
+          !activeElement.classList.contains('editor-source') &&
+          !activeElement.classList.contains('source-editor__input'));
 
       if (
         searchOpen &&
@@ -2019,6 +2183,12 @@ export default function EditorShell({
       if ((event.ctrlKey || event.metaKey) && key === 'h') {
         event.preventDefault();
         openSearchPanel(true);
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && key === 'g') {
+        event.preventDefault();
+        handleGoToLine();
         return;
       }
 
@@ -2084,6 +2254,7 @@ export default function EditorShell({
   }, [
     closeSearchPanel,
     editor,
+    handleGoToLine,
     jumpToSearchMatch,
     onSaveDocument,
     onSaveDocumentAs,
@@ -2093,33 +2264,67 @@ export default function EditorShell({
     toggleSourceModeWithTransition,
   ]);
 
+  const externalChangePromptRef = useRef(false);
+
   useEffect(() => {
     return window.markdownEditor.onExternalFileChange((event) => {
-      if (event.kind === 'deleted') {
-        const shouldSave = window.confirm(
-          `文档 "${event.title}" 已被外部程序删除。\n\n是否另存为以保留当前内容？`,
-        );
-        if (shouldSave) {
-          const visualState = sourceModeRef.current ? null : flushVisualSync();
-          void onSaveDocumentAs(
-            sourceModeRef.current ? sourceDraftRef.current : visualState?.markdown,
-            sourceModeRef.current
-              ? computeSourceStats(sourceDraftRef.current)
-              : visualState?.stats,
-          );
-        }
+      // Single-flight: never stack multiple native confirms for the same burst.
+      if (externalChangePromptRef.current) {
+        void window.markdownEditor.acknowledgeExternalFileChange({
+          path: event.path,
+          dismissed: true,
+        });
         return;
       }
 
-      // File changed externally
-      const shouldReload = window.confirm(
-        `文档 "${event.title}" 已被外部程序修改。\n\n是否重新加载最新内容？\n\n注意：重新加载将丢弃当前未保存的修改。`,
-      );
-      if (shouldReload) {
-        void window.markdownEditor.openDocumentPath(event.path);
-      }
+      externalChangePromptRef.current = true;
+
+      void (async () => {
+        try {
+          if (event.kind === 'deleted') {
+            const shouldSave = window.confirm(
+              `文档 "${event.title}" 已被外部程序删除。\n\n是否另存为以保留当前内容？`,
+            );
+            void window.markdownEditor.acknowledgeExternalFileChange({
+              path: event.path,
+              dismissed: !shouldSave,
+            });
+            if (shouldSave) {
+              const visualState = sourceModeRef.current ? null : flushVisualSync();
+              await onSaveDocumentAs(
+                sourceModeRef.current ? sourceDraftRef.current : visualState?.markdown,
+                sourceModeRef.current
+                  ? computeSourceStats(sourceDraftRef.current)
+                  : visualState?.stats,
+              );
+            }
+            return;
+          }
+
+          const shouldReload = window.confirm(
+            `文档 "${event.title}" 已被外部程序修改。\n\n是否重新加载最新内容？\n\n注意：重新加载将丢弃当前未保存的修改。`,
+          );
+
+          if (!shouldReload) {
+            void window.markdownEditor.acknowledgeExternalFileChange({
+              path: event.path,
+              dismissed: true,
+            });
+            return;
+          }
+
+          // Apply the reloaded document into React state (IPC-only open was a no-op).
+          await onReloadDocumentPath(event.path);
+          void window.markdownEditor.acknowledgeExternalFileChange({
+            path: event.path,
+            reloaded: true,
+          });
+        } finally {
+          externalChangePromptRef.current = false;
+        }
+      })();
     });
-  }, [onSaveDocumentAs, editor]);
+  }, [onReloadDocumentPath, onSaveDocumentAs]);
 
   useEffect(() => {
     return window.markdownEditor.onRequestSaveBeforeClose(() => {
@@ -2134,10 +2339,37 @@ export default function EditorShell({
     });
   }, [onSaveDocument, editor]);
 
+  const getExportPayload = useCallback(() => {
+    const visualState = sourceModeRef.current ? null : flushVisualSync();
+    const markdown = sourceModeRef.current
+      ? sourceDraftRef.current
+      : visualState?.markdown ?? documentMarkdownRef.current;
+
+    return {
+      markdown,
+      title: document.title,
+      documentPath: documentPathRef.current,
+    };
+  }, [document.title]);
+
+  useEffect(() => {
+    const offPandoc = window.markdownEditor.onExportPandocRequest((format, options) => {
+      void window.markdownEditor.exportWithPandoc(getExportPayload(), format, options);
+    });
+    return offPandoc;
+  }, [getExportPayload]);
+
   useEffect(() => {
     const handler = (event: Event) => {
       const menuEvent = event as CustomEvent<
-        'save-document' | 'save-document-as' | 'toggle-source-mode' | 'toggle-toolbar' | 'toggle-sidebar'
+        | 'save-document'
+        | 'save-document-as'
+        | 'toggle-source-mode'
+        | 'toggle-toolbar'
+        | 'toggle-sidebar'
+        | 'export-pdf'
+        | 'export-image'
+        | 'export-pandoc'
       >;
       if (menuEvent.detail === 'save-document') {
         const visualState = sourceModeRef.current ? null : flushVisualSync();
@@ -2154,6 +2386,16 @@ export default function EditorShell({
           sourceModeRef.current ? sourceDraftRef.current : visualState?.markdown,
           sourceModeRef.current ? computeSourceStats(sourceDraftRef.current) : visualState?.stats,
         );
+        return;
+      }
+
+      if (menuEvent.detail === 'export-pdf') {
+        void window.markdownEditor.exportAsPdf(getExportPayload());
+        return;
+      }
+
+      if (menuEvent.detail === 'export-image') {
+        void window.markdownEditor.exportAsImage(getExportPayload());
         return;
       }
 
@@ -2176,7 +2418,7 @@ export default function EditorShell({
     return () => {
       window.removeEventListener('markdown-editor:menu-action', handler as EventListener);
     };
-  }, [toggleSourceModeWithTransition]);
+  }, [getExportPayload, onSaveDocument, onSaveDocumentAs, toggleSourceModeWithTransition]);
 
   const handleFrameMouseDown = useCallback(
     (event: MouseEvent<HTMLDivElement>) => {
@@ -2238,6 +2480,21 @@ export default function EditorShell({
     [queueSourcePreview],
   );
 
+  const handleSourceCursorChange = useCallback((info: SourceCursorInfo) => {
+    setSourceCursor((current) =>
+      current.line === info.line &&
+      current.column === info.column &&
+      current.start === info.start &&
+      current.end === info.end
+        ? current
+        : info,
+    );
+  }, []);
+
+  const closeContextMenu = useCallback(() => {
+    setContextMenu(null);
+  }, []);
+
   const handleToolbarSave = useCallback(() => {
     const visualState = sourceModeRef.current ? null : flushVisualSync();
     void onSaveDocument(
@@ -2258,6 +2515,56 @@ export default function EditorShell({
     fileInputRef.current?.click();
   }, []);
 
+  const handleSourceContextMenu = useCallback(
+    (event: React.MouseEvent<HTMLTextAreaElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const textarea = event.currentTarget;
+      setContextMenu({
+        x: event.clientX,
+        y: event.clientY,
+        items: buildSourceContextMenu({
+          textarea,
+          onFind: () => openSearchPanel(false),
+          onFindReplace: () => openSearchPanel(true),
+          onGoToLine: handleGoToLine,
+          onToggleVisual: () => toggleSourceModeWithTransition(),
+        }),
+      });
+    },
+    [handleGoToLine, openSearchPanel, toggleSourceModeWithTransition],
+  );
+
+  const handleVisualContextMenu = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('input, textarea:not(.source-editor__input), select, .search-panel, .toolbar, .sidebar')) {
+        return;
+      }
+
+      if (!editor) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      setContextMenu({
+        x: event.clientX,
+        y: event.clientY,
+        items: buildVisualContextMenu({
+          editor,
+          onFind: () => openSearchPanel(false),
+          onFindReplace: () => openSearchPanel(true),
+          onGoToLine: handleGoToLine,
+          onInsertImage: handleInsertImage,
+          onToggleSource: () => toggleSourceModeWithTransition(),
+        }),
+      });
+    },
+    [editor, handleGoToLine, handleInsertImage, openSearchPanel, toggleSourceModeWithTransition],
+  );
+
   const handleToggleSidebar = useCallback(() => {
     setSidebarVisible((current) => !current);
   }, []);
@@ -2275,15 +2582,45 @@ export default function EditorShell({
       setSidebarTab('outline');
 
       if (sourceModeRef.current) {
+        const markdown = sourceDraftRef.current;
+        const items = extractOutline(markdown);
+        const item = items[index];
+        if (!item) {
+          return;
+        }
+        // item.start is the absolute start of the heading line (including any
+        // CommonMark leading spaces). End at the true line end so we never
+        // overshoot into the next line.
+        const lineStart = item.start >= 0 ? item.start : 0;
+        let lineEnd = lineStart;
+        while (lineEnd < markdown.length && markdown[lineEnd] !== '\n' && markdown[lineEnd] !== '\r') {
+          lineEnd += 1;
+        }
+        jumpSourceToOffset(lineStart, lineEnd);
         return;
       }
 
       const target = editorHostRef.current?.querySelector(
         `[data-outline-index="${index}"]`,
       ) as HTMLElement | null;
-      target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+
+      // Fallback: jump by heading node position from live outline.
+      if (editor && outline[index]?.start != null && outline[index].start >= 0) {
+        try {
+          const pos = outline[index].start;
+          const selection = TextSelection.create(editor.state.doc, pos + 1);
+          editor.view.dispatch(editor.state.tr.setSelection(selection).scrollIntoView());
+          editor.view.focus();
+        } catch {
+          // ignore invalid positions
+        }
+      }
     },
-    [],
+    [editor, jumpSourceToOffset, outline],
   );
 
   return (
@@ -2334,6 +2671,9 @@ export default function EditorShell({
           onFrameMouseDown={handleFrameMouseDown}
           onSourceChange={handleSourceChange}
           onSourceSelect={handleSourceSelect}
+          onSourceCursorChange={handleSourceCursorChange}
+          onSourceContextMenu={handleSourceContextMenu}
+          onVisualContextMenu={handleVisualContextMenu}
           searchPanel={searchPanel}
           sourceDraft={sourceDraft}
           sourceMode={sourceMode}
@@ -2346,7 +2686,11 @@ export default function EditorShell({
         lastSavedAt={document.lastSavedAt}
         stats={liveStats}
         title={document.title}
+        sourceMode={sourceMode}
+        sourceCursor={sourceMode ? sourceCursor : null}
       />
+
+      <ContextMenu menu={contextMenu} onClose={closeContextMenu} />
 
       <input
         accept="image/*"

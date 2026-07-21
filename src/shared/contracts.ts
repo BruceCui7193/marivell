@@ -9,7 +9,39 @@ export type MenuAction =
   | 'toggle-theme'
   | 'toggle-source-mode'
   | 'toggle-toolbar'
-  | 'toggle-sidebar';
+  | 'toggle-sidebar'
+  | 'export-pdf'
+  | 'export-image'
+  | 'export-pandoc';
+
+export type PandocExportFormat =
+  | 'docx'
+  | 'html'
+  | 'odt'
+  | 'epub'
+  | 'latex'
+  | 'rtf'
+  | 'plain'
+  | 'pptx'
+  | 'gfm';
+
+export interface ExportDocumentPayload {
+  markdown: string;
+  title: string;
+  documentPath: string | null;
+}
+
+export interface ExportCapabilities {
+  pandocAvailable: boolean;
+  pandocVersion: string | null;
+  formats: Array<{
+    id: PandocExportFormat;
+    label: string;
+    extension: string;
+    filterName: string;
+  }>;
+  templates: PandocTemplateMap;
+}
 
 export interface OpenedDocument {
   path: string;
@@ -75,20 +107,53 @@ export interface MarkdownEditorApi {
   saveImage: (payload: SaveImagePayload) => Promise<SavedImage>;
   openExternal: (url: string) => Promise<void>;
   exportClipboardDebug: () => Promise<string | null>;
+  exportAsPdf: (payload: ExportDocumentPayload) => Promise<boolean>;
+  exportAsImage: (payload: ExportDocumentPayload) => Promise<boolean>;
+  exportWithPandoc: (
+    payload: ExportDocumentPayload,
+    format: PandocExportFormat,
+    options?: PandocExportOptions,
+  ) => Promise<boolean>;
+  getExportCapabilities: () => Promise<ExportCapabilities>;
+  getPandocTemplates: () => Promise<PandocTemplateMap>;
+  setPandocTemplate: (format: PandocExportFormat, templatePath: string | null) => Promise<PandocTemplateMap>;
+  choosePandocTemplate: (format: PandocExportFormat) => Promise<string | null>;
   setTheme: (theme: ThemeMode) => Promise<void>;
   setWindowDirty: (dirty: boolean) => Promise<void>;
   setWindowDocumentState: (state: WindowDocumentState) => Promise<void>;
   respondSaveBeforeClose: (saved: boolean) => void;
+  acknowledgeExternalFileChange: (
+    payload: ExternalFileChangeAck,
+  ) => Promise<void>;
   onDocumentOpened: (callback: (document: OpenedDocument) => void) => () => void;
   onFolderOpened: (callback: (folder: OpenedFolder) => void) => () => void;
   onExportStatus: (callback: (status: ExportStatus) => void) => () => void;
   onRequestSaveBeforeClose: (callback: () => void) => () => void;
   onMenuAction: (callback: (action: MenuAction) => void) => () => void;
   onExternalFileChange: (callback: (event: ExternalFileChangeEvent) => void) => () => void;
+  onExportPandocRequest: (
+    callback: (format: PandocExportFormat, options?: PandocExportOptions) => void,
+  ) => () => void;
 }
 
 export interface ExternalFileChangeEvent {
   path: string;
   kind: 'changed' | 'deleted';
   title: string;
+}
+
+export interface ExternalFileChangeAck {
+  path: string;
+  reloaded?: boolean;
+  dismissed?: boolean;
+}
+
+/** format → absolute template path (reference-doc / --template). */
+export type PandocTemplateMap = Partial<Record<PandocExportFormat, string>>;
+
+export interface PandocExportOptions {
+  /** Absolute path to a pandoc reference doc / template. Empty = no template. */
+  templatePath?: string | null;
+  /** When true, prompt the user to pick a template for this export. */
+  chooseTemplate?: boolean;
 }

@@ -1,4 +1,4 @@
-import { existsSync, promises as fs, watch, type FSWatcher } from 'node:fs';
+import { existsSync, promises as fs, statSync, watch, type FSWatcher } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
@@ -10,21 +10,68 @@ import {
   dialog,
   ipcMain,
   nativeTheme,
+  screen,
   shell,
   type WebContents,
 } from 'electron';
+
+/**
+ * Linux desktop launches often fail hard when:
+ * - chrome-sandbox is present but not root-owned + setuid (unpacked / wrong .desktop path)
+ * - GPU process cannot start (NVIDIA hybrid, zygote, etc.)
+ * Apply safe Chromium flags *before* app ready.
+ */
+function configureLinuxChromiumFlags(): void {
+  if (process.platform !== 'linux') {
+    return;
+  }
+
+  // GPU sandbox is a frequent source of error_code=1002 / "GPU process isn't usable".
+  app.commandLine.appendSwitch('disable-gpu-sandbox');
+
+  const sandboxPath = path.join(path.dirname(process.execPath), 'chrome-sandbox');
+  try {
+    if (existsSync(sandboxPath)) {
+      const st = statSync(sandboxPath);
+      const isSetuidRoot = st.uid === 0 && (st.mode & 0o4000) !== 0;
+      if (!isSetuidRoot) {
+        // chrome-sandbox present but not root+setuid: Chromium FATALS unless we
+        // disable the setuid helper (no-sandbox alone is not always enough).
+        app.commandLine.appendSwitch('disable-setuid-sandbox');
+        app.commandLine.appendSwitch('no-sandbox');
+      }
+    }
+  } catch {
+    app.commandLine.appendSwitch('disable-setuid-sandbox');
+    app.commandLine.appendSwitch('no-sandbox');
+  }
+}
+
+configureLinuxChromiumFlags();
 import type {
-  ExportStatus,
+  ExportDocumentPayload,
   FolderEntry,
   OpenedFolder,
   MenuAction,
   OpenedDocument,
+  PandocExportFormat,
   SaveDocumentPayload,
   SaveImagePayload,
   SavedDocument,
   ThemeMode,
   WindowDocumentState,
 } from '@shared/contracts';
+import {
+  exportDocumentAsImage,
+  exportDocumentAsPdf,
+  exportDocumentWithPandoc,
+  getExportCapabilities,
+  getPandocTemplates,
+  getTemplateSupport,
+  PANDOC_FORMATS,
+  pickPandocTemplate,
+  updatePandocTemplate,
+} from './export';
 
 const APP_NAME = 'Markdown Editor Pro';
 const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown']);
@@ -39,229 +86,6 @@ function getDialogParent(parentWindow: any): any {
   }
   return parentWindow;
 }
-const EXPORT_PAGE_CSS = `
-  :root {
-    color-scheme: light;
-    --export-bg: #ffffff;
-    --export-text: #111827;
-    --export-muted: #6b7280;
-    --export-border: #d9dde3;
-    --export-code-bg: #f4f6f8;
-    --export-accent: #2f6f61;
-  }
-
-  * {
-    box-sizing: border-box;
-  }
-
-  html,
-  body {
-    margin: 0;
-    padding: 0;
-    background: var(--export-bg);
-    color: var(--export-text);
-    font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
-  }
-
-  body {
-    min-height: 100vh;
-  }
-
-  .export-page {
-    width: 100%;
-    background: #ffffff;
-  }
-
-  .export-document {
-    width: min(860px, calc(100vw - 96px));
-    margin: 0 auto;
-    padding: 40px 0 48px;
-  }
-
-  .export-source {
-    white-space: pre-wrap;
-    word-break: break-word;
-    font-family: "Cascadia Code", "JetBrains Mono", monospace;
-    font-size: 14px;
-    line-height: 1.7;
-  }
-
-  .export-document h1,
-  .export-document h2,
-  .export-document h3,
-  .export-document h4,
-  .export-document h5,
-  .export-document h6 {
-    font-family: inherit;
-    font-weight: 700;
-    line-height: 1.24;
-    margin: 1.2em 0 0.55em;
-    letter-spacing: 0;
-    color: var(--export-text);
-  }
-
-  .export-document h1 { font-size: 2.2rem; }
-  .export-document h2 { font-size: 1.76rem; }
-  .export-document h3 { font-size: 1.35rem; }
-
-  .export-document p,
-  .export-document ul,
-  .export-document ol,
-  .export-document blockquote,
-  .export-document pre,
-  .export-document table,
-  .export-document .footnote-definition-node,
-  .export-document .math-block-node,
-  .export-document .mermaid-node,
-  .export-document .image-node {
-    margin: 0.9rem 0;
-  }
-
-  .export-document a {
-    color: var(--export-accent);
-    text-decoration: none;
-    border-bottom: 1px solid rgba(47, 111, 97, 0.28);
-  }
-
-  .export-document blockquote {
-    border-left: 3px solid rgba(47, 111, 97, 0.24);
-    padding-left: 16px;
-    color: var(--export-muted);
-  }
-
-  .export-document ul,
-  .export-document ol {
-    padding-left: 1.5rem;
-  }
-
-  .export-document ul[data-type='taskList'] {
-    list-style: none;
-    padding-left: 0;
-  }
-
-  .export-document ul[data-type='taskList'] li {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-  }
-
-  .export-document pre {
-    overflow: auto;
-    border: 1px solid var(--export-border);
-    border-radius: 16px;
-    background: var(--export-code-bg);
-    padding: 16px 18px;
-    font-size: 0.92rem;
-  }
-
-  .export-document code,
-  .export-source,
-  .export-document .math-block-editor__textarea,
-  .export-document .math-inline-node__input,
-  .export-document .node-card__textarea,
-  .export-document .image-node__textarea {
-    font-family: "Cascadia Code", "JetBrains Mono", monospace;
-  }
-
-  .export-document p code {
-    padding: 0.12em 0.35em;
-    border-radius: 7px;
-    background: var(--export-code-bg);
-  }
-
-  .export-document table {
-    width: 100%;
-    border-collapse: collapse;
-    overflow: hidden;
-    border-radius: 14px;
-    border: 1px solid var(--export-border);
-  }
-
-  .export-document th,
-  .export-document td {
-    padding: 12px 14px;
-    border-right: 1px solid var(--export-border);
-    border-bottom: 1px solid var(--export-border);
-    vertical-align: top;
-  }
-
-  .export-document th {
-    background: #f4f7f7;
-    text-align: left;
-  }
-
-  .export-document img,
-  .export-document .image-node__image {
-    display: block;
-    max-width: 100%;
-    border-radius: 16px;
-  }
-
-  .export-document .image-node,
-  .export-document .math-block-node,
-  .export-document .math-inline-node,
-  .export-document .mermaid-node,
-  .export-document .footnote-definition-node {
-    padding: 0;
-    background: transparent;
-    border: none;
-    box-shadow: none;
-  }
-
-  .export-document .image-node__editor,
-  .export-document .math-block-editor,
-  .export-document .mermaid-node__editor,
-  .export-document .footnote-definition-node__meta,
-  .export-document .image-node__error,
-  .export-document .node-card__error {
-    display: none !important;
-  }
-
-  .export-document .math-inline-editor {
-    background: transparent;
-    padding: 0;
-  }
-
-  .export-document .math-block-node__preview,
-  .export-document .math-inline-node__preview,
-  .export-document .mermaid-node__preview,
-  .export-document .footnote-definition-node__content {
-    padding: 0;
-  }
-
-  .export-document .footnote-reference {
-    color: var(--export-accent);
-    font-size: 0.8em;
-  }
-
-  .export-document .ProseMirror-selectednode,
-  .export-document .ProseMirror-gapcursor,
-  .export-document .ProseMirror-trailingBreak {
-    display: none !important;
-  }
-
-  @page {
-    size: A4;
-    margin: 18mm;
-  }
-
-  @media print {
-    html,
-    body {
-      background: #ffffff !important;
-    }
-
-    .export-page {
-      background: #ffffff !important;
-    }
-
-    .export-document {
-      width: auto;
-      margin: 0;
-      padding: 0;
-    }
-  }
-`;
 
 const windows = new Set<BrowserWindow>();
 const pendingFilesOnLaunch: string[] = [];
@@ -282,12 +106,6 @@ interface PersistedWindowState {
   x?: number;
   y?: number;
   isMaximized: boolean;
-}
-
-interface ExportSnapshot {
-  title: string;
-  html: string;
-  mode: 'visual' | 'source';
 }
 
 const DEFAULT_WINDOW_STATE: PersistedWindowState = {
@@ -337,12 +155,32 @@ async function readWindowState(): Promise<PersistedWindowState> {
   try {
     const raw = await fs.readFile(getWindowStatePath(), 'utf8');
     const parsed = JSON.parse(raw) as Partial<PersistedWindowState>;
+    const width = Math.max(parsed.width ?? DEFAULT_WINDOW_STATE.width, 420);
+    const height = Math.max(parsed.height ?? DEFAULT_WINDOW_STATE.height, 680);
+
+    // Clamp to a visible display so a stale position after dock/monitor changes
+    // does not leave the window "opened" off-screen (common after a crash).
+    let x = parsed.x;
+    let y = parsed.y;
+    if (typeof x === 'number' && typeof y === 'number') {
+      const nearest = screen.getDisplayNearestPoint({ x, y });
+      const bounds = nearest.workArea;
+      const maxX = bounds.x + Math.max(bounds.width - width, 0);
+      const maxY = bounds.y + Math.max(bounds.height - height, 0);
+      if (x < bounds.x - 40 || y < bounds.y - 40 || x > maxX + 40 || y > maxY + 40) {
+        x = bounds.x + Math.floor((bounds.width - width) / 2);
+        y = bounds.y + Math.floor((bounds.height - height) / 2);
+      } else {
+        x = Math.min(Math.max(x, bounds.x), maxX);
+        y = Math.min(Math.max(y, bounds.y), maxY);
+      }
+    }
 
     return {
-      width: Math.max(parsed.width ?? DEFAULT_WINDOW_STATE.width, 420),
-      height: Math.max(parsed.height ?? DEFAULT_WINDOW_STATE.height, 680),
-      x: parsed.x,
-      y: parsed.y,
+      width,
+      height,
+      x,
+      y,
       isMaximized: Boolean(parsed.isMaximized),
     };
   } catch {
@@ -559,6 +397,12 @@ async function writeDocument(targetPath: string, markdown: string): Promise<Save
 
 const fileWatchers = new Map<string, FSWatcher>();
 const fileChangeTimers = new Map<string, NodeJS.Timeout>();
+/** Ignore watcher events until this timestamp (own saves, reloads). */
+const fileWatchIgnoreUntil = new Map<string, number>();
+/** Last mtime we already notified the renderer about. */
+const fileWatchLastNotifiedMtime = new Map<string, number>();
+/** Paths waiting for the user to answer the external-change prompt. */
+const fileWatchPromptPending = new Set<string>();
 
 function stopWatchingFile(filePath: string): void {
   const watcher = fileWatchers.get(filePath);
@@ -572,21 +416,54 @@ function stopWatchingFile(filePath: string): void {
     clearTimeout(timer);
     fileChangeTimers.delete(filePath);
   }
+
+  fileWatchIgnoreUntil.delete(filePath);
+  fileWatchLastNotifiedMtime.delete(filePath);
+  fileWatchPromptPending.delete(filePath);
+}
+
+function ignoreFileWatchEvents(filePath: string, durationMs = 1600): void {
+  fileWatchIgnoreUntil.set(filePath, Date.now() + durationMs);
+}
+
+async function rememberFileWatchMtime(filePath: string): Promise<void> {
+  try {
+    if (!existsSync(filePath)) {
+      return;
+    }
+    const stats = await fs.stat(filePath);
+    fileWatchLastNotifiedMtime.set(filePath, stats.mtimeMs);
+  } catch {
+    // ignore
+  }
 }
 
 function startWatchingFile(
   filePath: string,
   window: BrowserWindow,
 ): void {
-  stopWatchingFile(filePath);
+  // Preserve ignore / mtime bookkeeping across restarts of the same path;
+  // only tear down the native watcher + debounce timer.
+  const watcher = fileWatchers.get(filePath);
+  if (watcher) {
+    watcher.close();
+    fileWatchers.delete(filePath);
+  }
+  const timer = fileChangeTimers.get(filePath);
+  if (timer) {
+    clearTimeout(timer);
+    fileChangeTimers.delete(filePath);
+  }
 
   if (!existsSync(filePath)) {
     return;
   }
 
+  // Seed baseline mtime so opening a file does not immediately "change".
+  void rememberFileWatchMtime(filePath);
+
   try {
-    const watcher = watch(filePath, (_eventType) => {
-      // Debounce: coalesce rapid successive events
+    const nextWatcher = watch(filePath, () => {
       const existingTimer = fileChangeTimers.get(filePath);
       if (existingTimer) {
         clearTimeout(existingTimer);
@@ -596,30 +473,71 @@ function startWatchingFile(
         filePath,
         setTimeout(() => {
           fileChangeTimers.delete(filePath);
+          void (async () => {
+            if (window.isDestroyed()) {
+              stopWatchingFile(filePath);
+              return;
+            }
 
-          if (window.isDestroyed()) {
-            stopWatchingFile(filePath);
-            return;
-          }
+            if (Date.now() < (fileWatchIgnoreUntil.get(filePath) ?? 0)) {
+              return;
+            }
 
-          const deleted = !existsSync(filePath);
-          window.webContents.send('file:external-change', {
-            path: filePath,
-            kind: deleted ? 'deleted' : 'changed',
-            title: path.basename(filePath),
-          });
+            // One prompt at a time per file — prevents stacked confirms.
+            if (fileWatchPromptPending.has(filePath)) {
+              return;
+            }
 
-          if (deleted) {
-            stopWatchingFile(filePath);
-          }
-        }, 300),
+            const deleted = !existsSync(filePath);
+            if (deleted) {
+              fileWatchPromptPending.add(filePath);
+              window.webContents.send('file:external-change', {
+                path: filePath,
+                kind: 'deleted',
+                title: path.basename(filePath),
+              });
+              stopWatchingFile(filePath);
+              return;
+            }
+
+            try {
+              const stats = await fs.stat(filePath);
+              const lastMtime = fileWatchLastNotifiedMtime.get(filePath);
+              if (lastMtime !== undefined && stats.mtimeMs === lastMtime) {
+                return;
+              }
+
+              fileWatchLastNotifiedMtime.set(filePath, stats.mtimeMs);
+              fileWatchPromptPending.add(filePath);
+              window.webContents.send('file:external-change', {
+                path: filePath,
+                kind: 'changed',
+                title: path.basename(filePath),
+              });
+            } catch {
+              // File may have vanished between exists check and stat.
+            }
+          })();
+        }, 350),
       );
     });
 
-    fileWatchers.set(filePath, watcher);
+    fileWatchers.set(filePath, nextWatcher);
   } catch {
     // fs.watch may fail on some filesystems; ignore silently
   }
+}
+
+function acknowledgeExternalFileChange(
+  filePath: string,
+  options: { reloaded?: boolean; dismissed?: boolean } = {},
+): void {
+  fileWatchPromptPending.delete(filePath);
+  if (options.reloaded) {
+    ignoreFileWatchEvents(filePath, 1600);
+    void rememberFileWatchMtime(filePath);
+  }
+  // dismissed: keep lastNotifiedMtime so the same revision does not re-prompt
 }
 
 function getDocumentTitleFromWindow(window: BrowserWindow): string {
@@ -633,468 +551,6 @@ function getDocumentTitleFromWindow(window: BrowserWindow): string {
   return title || APP_NAME;
 }
 
-function buildExportFileName(window: BrowserWindow, extension: 'pdf' | 'png'): string {
-  const baseName = sanitizeFileNameSegment(
-    getDocumentTitleFromWindow(window).replace(/\.(md|markdown)$/i, ''),
-  );
-
-  return `${baseName || 'document'}.${extension}`;
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-async function readKatexExportCss(): Promise<string> {
-  const candidateDirectories = [
-    path.join(app.getAppPath(), 'node_modules', 'katex', 'dist'),
-    path.join(process.cwd(), 'node_modules', 'katex', 'dist'),
-    path.join(path.dirname(app.getPath('exe')), 'resources', 'app.asar', 'node_modules', 'katex', 'dist'),
-    path.join(path.dirname(app.getPath('exe')), 'resources', 'app', 'node_modules', 'katex', 'dist'),
-  ];
-
-  try {
-    const katexDirectory = candidateDirectories.find((directory) =>
-      existsSync(path.join(directory, 'katex.min.css')),
-    );
-
-    if (!katexDirectory) {
-      return '';
-    }
-
-    const katexPath = path.join(katexDirectory, 'katex.min.css');
-    const css = await fs.readFile(katexPath, 'utf8');
-    const fontsBaseUrl = `${pathToFileURL(path.join(katexDirectory, 'fonts')).toString()}/`;
-
-    return css
-      .replace(/url\((['"]?)(?:\.\.\/)?fonts\//g, `url($1${fontsBaseUrl}`)
-      .replace(/src:\s*local\('Arial'\);/g, '');
-  } catch {
-    return '';
-  }
-}
-
-async function captureExportSnapshot(window: BrowserWindow): Promise<ExportSnapshot | null> {
-  if (window.isDestroyed() || window.webContents.isDestroyed()) {
-    return null;
-  }
-
-  return window.webContents.executeJavaScript(`
-    (() => {
-      const surface = document.querySelector('.editor-surface');
-      const source = document.querySelector('.editor-source');
-
-      if (surface instanceof HTMLElement) {
-        const clone = surface.cloneNode(true);
-        const container = document.createElement('div');
-        container.appendChild(clone);
-
-        const normalizePreviewNode = (selector, previewSelector, className) => {
-          container.querySelectorAll(selector).forEach((element) => {
-            const preview = element.querySelector(previewSelector);
-            if (!(preview instanceof HTMLElement)) {
-              return;
-            }
-
-            const wrapper = document.createElement(element.tagName.toLowerCase());
-            wrapper.className = className;
-            wrapper.innerHTML = preview.innerHTML;
-            element.replaceWith(wrapper);
-          });
-        };
-
-        container.querySelectorAll('[contenteditable]').forEach((element) => {
-          element.removeAttribute('contenteditable');
-        });
-
-        container.querySelectorAll('[data-outline-index]').forEach((element) => {
-          element.removeAttribute('data-outline-index');
-        });
-
-        container.querySelectorAll('.ProseMirror-selectednode, .ProseMirror-gapcursor, .ProseMirror-trailingBreak').forEach((element) => {
-          element.remove();
-        });
-
-        const sourceImages = Array.from(surface.querySelectorAll('img'));
-        const cloneImages = Array.from(container.querySelectorAll('img'));
-        cloneImages.forEach((image, index) => {
-          const sourceImage = sourceImages[index];
-          const resolvedSource = sourceImage?.currentSrc || sourceImage?.src || image.getAttribute('src') || '';
-          if (resolvedSource) {
-            image.setAttribute('src', resolvedSource);
-          }
-        });
-
-        normalizePreviewNode('.math-inline-node', '.math-inline-node__preview, .math-inline-editor__preview', 'math-inline-node');
-        normalizePreviewNode('.math-block-node', '.math-block-node__preview, .math-block-editor__preview', 'math-block-node');
-        normalizePreviewNode('.mermaid-node', '.mermaid-node__preview', 'mermaid-node');
-
-        container.querySelectorAll('.image-node').forEach((element) => {
-          const image = element.querySelector('.image-node__image, .image-node__preview img, img');
-          if (!(image instanceof HTMLImageElement)) {
-            return;
-          }
-
-          const wrapper = document.createElement('div');
-          wrapper.className = 'image-node';
-          wrapper.appendChild(image.cloneNode(true));
-          element.replaceWith(wrapper);
-        });
-
-        return {
-          title: document.title,
-          mode: 'visual',
-          html: container.innerHTML,
-        };
-      }
-
-      if (source instanceof HTMLTextAreaElement) {
-        return {
-          title: document.title,
-          mode: 'source',
-          html: source.value,
-        };
-      }
-
-      return null;
-    })()
-  `);
-}
-
-function buildExportHtml(snapshot: ExportSnapshot, katexCss: string): string {
-  const bodyContent =
-    snapshot.mode === 'source'
-      ? `<pre class="export-source">${escapeHtml(snapshot.html)}</pre>`
-      : snapshot.html;
-
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>${escapeHtml(snapshot.title)}</title>
-    <style>${katexCss}</style>
-    <style>${EXPORT_PAGE_CSS}</style>
-  </head>
-  <body>
-    <div class="export-page">
-      <main class="export-document">${bodyContent}</main>
-    </div>
-  </body>
-</html>`;
-}
-
-async function createExportWindow(html: string): Promise<BrowserWindow> {
-  const exportDirectory = await fs.mkdtemp(path.join(app.getPath('temp'), 'markdown-editor-export-'));
-  const exportFilePath = path.join(exportDirectory, 'export.html');
-  await fs.writeFile(exportFilePath, html, 'utf8');
-
-  const exportWindow = new BrowserWindow({
-    width: 1200,
-    height: 900,
-    show: false,
-    backgroundColor: '#ffffff',
-    webPreferences: {
-      sandbox: false,
-    },
-  });
-
-  await exportWindow.loadFile(exportFilePath);
-  await exportWindow.webContents.executeJavaScript(`
-    (async () => {
-      const images = Array.from(document.images);
-      await Promise.all(images.map((image) => {
-        if (image.complete) {
-          return Promise.resolve();
-        }
-
-        return new Promise((resolve) => {
-          image.addEventListener('load', resolve, { once: true });
-          image.addEventListener('error', resolve, { once: true });
-        });
-      }));
-
-      if (document.fonts?.ready) {
-        await document.fonts.ready;
-      }
-
-      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    })()
-  `);
-
-  exportWindow.on('closed', () => {
-    void fs.rm(exportDirectory, { recursive: true, force: true });
-  });
-
-  return exportWindow;
-}
-
-async function prepareExportWindow(window: BrowserWindow): Promise<BrowserWindow | null> {
-  const snapshot = await captureExportSnapshot(window);
-  if (!snapshot) {
-    return null;
-  }
-
-  const katexCss = await readKatexExportCss();
-  const html = buildExportHtml(snapshot, katexCss);
-  return createExportWindow(html);
-}
-
-async function getExportDocumentBounds(window: BrowserWindow): Promise<{
-  width: number;
-  height: number;
-} | null> {
-  if (window.isDestroyed() || window.webContents.isDestroyed()) {
-    return null;
-  }
-
-  return window.webContents.executeJavaScript(`
-    (() => {
-      const element = document.querySelector('.export-page');
-      if (!element) {
-        return null;
-      }
-
-      const rect = element.getBoundingClientRect();
-      return {
-        width: Math.max(1, Math.ceil(rect.width)),
-        height: Math.max(1, Math.ceil(document.documentElement.scrollHeight)),
-      };
-    })()
-  `);
-}
-
-async function stitchPngSlices(slices: Buffer[]): Promise<Buffer> {
-  if (slices.length === 0) {
-    throw new Error('No PNG slices were captured');
-  }
-
-  const { PNG } = await import('pngjs');
-  const decodedSlices = slices.map((slice) => PNG.sync.read(slice));
-  const outputWidth = decodedSlices[0]?.width ?? 0;
-  const outputHeight = decodedSlices.reduce((total, slice) => total + slice.height, 0);
-
-  if (outputWidth <= 0 || outputHeight <= 0) {
-    throw new Error('Invalid stitched PNG dimensions');
-  }
-
-  const output = new PNG({
-    width: outputWidth,
-    height: outputHeight,
-  });
-
-  let offsetY = 0;
-  for (const slice of decodedSlices) {
-    PNG.bitblt(slice, output, 0, 0, slice.width, slice.height, 0, offsetY);
-    offsetY += slice.height;
-  }
-
-  return PNG.sync.write(output);
-}
-
-async function captureExportWindowPng(
-  window: BrowserWindow,
-  bounds: { width: number; height: number },
-  onProgress?: (current: number, total: number) => void,
-): Promise<Buffer> {
-  const screenshotSlices: Buffer[] = [];
-  const totalWidth = Math.max(1, Math.ceil(bounds.width));
-  const totalHeight = Math.max(1, Math.ceil(bounds.height));
-  const chunkHeight = 2048;
-  const chunkCount = Math.max(1, Math.ceil(totalHeight / chunkHeight));
-
-  try {
-    await window.webContents.executeJavaScript(`
-      document.documentElement.style.scrollBehavior = 'auto';
-      document.body.style.scrollBehavior = 'auto';
-      document.documentElement.scrollTop = 0;
-      document.body.scrollTop = 0;
-      window.scrollTo(0, 0);
-    `);
-
-    for (let offset = 0, chunkIndex = 0; offset < totalHeight; offset += chunkHeight, chunkIndex += 1) {
-      const currentHeight = Math.min(chunkHeight, totalHeight - offset);
-      onProgress?.(chunkIndex + 1, chunkCount);
-
-      window.setContentSize(totalWidth, currentHeight);
-
-      await window.webContents.executeJavaScript(`
-        new Promise((resolve) => {
-          document.documentElement.scrollTop = ${offset};
-          document.body.scrollTop = ${offset};
-          window.scrollTo(0, ${offset});
-          requestAnimationFrame(() => requestAnimationFrame(() => {
-            setTimeout(resolve, 24);
-          }));
-        })
-      `);
-
-      const image = await window.webContents.capturePage({
-        x: 0,
-        y: 0,
-        width: totalWidth,
-        height: currentHeight,
-      });
-
-      const png = image.toPNG();
-      if (png.length === 0) {
-        throw new Error('Failed to capture PNG slice');
-      }
-
-      screenshotSlices.push(png);
-    }
-
-    const buffer = await stitchPngSlices(screenshotSlices);
-    if (buffer.length === 0) {
-      throw new Error('Exported PNG is empty');
-    }
-
-    return buffer;
-  } finally {
-    window.setContentSize(1200, 900);
-  }
-}
-
-async function exportWindowAsPdf(window: BrowserWindow): Promise<void> {
-  sendExportStatus(window, {
-    active: true,
-    message: '\u6b63\u5728\u51c6\u5907 PDF \u5bfc\u51fa\u2026',
-  });
-
-  const saveResult = await dialog.showSaveDialog(getDialogParent(window), {
-    title: '\u5bfc\u51fa PDF',
-    defaultPath: buildExportFileName(window, 'pdf'),
-    filters: [{ name: 'PDF', extensions: ['pdf'] }],
-  });
-
-  if (saveResult.canceled || !saveResult.filePath || window.webContents.isDestroyed()) {
-    sendExportStatus(window, {
-      active: false,
-      message: '',
-    });
-    return;
-  }
-
-  const exportWindow = await prepareExportWindow(window);
-  if (!exportWindow) {
-    sendExportStatus(window, {
-      active: false,
-      message: '',
-    });
-    return;
-  }
-
-  try {
-    sendExportStatus(window, {
-      active: true,
-      message: '\u6b63\u5728\u751f\u6210 PDF \u2026',
-    });
-
-    const pdf = await exportWindow.webContents.printToPDF({
-      printBackground: true,
-      preferCSSPageSize: true,
-      landscape: false,
-      pageSize: 'A4',
-      margins: {
-        top: 0,
-        bottom: 0,
-        left: 0,
-        right: 0,
-      },
-    });
-
-    await fs.writeFile(saveResult.filePath, pdf);
-    sendExportStatus(window, {
-      active: true,
-      message: '\u5df2\u5b8c\u6210 PDF \u5bfc\u51fa',
-    });
-  } finally {
-    if (!exportWindow.isDestroyed()) {
-      exportWindow.close();
-    }
-
-    setTimeout(() => {
-      sendExportStatus(window, {
-        active: false,
-        message: '',
-      });
-    }, 900);
-  }
-}
-
-async function exportWindowAsImage(window: BrowserWindow): Promise<void> {
-  sendExportStatus(window, {
-    active: true,
-    message: '\u6b63\u5728\u5bfc\u51fa\u56fe\u7247\u2026',
-  });
-
-  const saveResult = await dialog.showSaveDialog(getDialogParent(window), {
-    title: '\u5bfc\u51fa\u56fe\u7247',
-    defaultPath: buildExportFileName(window, 'png'),
-    filters: [{ name: 'PNG Image', extensions: ['png'] }],
-  });
-
-  if (saveResult.canceled || !saveResult.filePath) {
-    sendExportStatus(window, {
-      active: false,
-      message: '',
-    });
-    return;
-  }
-
-  const exportWindow = await prepareExportWindow(window);
-  if (!exportWindow) {
-    sendExportStatus(window, {
-      active: false,
-      message: '',
-    });
-    return;
-  }
-
-  try {
-    sendExportStatus(window, {
-      active: true,
-      message: '\u6b63\u5728\u5bfc\u51fa\u56fe\u7247\u2026',
-    });
-
-    const bounds = await getExportDocumentBounds(exportWindow);
-    if (!bounds) {
-      throw new Error('Failed to measure export document');
-    }
-
-    const png = await captureExportWindowPng(exportWindow, bounds, (current, total) => {
-      sendExportStatus(window, {
-        active: true,
-        message:
-          total > 1
-            ? `\u6b63\u5728\u5bfc\u51fa\u56fe\u7247\u2026 (${current}/${total})`
-            : '\u6b63\u5728\u5bfc\u51fa\u56fe\u7247\u2026',
-      });
-    });
-    await fs.writeFile(saveResult.filePath, png);
-    sendExportStatus(window, {
-      active: true,
-      message: '\u5df2\u5b8c\u6210\u56fe\u7247\u5bfc\u51fa',
-    });
-  } finally {
-    if (!exportWindow.isDestroyed()) {
-      exportWindow.close();
-    }
-
-    setTimeout(() => {
-      sendExportStatus(window, {
-        active: false,
-        message: '',
-      });
-    }, 900);
-  }
-}
-
 function sendMenuAction(action: MenuAction, window?: BrowserWindow | null): void {
   const targetWindow = window ?? getFocusedOrLastWindow();
   if (!targetWindow || targetWindow.isDestroyed()) {
@@ -1102,14 +558,6 @@ function sendMenuAction(action: MenuAction, window?: BrowserWindow | null): void
   }
 
   targetWindow.webContents.send('menu:action', action);
-}
-
-function sendExportStatus(window: BrowserWindow, status: ExportStatus): void {
-  if (window.isDestroyed() || window.webContents.isDestroyed()) {
-    return;
-  }
-
-  window.webContents.send('export:status', status);
 }
 
 function buildMenu(): Menu {
@@ -1151,22 +599,78 @@ function buildMenu(): Menu {
         },
         { type: 'separator' },
         {
-          label: '\u5bfc\u51fa PDF...',
-          click: (_item, browserWindow: any) => {
-            const targetWindow = browserWindow ?? getFocusedOrLastWindow();
-            if (targetWindow) {
-              void exportWindowAsPdf(targetWindow as any);
-            }
-          },
+          label: '导出 PDF...',
+          accelerator: 'CmdOrCtrl+Shift+P',
+          click: (_item, browserWindow: any) => sendMenuAction('export-pdf', browserWindow),
         },
         {
-          label: '\u5bfc\u51fa\u56fe\u7247...',
-          click: (_item, browserWindow: any) => {
-            const targetWindow = browserWindow ?? getFocusedOrLastWindow();
-            if (targetWindow) {
-              void exportWindowAsImage(targetWindow as any);
-            }
-          },
+          label: '导出长图...',
+          accelerator: 'CmdOrCtrl+Shift+I',
+          click: (_item, browserWindow: any) => sendMenuAction('export-image', browserWindow),
+        },
+        {
+          label: '通过 Pandoc 导出',
+          submenu: [
+            ...PANDOC_FORMATS.map((format) => ({
+              label: format.label,
+              click: (_item: unknown, browserWindow: any) => {
+                const targetWindow =
+                  (browserWindow as BrowserWindow | undefined) ?? getFocusedOrLastWindow();
+                if (!targetWindow || targetWindow.isDestroyed()) {
+                  return;
+                }
+                targetWindow.webContents.send(
+                  'export:pandoc-request',
+                  format.id as PandocExportFormat,
+                );
+              },
+            })),
+            { type: 'separator' as const },
+            {
+              label: '使用模板导出…',
+              submenu: PANDOC_FORMATS.filter((format) => getTemplateSupport(format.id).flag).map(
+                (format) => ({
+                  label: `${format.label}（选模板）`,
+                  click: (_item: unknown, browserWindow: any) => {
+                    const targetWindow =
+                      (browserWindow as BrowserWindow | undefined) ?? getFocusedOrLastWindow();
+                    if (!targetWindow || targetWindow.isDestroyed()) {
+                      return;
+                    }
+                    targetWindow.webContents.send(
+                      'export:pandoc-request',
+                      format.id as PandocExportFormat,
+                      { chooseTemplate: true },
+                    );
+                  },
+                }),
+              ),
+            },
+            {
+              label: '设置默认模板…',
+              submenu: [
+                ...PANDOC_FORMATS.filter((format) => getTemplateSupport(format.id).flag).map(
+                  (format) => ({
+                    label: `设置 ${format.label} 模板…`,
+                    click: (_item: unknown, browserWindow: any) => {
+                      const targetWindow =
+                        (browserWindow as BrowserWindow | undefined) ?? getFocusedOrLastWindow();
+                      void pickPandocTemplate(targetWindow, format.id);
+                    },
+                  }),
+                ),
+                { type: 'separator' as const },
+                ...PANDOC_FORMATS.filter((format) => getTemplateSupport(format.id).flag).map(
+                  (format) => ({
+                    label: `清除 ${format.label} 模板`,
+                    click: () => {
+                      void updatePandocTemplate(format.id as PandocExportFormat, null);
+                    },
+                  }),
+                ),
+              ],
+            },
+          ],
         },
         { type: 'separator' },
         { role: 'quit', label: '\u9000\u51fa' },
@@ -1319,10 +823,20 @@ async function openFolderPickerInNewWindow(parentWindow?: BrowserWindow): Promis
 function resolveWindowIcon(): string | undefined {
   const platform = process.platform;
   const iconName = platform === 'win32' ? 'icon.ico' : 'icon.png';
-  const iconPath = path.join(process.cwd(), 'build', iconName);
+  // Never rely on process.cwd() — desktop-menu launches often use $HOME or /.
+  const candidates = [
+    path.join(process.resourcesPath ?? '', iconName),
+    path.join(process.resourcesPath ?? '', 'build', iconName),
+    path.join(path.dirname(process.execPath), iconName),
+    path.join(path.dirname(process.execPath), 'resources', iconName),
+    path.join(app.getAppPath(), 'build', iconName),
+    path.join(process.cwd(), 'build', iconName),
+  ];
 
-  if (existsSync(iconPath)) {
-    return iconPath;
+  for (const iconPath of candidates) {
+    if (iconPath && existsSync(iconPath)) {
+      return iconPath;
+    }
   }
 
   return undefined;
@@ -1379,6 +893,27 @@ async function createMainWindow(options: WindowInitOptions = {}): Promise<Browse
       windowInstance.maximize();
     }
     windowInstance.show();
+    windowInstance.focus();
+  });
+
+  // If the renderer stalls, still surface the window so the user is not stuck
+  // with a process holding the single-instance lock and no visible UI.
+  setTimeout(() => {
+    if (!windowInstance.isDestroyed() && !windowInstance.isVisible()) {
+      windowInstance.show();
+      windowInstance.focus();
+    }
+  }, 2500);
+
+  windowInstance.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[markdown-editor-pro] render process gone', details);
+    if (!windowInstance.isDestroyed()) {
+      dialog.showErrorBox(
+        APP_NAME,
+        `渲染进程异常退出（${details.reason}）。\n窗口将关闭；请从菜单重新打开应用。`,
+      );
+      windowInstance.destroy();
+    }
   });
 
   windowInstance.on('closed', () => {
@@ -1446,7 +981,16 @@ async function createMainWindow(options: WindowInitOptions = {}): Promise<Browse
   if (rendererUrl) {
     await windowInstance.loadURL(rendererUrl);
   } else {
-    await windowInstance.loadFile(path.join(__dirname, '../renderer/index.html'));
+    try {
+      await windowInstance.loadFile(path.join(__dirname, '../renderer/index.html'));
+    } catch (error) {
+      console.error('[markdown-editor-pro] failed to load renderer', error);
+      dialog.showErrorBox(
+        APP_NAME,
+        `无法加载界面文件。\n\n${error instanceof Error ? error.message : String(error)}\n\n若从应用菜单启动失败，请确认桌面快捷方式指向 /opt/markdown-editor-pro 安装目录（不要指向项目里的 dist/linux-unpacked）。`,
+      );
+      throw error;
+    }
   }
 
   return windowInstance;
@@ -1454,19 +998,55 @@ async function createMainWindow(options: WindowInitOptions = {}): Promise<Browse
 
 function getInitialFilePath(argv: string[]): string | null {
   for (const value of argv) {
-    if (isMarkdownPath(value) && path.isAbsolute(value)) {
-      return value;
+    if (!value || value.startsWith('-')) {
+      continue;
+    }
+    // Desktop launchers may pass file:// URIs.
+    let candidate = value;
+    if (candidate.startsWith('file://')) {
+      try {
+        candidate = decodeURIComponent(new URL(candidate).pathname);
+      } catch {
+        continue;
+      }
+    }
+    const absolute = path.isAbsolute(candidate) ? candidate : path.resolve(candidate);
+    if (isMarkdownPath(absolute) && existsSync(absolute)) {
+      return absolute;
     }
   }
 
   return null;
 }
 
+function focusExistingWindows(): boolean {
+  const alive = [...windows].filter((win) => !win.isDestroyed());
+  if (alive.length === 0) {
+    return false;
+  }
+
+  for (const win of alive) {
+    if (win.isMinimized()) {
+      win.restore();
+    }
+    win.show();
+    win.focus();
+  }
+
+  // Raise the last focused / most recent window.
+  const target = BrowserWindow.getFocusedWindow() ?? alive[alive.length - 1];
+  target?.moveTop();
+  target?.focus();
+  return true;
+}
+
 function ensureSingleInstance(): void {
   const lock = app.requestSingleInstanceLock();
 
   if (!lock) {
-    app.quit();
+    // Another instance owns the lock. Quit immediately so the primary can
+    // handle second-instance (focus/restore). Do not leave a zombie process.
+    app.exit(0);
     return;
   }
 
@@ -1474,11 +1054,16 @@ function ensureSingleInstance(): void {
     const filePath = getInitialFilePath(argv);
 
     if (filePath) {
-      void openDocumentInPreferredWindow(filePath);
+      void openDocumentInPreferredWindow(filePath).finally(() => {
+        focusExistingWindows();
+      });
       return;
     }
 
-    void createMainWindow();
+    // Menu re-click: bring existing window forward instead of no-op / silent quit.
+    if (!focusExistingWindows()) {
+      void createMainWindow();
+    }
   });
 }
 
@@ -1623,6 +1208,24 @@ function registerIpcHandlers(): void {
     const parentWindow = getWindowFromSender(event.sender);
     const document = await readDocument(filePath);
     updateWindowTitle(parentWindow, document.title);
+    if (parentWindow && !parentWindow.isDestroyed()) {
+      // Treat programmatic open/reload as our own load so the watcher does not
+      // immediately re-fire against the same file contents.
+      const previous = getWindowDocumentState(parentWindow);
+      if (previous.path && previous.path !== document.path) {
+        stopWatchingFile(previous.path);
+      }
+      ignoreFileWatchEvents(document.path);
+      markWindowDirty(parentWindow, false);
+      markWindowDocumentState(parentWindow, {
+        path: document.path,
+        markdown: document.markdown,
+        dirty: false,
+      });
+      startWatchingFile(document.path, parentWindow);
+      void rememberFileWatchMtime(document.path);
+      acknowledgeExternalFileChange(document.path, { reloaded: true });
+    }
     return document;
   });
 
@@ -1661,18 +1264,20 @@ function registerIpcHandlers(): void {
 
       const document = await writeDocument(saveResult.filePath, payload.markdown);
       updateWindowTitle(parentWindow, document.title);
-      // Restart file watcher for the new path
       if (parentWindow && !parentWindow.isDestroyed()) {
+        ignoreFileWatchEvents(document.path);
         startWatchingFile(document.path, parentWindow);
+        void rememberFileWatchMtime(document.path);
       }
       return document;
     }
 
     const document = await writeDocument(payload.currentPath, payload.markdown);
     updateWindowTitle(parentWindow, document.title);
-    // Restart file watcher after our own write
     if (parentWindow && !parentWindow.isDestroyed()) {
+      ignoreFileWatchEvents(document.path);
       startWatchingFile(document.path, parentWindow);
+      void rememberFileWatchMtime(document.path);
     }
     return document;
   });
@@ -1692,12 +1297,26 @@ function registerIpcHandlers(): void {
 
     const document = await writeDocument(saveResult.filePath, payload.markdown);
     updateWindowTitle(parentWindow, document.title);
-    // Restart file watcher for the new path
     if (parentWindow && !parentWindow.isDestroyed()) {
+      ignoreFileWatchEvents(document.path);
       startWatchingFile(document.path, parentWindow);
+      void rememberFileWatchMtime(document.path);
     }
     return document;
   });
+
+  ipcMain.handle(
+    'file:external-change-ack',
+    async (_event, payload: { path: string; reloaded?: boolean; dismissed?: boolean }) => {
+      if (!payload?.path) {
+        return;
+      }
+      acknowledgeExternalFileChange(payload.path, {
+        reloaded: Boolean(payload.reloaded),
+        dismissed: Boolean(payload.dismissed),
+      });
+    },
+  );
 
   ipcMain.handle('asset:save-image', async (_event, payload: SaveImagePayload) => {
     return saveImage(payload);
@@ -1710,6 +1329,52 @@ function registerIpcHandlers(): void {
   ipcMain.handle('clipboard:export-debug', async () => {
     return exportClipboardDebugBundle();
   });
+
+  ipcMain.handle('export:pdf', async (event, payload: ExportDocumentPayload) => {
+    const window = getWindowFromSender(event.sender);
+    return exportDocumentAsPdf(window, payload);
+  });
+
+  ipcMain.handle('export:image', async (event, payload: ExportDocumentPayload) => {
+    const window = getWindowFromSender(event.sender);
+    return exportDocumentAsImage(window, payload);
+  });
+
+  ipcMain.handle(
+    'export:pandoc',
+    async (
+      event,
+      payload: ExportDocumentPayload,
+      format: PandocExportFormat,
+      options?: { templatePath?: string | null; chooseTemplate?: boolean },
+    ) => {
+      const window = getWindowFromSender(event.sender);
+      return exportDocumentWithPandoc(window, payload, format, options ?? {});
+    },
+  );
+
+  ipcMain.handle('export:capabilities', async () => {
+    return getExportCapabilities();
+  });
+
+  ipcMain.handle('export:pandoc-templates', async () => {
+    return getPandocTemplates();
+  });
+
+  ipcMain.handle(
+    'export:pandoc-template-set',
+    async (_event, format: PandocExportFormat, templatePath: string | null) => {
+      return updatePandocTemplate(format, templatePath);
+    },
+  );
+
+  ipcMain.handle(
+    'export:pandoc-template-choose',
+    async (event, format: PandocExportFormat) => {
+      const window = getWindowFromSender(event.sender);
+      return pickPandocTemplate(window, format);
+    },
+  );
 
   ipcMain.handle('theme:set', async (_event, theme: ThemeMode) => {
     nativeTheme.themeSource = theme;

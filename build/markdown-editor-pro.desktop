@@ -2,10 +2,12 @@
 Name=Markdown Editor Pro
 Comment=A professional Markdown editor
 Exec=/usr/local/bin/markdown-editor-pro %F
+TryExec=/usr/local/bin/markdown-editor-pro
 Icon=markdown-editor-pro
 Terminal=false
 Type=Application
-Categories=Office;TextEditor;
-MimeType=text/markdown;
+Categories=Office;TextEditor;Utility;
+MimeType=text/markdown;text/x-markdown;
 StartupWMClass=markdown-editor-pro
+StartupNotify=true
 Keywords=markdown;editor;text;document;

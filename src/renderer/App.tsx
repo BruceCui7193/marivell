@@ -214,6 +214,12 @@ export default function App() {
     applyOpenedDocument(document);
   }, [applyOpenedDocument, confirmDiscardChanges]);
 
+  /** Force-reload from disk without a second discard confirm (caller already asked). */
+  const reloadDocumentPath = useCallback(async (filePath: string): Promise<void> => {
+    const document = await window.markdownEditor.openDocumentPath(filePath);
+    applyOpenedDocument(document);
+  }, [applyOpenedDocument]);
+
   const openFolder = useCallback(async (): Promise<void> => {
     try {
       const opened = await window.markdownEditor.openFolderDialogInNewWindow();
@@ -281,28 +287,15 @@ export default function App() {
       return;
     }
 
-    if (action === 'save-document') {
-      window.dispatchEvent(
-        new CustomEvent<MenuAction>('markdown-editor:menu-action', {
-          detail: action,
-        }),
-      );
-      return;
-    }
-
-    if (action === 'save-document-as') {
-      window.dispatchEvent(
-        new CustomEvent<MenuAction>('markdown-editor:menu-action', {
-          detail: action,
-        }),
-      );
-      return;
-    }
-
     if (
+      action === 'save-document' ||
+      action === 'save-document-as' ||
       action === 'toggle-source-mode' ||
       action === 'toggle-toolbar' ||
-      action === 'toggle-sidebar'
+      action === 'toggle-sidebar' ||
+      action === 'export-pdf' ||
+      action === 'export-image' ||
+      action === 'export-pandoc'
     ) {
       window.dispatchEvent(
         new CustomEvent<MenuAction>('markdown-editor:menu-action', {
@@ -399,6 +392,7 @@ export default function App() {
           onDocumentChange={handleDocumentChange}
           onDocumentMetaChange={handleDocumentMetaChange}
           onOpenDocumentPath={openDocumentPath}
+          onReloadDocumentPath={reloadDocumentPath}
           onOpenFolder={openFolder}
           onOpenDocument={openDocument}
           onSaveDocument={handleSaveDocument}

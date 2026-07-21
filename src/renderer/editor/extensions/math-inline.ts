@@ -41,6 +41,20 @@ export const MathInline = Node.create({
       evaluate: {
         default: 'no',
       },
+      // Preserve original delimiter style through parse ↔ serialize round-trips
+      // (`$...$`, `\(...\)`, `$$...$$`, `\[...\]`).
+      openDelim: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-open-delim'),
+        renderHTML: (attributes) =>
+          attributes.openDelim ? { 'data-open-delim': attributes.openDelim } : {},
+      },
+      closeDelim: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-close-delim'),
+        renderHTML: (attributes) =>
+          attributes.closeDelim ? { 'data-close-delim': attributes.closeDelim } : {},
+      },
     };
   },
 

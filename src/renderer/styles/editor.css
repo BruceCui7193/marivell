@@ -1660,23 +1660,63 @@
 .editor-surface table {
   width: 100%;
   border-collapse: collapse;
-  overflow: hidden;
+  /* auto layout: content-driven widths; no drag-resize deforming columns */
+  table-layout: auto;
+  overflow: visible;
   border-radius: 18px;
   border: 1px solid var(--ui-border);
 }
 
+.editor-surface .tableWrapper {
+  overflow-x: auto;
+  margin: 0.9rem 0;
+}
+
 .editor-surface th,
 .editor-surface td {
-  padding: 12px 14px;
+  position: relative;
+  min-width: 3em;
+  padding: 10px 12px;
   border-right: 1px solid var(--ui-border);
   border-bottom: 1px solid var(--ui-border);
   vertical-align: top;
+  /* Text selection first — avoid browser drag of cell contents as a block */
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.editor-surface th > *,
+.editor-surface td > * {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .editor-surface th {
   background: rgba(53, 104, 89, 0.1);
   font-size: 0.92rem;
   text-align: left;
+}
+
+/* Disable residual column-resize chrome if any plugin left styles behind */
+.editor-surface .column-resize-handle {
+  display: none !important;
+  pointer-events: none !important;
+  width: 0 !important;
+}
+
+.editor-surface.resize-cursor {
+  cursor: text !important;
+}
+
+/* Multi-cell selection (Shift+arrow / drag across cells) — keep subtle */
+.editor-surface .selectedCell::after {
+  z-index: 1;
+  position: absolute;
+  content: '';
+  inset: 0;
+  background: color-mix(in srgb, var(--ui-accent) 14%, transparent);
+  pointer-events: none;
 }
 
 .editor-surface img {
@@ -2318,3 +2358,271 @@
   color: #6b7280;
 }
 
+
+/* ========== Source editor (highlighted) ========== */
+
+.source-editor {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: stretch;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  font-family: "Cascadia Code", "JetBrains Mono", "SF Mono", "Fira Code",
+    "Sarasa Mono SC", "Segoe UI", "Microsoft YaHei UI", ui-monospace, monospace;
+  font-size: 14px;
+  line-height: 1.7;
+  tab-size: 2;
+}
+
+.source-editor__gutter {
+  z-index: 2;
+  min-width: 3.2rem;
+  height: 100%;
+  padding: 28px 10px 36px 14px;
+  border-right: 1px solid color-mix(in srgb, var(--ui-border) 85%, transparent);
+  background: color-mix(in srgb, var(--ui-bg-strong) 78%, var(--ui-editor-bg));
+  color: var(--ui-text-soft);
+  text-align: right;
+  user-select: none;
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+}
+
+.source-editor__line-no {
+  height: 1.7em;
+  line-height: 1.7em;
+  font-size: 12px;
+  opacity: 0.78;
+}
+
+.source-editor__stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.source-editor__highlight,
+.source-editor__input {
+  margin: 0;
+  padding: 28px 28px 40px 18px;
+  border: 0;
+  font: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+  white-space: pre;
+  word-wrap: normal;
+  overflow-wrap: normal;
+  tab-size: inherit;
+  box-sizing: border-box;
+}
+
+.source-editor__highlight {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  color: var(--ui-text);
+  background: transparent;
+}
+
+.source-editor__input {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  outline: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--ui-accent);
+  overflow: auto;
+}
+
+.source-editor__input::placeholder {
+  color: var(--ui-text-soft);
+}
+
+.source-editor__input::selection {
+  background: color-mix(in srgb, var(--ui-accent) 28%, transparent);
+  color: transparent;
+}
+
+/* Markdown tokens */
+.md-token--heading-marker { color: var(--ui-accent); font-weight: 700; }
+.md-token--strong { color: #b45309; font-weight: 700; }
+.md-token--emphasis { color: #7c3aed; font-style: italic; }
+.md-token--strike { color: var(--ui-text-soft); text-decoration: line-through; }
+.md-token--code,
+.md-token--codeblock { color: var(--ui-code-text); background: color-mix(in srgb, var(--ui-code-bg) 55%, transparent); border-radius: 3px; }
+.md-token--codeblock { background: transparent; }
+.md-token--fence { color: #0f766e; font-weight: 600; }
+.md-token--link { color: #2563eb; }
+.md-token--image { color: #db2777; }
+.md-token--math { color: #c026d3; }
+.md-token--list-marker { color: var(--ui-accent); font-weight: 600; }
+.md-token--task { color: #ea580c; font-weight: 600; }
+.md-token--quote-marker { color: #64748b; font-weight: 700; }
+.md-token--table { color: #0369a1; }
+.md-token--hr { color: var(--ui-text-soft); }
+.md-token--footnote { color: #9333ea; }
+.md-token--keyword { color: var(--ui-syntax-keyword); }
+.md-token--string { color: var(--ui-syntax-string); }
+.md-token--number { color: var(--ui-syntax-number); }
+.md-token--comment { color: var(--ui-syntax-comment); font-style: italic; }
+
+:root[data-theme='dark'] .md-token--strong { color: #fbbf24; }
+:root[data-theme='dark'] .md-token--emphasis { color: #c4b5fd; }
+:root[data-theme='dark'] .md-token--link { color: #93c5fd; }
+:root[data-theme='dark'] .md-token--image { color: #f9a8d4; }
+:root[data-theme='dark'] .md-token--math { color: #e879f9; }
+:root[data-theme='dark'] .md-token--fence { color: #5eead4; }
+:root[data-theme='dark'] .md-token--table { color: #7dd3fc; }
+:root[data-theme='dark'] .md-token--task { color: #fdba74; }
+
+/* ========== Context menu ========== */
+
+.context-menu {
+  position: fixed;
+  z-index: 10000;
+  min-width: 200px;
+  max-width: min(280px, calc(100vw - 16px));
+  max-height: min(420px, calc(100vh - 24px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--ui-border) 90%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--ui-bg-strong) 94%, transparent);
+  box-shadow:
+    0 18px 40px rgba(15, 23, 42, 0.14),
+    0 2px 8px rgba(15, 23, 42, 0.06);
+  backdrop-filter: blur(14px) saturate(1.2);
+  animation: contextMenuIn 120ms ease-out;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ui-border) 90%, transparent) transparent;
+}
+
+@keyframes contextMenuIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.context-menu__item {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ui-text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.context-menu__item:hover:not(.is-disabled),
+.context-menu__item:focus-visible:not(.is-disabled) {
+  background: var(--ui-accent-soft);
+  outline: none;
+}
+
+.context-menu__item.is-disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.context-menu__item.is-danger {
+  color: #dc2626;
+}
+
+.context-menu__icon {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  color: var(--ui-text-soft);
+}
+
+.context-menu__icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.context-menu__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-menu__shortcut {
+  color: var(--ui-text-soft);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.context-menu__separator {
+  height: 1px;
+  margin: 5px 8px;
+  background: color-mix(in srgb, var(--ui-border) 88%, transparent);
+}
+
+/* Status bar extras */
+.status-bar__badge.is-dirty {
+  color: #c2410c;
+  font-weight: 600;
+}
+
+:root[data-theme='dark'] .status-bar__badge.is-dirty {
+  color: #fdba74;
+}
+
+.status-bar__mode {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--ui-accent-soft);
+  color: var(--ui-accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.status-bar__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 36vw;
+}
+
+.editor-frame.is-source {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-frame.is-source .source-editor {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Source editor placeholder only (no empty-doc coaching text in visual mode). */
+.source-editor__input::placeholder {
+  color: color-mix(in srgb, var(--ui-text-soft) 85%, transparent);
+}

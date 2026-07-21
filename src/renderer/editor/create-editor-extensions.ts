@@ -18,7 +18,6 @@ import { HtmlBlock } from './extensions/html-block';
 import { MermaidBlock } from './extensions/mermaid-block';
 import { TypingShortcuts } from './extensions/typing-shortcuts';
 import { MathInline } from './extensions/math-inline';
-import { TextSelection } from '@tiptap/pm/state';
 
 import { createImageDropPasteExtension } from './plugins/image-drop-paste';
 import { createMarkdownPasteExtension } from './plugins/markdown-paste';
@@ -116,14 +115,38 @@ export function createEditorExtensions({
     TaskItem.configure({
       nested: true,
     }),
+    // resizable:false — column drag-resize is too easy to trigger while selecting
+    // text in cells and warps the whole table. Add/remove rows & columns via toolbar.
     Table.configure({
-      resizable: true,
-      allowTableNodeSelection: true,
-      lastColumnResizable: true,
+      resizable: false,
+      allowTableNodeSelection: false,
     }),
     TableRow,
-    TableHeader,
-    TableCell,
+    // Ignore legacy colwidth from previously resized tables so layout stays natural.
+    TableHeader.extend({
+      addAttributes() {
+        return {
+          ...this.parent?.(),
+          colwidth: {
+            default: null,
+            parseHTML: () => null,
+            renderHTML: () => ({}),
+          },
+        };
+      },
+    }),
+    TableCell.extend({
+      addAttributes() {
+        return {
+          ...this.parent?.(),
+          colwidth: {
+            default: null,
+            parseHTML: () => null,
+            renderHTML: () => ({}),
+          },
+        };
+      },
+    }),
     EditableImage.configure({
       inline: false,
       allowBase64: true,

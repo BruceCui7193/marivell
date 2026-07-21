@@ -92,6 +92,31 @@ function normalizeBlockMathPairs(
   return result;
 }
 
+/**
+ * Heuristic to avoid treating currency / plain numbers as math.
+ * Accepts LaTeX-ish content ($E=mc^2$, $\alpha$, $x_1$) while rejecting
+ * patterns like `$5 and $10` or `$99.99$`.
+ */
+function isLikelyMathExpression(expression: string): boolean {
+  const expr = expression.trim();
+  if (!expr) {
+    return false;
+  }
+
+  // Pure numeric / currency-like amounts
+  if (/^[\d\s.,]+$/.test(expr)) {
+    return false;
+  }
+
+  // Prose with spaces but no LaTeX operators → almost certainly not math
+  // (e.g. "5 and" from the false pair `$5 and $10`)
+  if (/\s/.test(expr) && !/[\\^_{}]/.test(expr) && !/[a-zA-Z0-9]\s*[=+\-*/]\s*[a-zA-Z0-9]/.test(expr)) {
+    return false;
+  }
+
+  return true;
+}
+
 function normalizeInlineMathPairs(
   markdown: string,
   open: string,
@@ -116,6 +141,17 @@ function normalizeInlineMathPairs(
       continue;
     }
 
+    // `$` math must not start with whitespace (avoids `$ 5$` oddities and
+    // reduces accidental pairs in prose).
+    if (open === '$') {
+      const next = markdown[cursor + open.length];
+      if (!next || /\s/.test(next)) {
+        result += markdown[cursor];
+        cursor += 1;
+        continue;
+      }
+    }
+
     const searchStart = cursor + open.length;
     const closeIndex = findInlineMathClose(markdown, searchStart, close);
     if (closeIndex === -1) {
@@ -124,8 +160,24 @@ function normalizeInlineMathPairs(
       continue;
     }
 
-    const expression = markdown.slice(searchStart, closeIndex).trim();
+    // Closing `$` must not be preceded by whitespace.
+    if (open === '$' && closeIndex > searchStart && /\s/.test(markdown[closeIndex - 1] ?? '')) {
+      result += markdown[cursor];
+      cursor += 1;
+      continue;
+    }
+
+    const rawExpression = markdown.slice(searchStart, closeIndex);
+    const expression = rawExpression.trim();
     if (!expression) {
+      result += markdown[cursor];
+      cursor += 1;
+      continue;
+    }
+
+    // Only apply currency/prose heuristics for single-dollar delimiters.
+    // `\(...\)` is unambiguous and should always be treated as math.
+    if (open === '$' && !isLikelyMathExpression(expression)) {
       result += markdown[cursor];
       cursor += 1;
       continue;
@@ -175,15 +227,18 @@ function splitTextWithMathPlaceholders(
     }
 
     const placeholder = placeholders.get(token);
-    if (placeholder?.kind === 'inline') {
+    if (placeholder) {
+      // Both inline and block placeholders become inlineMath nodes. Block math
+      // uses display="yes". Never leave raw @@MARKDOWN_EDITOR_MATH_*@@ tokens
+      // in the document — that was a major mode-switch corruption source.
       parts.push({
         type: 'inlineMath',
         attrs: {
-          latex: placeholder.value,
-          display: 'no',
+          display: placeholder.kind === 'block' ? 'yes' : 'no',
           openDelim: placeholder.openDelim,
           closeDelim: placeholder.closeDelim,
         },
+        content: placeholder.value ? [{ type: 'text', text: placeholder.value }] : undefined,
       });
     } else {
       parts.push({
@@ -644,8 +699,38 @@ function flowChildrenToMarkdown(children: JSONContent[] = []): MarkdownNode[] {
 
 function flowToMarkdown(node: JSONContent): MarkdownNode[] {
   switch (node.type) {
-    case 'paragraph':
-      return [{ type: 'paragraph', children: inlineChildrenToMarkdown(node.content) }];
+    case 'paragraph': {
+      // Promote display math out of paragraphs so `$$...$$` / `\[...\]` stay
+      // block-level and round-trip without accumulating blank lines.
+      const children = node.content ?? [];
+      const blocks: MarkdownNode[] = [];
+      let inlineBuffer: JSONContent[] = [];
+
+      const flushInline = () => {
+        if (inlineBuffer.length === 0) {
+          return;
+        }
+        blocks.push({
+          type: 'paragraph',
+          children: inlineChildrenToMarkdown(inlineBuffer),
+        });
+        inlineBuffer = [];
+      };
+
+      for (const child of children) {
+        if (child.type === 'inlineMath' && child.attrs?.display === 'yes') {
+          flushInline();
+          blocks.push(...inlineToMarkdown(child));
+          continue;
+        }
+        inlineBuffer.push(child);
+      }
+      flushInline();
+
+      return blocks.length > 0
+        ? blocks
+        : [{ type: 'paragraph', children: inlineChildrenToMarkdown([]) }];
+    }
     case 'heading':
       return [
         {
@@ -883,6 +968,11 @@ function stringifyBlockNodes(children: MarkdownNode[] = []): string {
   return children.map((child) => stringifyBlockNode(child)).join('\n\n');
 }
 
+/** List item children stay tight (single newlines) to preserve nested list shape. */
+function stringifyListItemChildren(children: MarkdownNode[] = []): string {
+  return children.map((child) => stringifyBlockNode(child)).join('\n');
+}
+
 function stringifyBlockNode(node: MarkdownNode): string {
   switch (node.type) {
     case 'paragraph':
@@ -898,27 +988,49 @@ function stringifyBlockNode(node: MarkdownNode): string {
     }
     case 'code':
       return `\`\`\`${node.lang ?? ''}\n${String(node.value ?? '')}\n\`\`\``;
-    case 'math':
-      return `$$\n${String(node.value ?? '')}\n$$`;
+    case 'math': {
+      const val = String(node.value ?? '');
+      const open = String((node as any).openDelim || '$$');
+      const close = String((node as any).closeDelim || '$$');
+      // Multi-char delimiters ($$, \[ \]) put content on its own lines.
+      if (Math.max(open.length, close.length) > 1) {
+        return `${open}\n${val}\n${close}`;
+      }
+      return `${open}${val}${close}`;
+    }
     case 'list': {
       const ordered = Boolean(node.ordered);
       const start = node.start ?? 1;
-      return (node.children ?? []).map((item: MarkdownNode, index: number) => {
-        const marker = ordered ? `${start + index}. ` : '- ';
-        const itemContent = stringifyBlockNodes(item.children);
-        const lines = itemContent.split('\n');
-        const firstLine = `${marker}${lines[0] ?? ''}`;
-        const restLines = lines.slice(1).map((line) => (line ? `  ${line}` : ''));
-        return [firstLine, ...restLines].join('\n');
-      }).join('\n');
+      return (node.children ?? [])
+        .map((item: MarkdownNode, index: number) => {
+          const checked = item.checked;
+          let marker: string;
+          if (checked === true) {
+            marker = '- [x] ';
+          } else if (checked === false) {
+            marker = '- [ ] ';
+          } else if (ordered) {
+            marker = `${start + index}. `;
+          } else {
+            marker = '- ';
+          }
+
+          // Tight lists: join child blocks with single newlines so nested lists
+          // don't pick up an extra blank line between the parent item and children.
+          const itemContent = stringifyListItemChildren(item.children);
+          const lines = itemContent.split('\n');
+          const firstLine = `${marker}${lines[0] ?? ''}`;
+          const restLines = lines.slice(1).map((line) => (line ? `  ${line}` : ''));
+          return [firstLine, ...restLines].join('\n');
+        })
+        .join('\n');
     }
     case 'listItem': {
       const checked = node.checked;
-      const marker = checked === true ? '[x]' : checked === false ? '[ ]' : null;
-      const inner = stringifyBlockNodes(node.children);
-      const prefix = marker ? `- ${marker} ` : '- ';
+      const marker = checked === true ? '- [x] ' : checked === false ? '- [ ] ' : '- ';
+      const inner = stringifyListItemChildren(node.children);
       const lines = inner.split('\n');
-      const firstLine = `${prefix}${lines[0] ?? ''}`;
+      const firstLine = `${marker}${lines[0] ?? ''}`;
       const restLines = lines.slice(1).map((line) => (line ? `  ${line}` : ''));
       return [firstLine, ...restLines].join('\n');
     }

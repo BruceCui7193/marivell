@@ -37,7 +37,11 @@ type IconName =
   | 'appearance'
   | 'sun'
   | 'moon'
-  | 'autoTheme';
+  | 'autoTheme'
+  | 'cut'
+  | 'copy'
+  | 'paste'
+  | 'selectAll';
 
 const iconPaths: Record<IconName, ReactElement> = {
   menu: (
@@ -247,6 +251,59 @@ const iconPaths: Record<IconName, ReactElement> = {
       />
     </>
   ),
+  cut: (
+    <>
+      <circle cx="7.5" cy="17" r="2.2" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="16.5" cy="17" r="2.2" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path
+        d="M9 15.2 15 4.5M15 15.2 9 4.5"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.8"
+      />
+    </>
+  ),
+  copy: (
+    <>
+      <rect x="9" y="9" width="10" height="10" rx="2" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path
+        d="M7 15V7a2 2 0 012-2h8"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.8"
+      />
+    </>
+  ),
+  paste: (
+    <>
+      <path
+        d="M8 7h8a2 2 0 012 2v10a2 2 0 01-2 2H8a2 2 0 01-2-2V9a2 2 0 012-2z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M10 7V6a2 2 0 012-2h0a2 2 0 012 2v1"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+    </>
+  ),
+  selectAll: (
+    <>
+      <rect x="5" y="5" width="14" height="14" rx="2" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path
+        d="M8 9h8M8 12h8M8 15h5"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.8"
+      />
+    </>
+  ),
 };
 
 const iconFileNames: Record<IconName, string> = {
@@ -287,6 +344,10 @@ const iconFileNames: Record<IconName, string> = {
   sun: 'sun.ico',
   moon: 'moon.ico',
   autoTheme: 'autoTheme.ico',
+  cut: 'menu.ico',
+  copy: 'menu.ico',
+  paste: 'menu.ico',
+  selectAll: 'menu.ico',
 };
 
 function buildIconAssetMap(folderName: 'ico_dark' | 'ico_light'): Record<IconName, string> {
@@ -308,6 +369,10 @@ const vectorOnlyIcons = new Set<IconName>([
   'columnAddAfter',
   'columnDelete',
   'tableDelete',
+  'cut',
+  'copy',
+  'paste',
+  'selectAll',
 ]);
 
 const loadedIconAssets = new Set<string>();

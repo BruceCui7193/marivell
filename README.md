@@ -21,8 +21,10 @@
 - 支持多窗口
 - 支持未保存修改保护
 - 支持记住上次窗口大小、位置和最大化状态
-- 支持导出 PDF
-- 支持导出整篇图片长图，并显示导出进度
+- 支持高质量导出 PDF（独立 Markdown 渲染管线，KaTeX 公式 / Mermaid 图表 / 任务列表完整保留）
+- 支持导出 2× 高清长图（Chrome DevTools 全页截图）
+- 支持通过 Pandoc 导出 Word (DOCX)、HTML、EPUB、LaTeX、ODT、RTF、PPTX 等格式（需安装 [Pandoc](https://pandoc.org)）
+- 支持 Pandoc 自定义模板：DOCX/ODT/PPTX 参考文档（`--reference-doc`）、HTML/LaTeX 模板（`--template`）、EPUB 样式表（`--css`）；可设置默认模板或在导出时临时选择
 - 支持 Windows/Linux 文件关联，可将 `.md` / `.markdown` 文件默认关联到本应用
 
 ## 技术栈
