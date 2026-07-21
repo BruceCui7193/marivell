@@ -1291,15 +1291,35 @@ export default function EditorShell({
   }, [document.path]);
 
   useEffect(() => {
-    if (!editor || sourceMode) {
+    if (!editor) {
       return;
     }
 
-    if (document.markdown === lastEmittedMarkdownRef.current) {
+    // Never leave the visual editor locked when we are not actively loading into it
+    // (source mode, or content already synced). Stuck contenteditable=false is what
+    // makes the caret disappear after external reloads.
+    const ensureEditable = () => {
+      if (editor.isDestroyed) {
+        return;
+      }
+      if (!editor.isEditable) {
+        editor.setEditable(true);
+      }
+    };
+
+    if (sourceMode) {
+      ensureEditable();
       setLoadingExternalDocument(false);
       return;
     }
 
+    if (document.markdown === lastEmittedMarkdownRef.current) {
+      ensureEditable();
+      setLoadingExternalDocument(false);
+      return;
+    }
+
+    let cancelled = false;
     const loadId = latestExternalLoadRef.current + 1;
     latestExternalLoadRef.current = loadId;
     setLoadingExternalDocument(true);
@@ -1313,135 +1333,117 @@ export default function EditorShell({
       pendingScrollRestoreRef.current = savedRatio;
     }
 
+    const isActiveLoad = () =>
+      !cancelled && latestExternalLoadRef.current === loadId && !editor.isDestroyed;
+
+    const finishLoad = () => {
+      if (!isActiveLoad()) {
+        return;
+      }
+      editor.setEditable(true);
+      setLoadingExternalDocument(false);
+      // window.confirm() steals focus; put the caret back after content is ready.
+      // startupCaretPlaced effect also runs when loading flips false.
+      requestAnimationFrame(() => {
+        if (!isActiveLoad() || sourceModeRef.current || !editor.isEditable) {
+          return;
+        }
+        if (!editor.view.hasFocus()) {
+          try {
+            editor.commands.focus();
+          } catch {
+            // ignore focus failures on destroyed views
+          }
+        }
+      });
+    };
+
+    const applyParsedContent = (content: JSONContent, outlineItems: OutlineItem[] | null) => {
+      if (!isActiveLoad() || sourceModeRef.current) {
+        return;
+      }
+
+      externalUpdateRef.current = true;
+      armSkipNextDocChange();
+      visualDocEditedRef.current = false;
+      editor.commands.setContent(content, false);
+      externalUpdateRef.current = false;
+
+      // Keep the file's original markdown as canonical so a load+mode-switch
+      // does not rewrite the document via parse/serialize normalization.
+      const stats = calculateDocumentStats(getEditorPlainText(editor));
+      const nextOutline = outlineItems ?? extractOutline(document.markdown);
+      visualMarkdownRef.current = document.markdown;
+      visualStatsRef.current = stats;
+      lastEmittedMarkdownRef.current = document.markdown;
+      setOutline((current) => (areOutlinesEqual(current, nextOutline) ? current : nextOutline));
+      setLiveStats((current) => (areStatsEqual(current, stats) ? current : stats));
+      setLiveDirty(document.dirty);
+      setVisualSearchRevision((current) => current + 1);
+    };
+
+    const applyEmptyFallback = () => {
+      if (!isActiveLoad()) {
+        return;
+      }
+
+      const emptyStats = computeSourceStats('');
+      externalUpdateRef.current = true;
+      armSkipNextDocChange();
+      visualDocEditedRef.current = false;
+      editor.commands.setContent(createEmptyDocument(), false);
+      externalUpdateRef.current = false;
+      visualMarkdownRef.current = '';
+      visualStatsRef.current = emptyStats;
+      lastEmittedMarkdownRef.current = '';
+      setOutline((current) => (current.length === 0 ? current : []));
+      setLiveStats((current) => (areStatsEqual(current, emptyStats) ? current : emptyStats));
+      setLiveDirty(document.dirty);
+      setVisualSearchRevision((current) => current + 1);
+    };
+
     if (document.markdown.length < LARGE_DOCUMENT_THRESHOLD) {
       void import('../editor/markdown')
         .then(({ parseMarkdown }) => {
-          if (latestExternalLoadRef.current !== loadId || sourceModeRef.current || !editor) {
-            return;
-          }
-
-          externalUpdateRef.current = true;
-          armSkipNextDocChange();
-          visualDocEditedRef.current = false;
-          editor.commands.setContent(parseMarkdown(document.markdown), false);
-          externalUpdateRef.current = false;
-
-          // Keep the file's original markdown as canonical so a load+mode-switch
-          // does not rewrite the document via parse/serialize normalization.
-          const stats = calculateDocumentStats(getEditorPlainText(editor));
-          const nextOutline = extractOutline(document.markdown);
-          visualMarkdownRef.current = document.markdown;
-          visualStatsRef.current = stats;
-          lastEmittedMarkdownRef.current = document.markdown;
-          setOutline((current) => (areOutlinesEqual(current, nextOutline) ? current : nextOutline));
-          setLiveStats((current) => (areStatsEqual(current, stats) ? current : stats));
-          setLiveDirty(document.dirty);
-          setVisualSearchRevision((current) => current + 1);
+          applyParsedContent(parseMarkdown(document.markdown), null);
         })
         .catch(() => {
-          if (latestExternalLoadRef.current !== loadId || !editor) {
-            return;
-          }
-
-          const emptyStats = computeSourceStats('');
-          externalUpdateRef.current = true;
-          armSkipNextDocChange();
-          visualDocEditedRef.current = false;
-          editor.commands.setContent(createEmptyDocument(), false);
-          externalUpdateRef.current = false;
-          visualMarkdownRef.current = '';
-          visualStatsRef.current = emptyStats;
-          lastEmittedMarkdownRef.current = '';
-          setOutline((current) => (current.length === 0 ? current : []));
-          setLiveStats((current) => (areStatsEqual(current, emptyStats) ? current : emptyStats));
-          setLiveDirty(document.dirty);
-          setVisualSearchRevision((current) => current + 1);
+          applyEmptyFallback();
         })
         .finally(() => {
-          if (latestExternalLoadRef.current === loadId) {
-            editor.setEditable(true);
-            setLoadingExternalDocument(false);
-          }
+          finishLoad();
         });
-
-      return;
+    } else {
+      void parseMarkdownInWorker(document.markdown)
+        .then((result) => {
+          applyParsedContent(result.content, result.outline);
+        })
+        .catch(async () => {
+          try {
+            const { parseMarkdown } = await import('../editor/markdown');
+            if (!isActiveLoad()) {
+              return;
+            }
+            applyParsedContent(parseMarkdown(document.markdown), null);
+          } catch {
+            applyEmptyFallback();
+          }
+        })
+        .finally(() => {
+          finishLoad();
+        });
     }
 
-    void parseMarkdownInWorker(document.markdown)
-      .then((result) => {
-        if (latestExternalLoadRef.current !== loadId || sourceModeRef.current || !editor) {
-          return;
-        }
-
-        externalUpdateRef.current = true;
-        armSkipNextDocChange();
-        visualDocEditedRef.current = false;
-        editor.commands.setContent(result.content, false);
-        externalUpdateRef.current = false;
-
-        const stats = calculateDocumentStats(getEditorPlainText(editor));
-        visualMarkdownRef.current = document.markdown;
-        visualStatsRef.current = stats;
-        lastEmittedMarkdownRef.current = document.markdown;
-        setOutline((current) => (areOutlinesEqual(current, result.outline) ? current : result.outline));
-        setLiveStats((current) => (areStatsEqual(current, stats) ? current : stats));
-        setLiveDirty(document.dirty);
-        setVisualSearchRevision((current) => current + 1);
-      })
-      .catch(async () => {
-        if (latestExternalLoadRef.current !== loadId || !editor) {
-          return;
-        }
-
-        try {
-          const { parseMarkdown } = await import('../editor/markdown');
-          if (latestExternalLoadRef.current !== loadId || !editor) {
-            return;
-          }
-
-          externalUpdateRef.current = true;
-          armSkipNextDocChange();
-          visualDocEditedRef.current = false;
-          editor.commands.setContent(parseMarkdown(document.markdown), false);
-          externalUpdateRef.current = false;
-
-          const stats = calculateDocumentStats(getEditorPlainText(editor));
-          const nextOutline = extractOutline(document.markdown);
-          visualMarkdownRef.current = document.markdown;
-          visualStatsRef.current = stats;
-          lastEmittedMarkdownRef.current = document.markdown;
-          setOutline((current) => (areOutlinesEqual(current, nextOutline) ? current : nextOutline));
-          setLiveStats((current) => (areStatsEqual(current, stats) ? current : stats));
-          setLiveDirty(document.dirty);
-          setVisualSearchRevision((current) => current + 1);
-          return;
-        } catch {
-          if (latestExternalLoadRef.current !== loadId || !editor) {
-            return;
-          }
-
-          const emptyStats = computeSourceStats('');
-          externalUpdateRef.current = true;
-          armSkipNextDocChange();
-          visualDocEditedRef.current = false;
-          editor.commands.setContent(createEmptyDocument(), false);
-          externalUpdateRef.current = false;
-          visualMarkdownRef.current = '';
-          visualStatsRef.current = emptyStats;
-          lastEmittedMarkdownRef.current = '';
-          setOutline((current) => (current.length === 0 ? current : []));
-          setLiveStats((current) => (areStatsEqual(current, emptyStats) ? current : emptyStats));
-          setLiveDirty(document.dirty);
-          setVisualSearchRevision((current) => current + 1);
-        }
-      })
-      .finally(() => {
-        if (latestExternalLoadRef.current === loadId) {
-          editor.setEditable(true);
-          setLoadingExternalDocument(false);
-        }
-      });
-  }, [document.markdown, document.path, editor, parseMarkdownInWorker, sourceMode]);
+    return () => {
+      cancelled = true;
+      // If this load is still the latest owner, unlock so a cancelled/re-run path
+      // cannot leave contenteditable=false. A newer load will lock again immediately.
+      if (latestExternalLoadRef.current === loadId && !editor.isDestroyed) {
+        editor.setEditable(true);
+        setLoadingExternalDocument(false);
+      }
+    };
+  }, [document.markdown, document.path, document.dirty, editor, parseMarkdownInWorker, sourceMode]);
 
   useEffect(() => {
     if (sourceMode) {

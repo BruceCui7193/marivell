@@ -158,8 +158,11 @@ export default function App() {
     }
   }, []);
 
-  const applyOpenedDocument = useCallback((openedDocument: OpenedDocument): void => {
-    startTransition(() => {
+  const applyOpenedDocument = useCallback((
+    openedDocument: OpenedDocument,
+    options?: { urgent?: boolean },
+  ): void => {
+    const apply = () => {
       setEditorDocument((current) => ({
         ...current,
         path: openedDocument.path,
@@ -170,7 +173,15 @@ export default function App() {
         lastSavedAt: Date.now(),
       }));
       setMessage(`\u5df2\u6253\u5f00 ${openedDocument.title}`);
-    });
+    };
+
+    // External reloads must not sit in a transition — delayed paint makes it
+    // easy for the editor to stay non-editable / unfocused after confirm.
+    if (options?.urgent) {
+      apply();
+    } else {
+      startTransition(apply);
+    }
     void refreshFolderForDocument(openedDocument.path);
   }, [refreshFolderForDocument]);
 
@@ -217,7 +228,7 @@ export default function App() {
   /** Force-reload from disk without a second discard confirm (caller already asked). */
   const reloadDocumentPath = useCallback(async (filePath: string): Promise<void> => {
     const document = await window.markdownEditor.openDocumentPath(filePath);
-    applyOpenedDocument(document);
+    applyOpenedDocument(document, { urgent: true });
   }, [applyOpenedDocument]);
 
   const openFolder = useCallback(async (): Promise<void> => {
