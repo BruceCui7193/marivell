@@ -190,6 +190,7 @@ export async function exportDocumentAsImage(
   }
 
   let cleanup: (() => Promise<void>) | null = null;
+  let finished = false;
   try {
     sendStatus(hostWindow, { active: true, message: '正在渲染文档…' });
     const html = await buildExportDocumentHtml({
@@ -209,16 +210,21 @@ export async function exportDocumentAsImage(
     });
 
     await fs.writeFile(saveResult.filePath, png);
+    finished = true;
     finishStatus(hostWindow, '已完成图片导出');
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await showError(hostWindow, '导出图片失败', '导出图片时出错', message);
-    sendStatus(hostWindow, { active: false, message: '' });
     return false;
   } finally {
     if (cleanup) {
-      await cleanup();
+      await cleanup().catch(() => undefined);
+    }
+    // Never leave the "正在生成高清长图" banner stuck if capture hangs then recovers
+    // via fallback failure, or if status was mid-flight when an error fired.
+    if (!finished) {
+      sendStatus(hostWindow, { active: false, message: '' });
     }
   }
 }

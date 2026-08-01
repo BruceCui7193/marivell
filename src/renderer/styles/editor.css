@@ -2209,8 +2209,10 @@
 }
 
 .math-block-node .math-node-preview {
-  display: flex;
-  justify-content: center;
+  /* Keep display math as a normal block so KaTeX reserves the right edge
+     for \tag; flex sizing makes the tag overlap the formula's last terms. */
+  display: block;
+  text-align: center;
 }
 
 /* Overlay contentDOM on top of the preview when not editing, keeping natural clickable size and shape */
@@ -2312,9 +2314,8 @@
 }
 
 .math-block-node.is-editing .math-node-preview {
-  display: flex;
-  justify-content: center;
-  align-items: center;
+  display: block;
+  text-align: center;
   border-top: 1px dashed var(--ui-border, rgba(128, 128, 128, 0.2));
   padding-top: 12px;
   width: 100%;
@@ -2424,6 +2425,7 @@
   inset: 0;
   z-index: 0;
   pointer-events: none;
+  user-select: none;
   overflow: hidden;
   color: var(--ui-text);
   background: transparent;
@@ -2439,17 +2441,29 @@
   resize: none;
   outline: none;
   background: transparent;
+  /* Keep glyphs invisible so the highlight layer is the only visible text;
+     -webkit-text-fill-color is required for reliable transparent text + selection
+     in Chromium/Electron dual-layer editors. */
   color: transparent;
+  -webkit-text-fill-color: transparent;
   caret-color: var(--ui-accent);
   overflow: auto;
 }
 
 .source-editor__input::placeholder {
   color: var(--ui-text-soft);
+  -webkit-text-fill-color: var(--ui-text-soft);
 }
 
 .source-editor__input::selection {
-  background: color-mix(in srgb, var(--ui-accent) 28%, transparent);
+  /* Opaque-enough mix so syntax colors do not muddy through the selection. */
+  background: color-mix(in srgb, var(--ui-accent) 38%, var(--ui-editor-bg));
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+.source-editor__input::-moz-selection {
+  background: color-mix(in srgb, var(--ui-accent) 38%, var(--ui-editor-bg));
   color: transparent;
 }
 

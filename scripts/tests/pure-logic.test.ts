@@ -346,6 +346,65 @@ section('clipboard slice serializer');
   };
   const tableTsv = serializeSliceForClipboard(tableSlice);
   assertEqual('table slice serializes as TSV', tableTsv, 'A\tB\n1\t2');
+
+  // Whole inline math (closed slice) keeps delimiter wrappers.
+  const wholeMath = {
+    content: {
+      toJSON: () => [
+        {
+          type: 'inlineMath',
+          attrs: { display: 'no', openDelim: '$', closeDelim: '$' },
+          content: [{ type: 'text', text: 'a^2' }],
+        },
+      ],
+    },
+    openStart: 0,
+    openEnd: 0,
+  };
+  const wholeMathText = serializeSliceForClipboard(wholeMath);
+  assert(
+    'whole math keeps wrappers',
+    wholeMathText.includes('$') && wholeMathText.includes('a^2'),
+    `got: ${JSON.stringify(wholeMathText)}`,
+  );
+
+  // Partial/open math slice stays raw (no wrappers) — interior edit copy.
+  const partialMath = {
+    content: {
+      toJSON: () => [
+        {
+          type: 'inlineMath',
+          attrs: { display: 'no', openDelim: '$', closeDelim: '$' },
+          content: [{ type: 'text', text: 'a^2' }],
+        },
+      ],
+    },
+    openStart: 1,
+    openEnd: 1,
+  };
+  const partialMathText = serializeSliceForClipboard(partialMath);
+  assertEqual('partial math is raw latex', partialMathText, 'a^2');
+
+  // Whole code block keeps fences.
+  const wholeCode = {
+    content: {
+      toJSON: () => [
+        {
+          type: 'codeBlock',
+          attrs: { language: 'js' },
+          content: [{ type: 'text', text: 'x = 1' }],
+        },
+      ],
+    },
+    openStart: 0,
+    openEnd: 0,
+  };
+  const wholeCodeText = serializeSliceForClipboard(wholeCode);
+  assert(
+    'whole code keeps fence markers',
+    wholeCodeText.includes('```') && wholeCodeText.includes('x = 1'),
+    `got: ${JSON.stringify(wholeCodeText)}`,
+  );
 }
 
 // ---------------------------------------------------------------------------

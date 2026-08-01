@@ -11,6 +11,13 @@ import { serializeMarkdownFragment } from './markdown';
  */
 const PLAIN_TEXT_STRUCTURAL_PARENTS = new Set(['tableCell', 'tableHeader']);
 
+/**
+ * Nodes whose *full* selection should serialize with Markdown wrappers
+ * (`$…$`, fenced code, etc.), while a *partial* selection inside them
+ * should stay raw (LaTeX body, code body).
+ */
+const WRAPPER_CONTENT_PARENTS = new Set(['inlineMath', 'codeBlock']);
+
 function parentTextblockDepth($pos: ResolvedPos): number | null {
   for (let depth = $pos.depth; depth > 0; depth -= 1) {
     if ($pos.node(depth).isTextblock) {
@@ -18,6 +25,81 @@ function parentTextblockDepth($pos: ResolvedPos): number | null {
     }
   }
   return null;
+}
+
+/** True when the selection covers an entire node (NodeSelection or full content span). */
+export function isWholeNodeSelection(
+  selection: {
+    from: number;
+    to: number;
+    empty: boolean;
+    $from: ResolvedPos;
+    $to: ResolvedPos;
+    node?: ProseMirrorNode;
+  },
+  nodeName?: string,
+): boolean {
+  if (selection.empty) {
+    return false;
+  }
+
+  if (selection instanceof NodeSelection) {
+    const node = selection.node;
+    return nodeName ? node.type.name === nodeName : true;
+  }
+
+  const { $from, $to } = selection;
+  if ($from.parent !== $to.parent) {
+    return false;
+  }
+
+  const parent = $from.parent;
+  if (nodeName && parent.type.name !== nodeName) {
+    return false;
+  }
+
+  // Full content of a wrapper parent (e.g. all LaTeX inside inlineMath).
+  if (
+    WRAPPER_CONTENT_PARENTS.has(parent.type.name) &&
+    $from.parentOffset === 0 &&
+    $to.parentOffset === parent.content.size
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * True when the caret/selection is strictly *inside* a wrapper node without
+ * covering the whole node (edit-mode partial copy of LaTeX / code).
+ */
+export function isPartialInsideWrapperParent(selection: {
+  empty: boolean;
+  $from: ResolvedPos;
+  $to: ResolvedPos;
+}): boolean {
+  if (selection.empty) {
+    return false;
+  }
+  if (selection instanceof NodeSelection) {
+    return false;
+  }
+
+  const { $from, $to } = selection;
+  if ($from.parent !== $to.parent) {
+    return false;
+  }
+
+  const parent = $from.parent;
+  if (!WRAPPER_CONTENT_PARENTS.has(parent.type.name)) {
+    return false;
+  }
+
+  // Not the full content → partial interior selection.
+  return !(
+    $from.parentOffset === 0 && $to.parentOffset === parent.content.size
+  );
 }
 
 function escapeHtml(value: string): string {
@@ -172,8 +254,11 @@ export function cellSelectionToMatrix(selection: CellSelection): {
 
 /**
  * True when the selection lives entirely inside one "plain text" parent
- * (table cell, code block, math formula, or a single paragraph/heading).
- * In those cases users expect raw text on the clipboard, not Markdown fences.
+ * (table cell, partial code/math, or a single paragraph/heading).
+ *
+ * Whole formula / whole code-block selections return false so the clipboard
+ * gets Markdown wrappers (`$…$`, fences). Partial interior selections stay
+ * raw (LaTeX body, code body only).
  */
 export function selectionPrefersPlainText(view: EditorView): boolean {
   const { selection } = view.state;
@@ -186,11 +271,24 @@ export function selectionPrefersPlainText(view: EditorView): boolean {
     return false;
   }
 
-  const { $from, $to } = selection;
+  // Whole-node selection (NodeSelection or full content of math/code) → wrappers.
+  if (selection instanceof NodeSelection) {
+    return false;
+  }
 
-  if (selection instanceof NodeSelection && $from.nodeAfter?.type.name === 'inlineMath') {
+  if (isPartialInsideWrapperParent(selection)) {
     return true;
   }
+
+  // Full content of a wrapper parent → Markdown with wrappers.
+  if (isWholeNodeSelection(selection)) {
+    const parentName = selection.$from.parent.type.name;
+    if (WRAPPER_CONTENT_PARENTS.has(parentName)) {
+      return false;
+    }
+  }
+
+  const { $from, $to } = selection;
 
   const fromTextblock = parentTextblockDepth($from);
   const toTextblock = parentTextblockDepth($to);
@@ -200,6 +298,15 @@ export function selectionPrefersPlainText(view: EditorView): boolean {
     fromTextblock === toTextblock &&
     $from.node(fromTextblock) === $to.node(toTextblock)
   ) {
+    const block = $from.node(fromTextblock);
+    // Entire code block selected as a textblock → keep fences via Markdown path.
+    if (
+      block.type.name === 'codeBlock' &&
+      $from.parentOffset === 0 &&
+      $to.parentOffset === block.content.size
+    ) {
+      return false;
+    }
     return true;
   }
 
@@ -243,7 +350,13 @@ export function buildClipboardPayload(view: EditorView): {
 
   const slice = selection.content();
   const content = slice.content.toJSON() as JSONContent[];
-  const markdown = serializeMarkdownFragment(content).trimEnd();
+  // Top-level inline nodes (whole formula NodeSelection) are not block roots in
+  // our markdown serializer — wrap so `$…$` / `$$…$$` survive on the clipboard.
+  const markdownContent =
+    content.length === 1 && content[0]?.type === 'inlineMath'
+      ? ([{ type: 'paragraph', content: [content[0]] }] as JSONContent[])
+      : content;
+  const markdown = serializeMarkdownFragment(markdownContent).trimEnd();
   const plainBetween = view.state.doc.textBetween(selection.from, selection.to, '\n', '\n');
 
   // Full table node selected as a single slice with type table
@@ -267,7 +380,9 @@ export function buildClipboardPayload(view: EditorView): {
     return { plain, html: null, markdown: null };
   }
 
-  const plain = plainBetween || markdown;
+  // Prefer Markdown for plain when structure matters (whole math/code, mixed
+  // selection). textBetween drops `$` / fences for atom-like inline nodes.
+  const plain = markdown || plainBetween;
   // Prefer real HTML for tables already serialized as markdown pipes.
   const html = looksLikeMarkdownTable(markdown)
     ? markdownTableToHtml(markdown)
@@ -425,6 +540,7 @@ export function serializeSliceForClipboard(slice: {
     }
   }
 
+  // Open slice → partial interior of a parent (e.g. mid-formula). Prefer raw text.
   if ((slice.openStart ?? 0) > 0 || (slice.openEnd ?? 0) > 0) {
     return extractLeafPlainText(content) || serializeMarkdownFragment(content).trimEnd();
   }
@@ -435,13 +551,27 @@ export function serializeSliceForClipboard(slice: {
 
   if (Array.isArray(content) && content.length === 1) {
     const only = content[0];
-    if (
-      only &&
-      (only.type === 'paragraph' ||
-        only.type === 'heading' ||
-        only.type === 'codeBlock' ||
-        only.type === 'inlineMath')
-    ) {
+    if (!only) {
+      return '';
+    }
+
+    // Whole formula / whole code block → keep Markdown wrappers on the clipboard.
+    // Top-level inlineMath is not a block in our serializer; wrap in a paragraph.
+    if (only.type === 'inlineMath') {
+      return serializeMarkdownFragment([
+        { type: 'paragraph', content: [only] },
+      ]).trimEnd();
+    }
+    if (only.type === 'codeBlock') {
+      return serializeMarkdownFragment(content).trimEnd();
+    }
+
+    if (only.type === 'paragraph' || only.type === 'heading') {
+      // Single textblock: if it only wraps one full math node, still keep wrappers.
+      const kids = only.content ?? [];
+      if (kids.length === 1 && kids[0]?.type === 'inlineMath') {
+        return serializeMarkdownFragment(content).trimEnd();
+      }
       return extractLeafPlainText(content) || serializeMarkdownFragment(content).trimEnd();
     }
   }

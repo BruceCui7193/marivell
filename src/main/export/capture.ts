@@ -1,8 +1,30 @@
 import type { BrowserWindow } from 'electron';
 
+const CDP_CAPTURE_TIMEOUT_MS = 15_000;
+const MAX_CAPTURE_CSS_HEIGHT = 24_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${ms}ms`));
+    }, ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 /**
  * High-quality full-page PNG via Chrome DevTools Protocol.
  * Uses captureBeyondViewport + deviceScaleFactor for crisp long images.
+ * Always falls back to stitched capturePage if CDP hangs or fails.
  */
 export async function captureFullPagePng(
   window: BrowserWindow,
@@ -42,7 +64,8 @@ export async function captureFullPagePng(
   `)) as { width: number; height: number };
 
   const cssWidth = Math.max(metrics.width, contentWidth);
-  const cssHeight = Math.max(metrics.height, 1);
+  // Cap extreme heights so CDP cannot hang forever on pathological layout.
+  const cssHeight = Math.min(Math.max(metrics.height, 1), MAX_CAPTURE_CSS_HEIGHT);
 
   // Size the window large enough that layout is stable.
   window.setContentSize(cssWidth, Math.min(cssHeight, 1600));
@@ -64,25 +87,33 @@ export async function captureFullPagePng(
       attached = true;
     }
 
-    await webContents.debugger.sendCommand('Emulation.setDeviceMetricsOverride', {
-      width: cssWidth,
-      height: Math.min(cssHeight, 1200),
-      deviceScaleFactor: scaleFactor,
-      mobile: false,
-      screenWidth: cssWidth,
-      screenHeight: Math.min(cssHeight, 1200),
-    });
+    await withTimeout(
+      webContents.debugger.sendCommand('Emulation.setDeviceMetricsOverride', {
+        width: cssWidth,
+        height: Math.min(cssHeight, 1200),
+        deviceScaleFactor: scaleFactor,
+        mobile: false,
+        screenWidth: cssWidth,
+        screenHeight: Math.min(cssHeight, 1200),
+      }),
+      8_000,
+      'Emulation.setDeviceMetricsOverride',
+    );
 
     // Give layout a tick after metrics override.
     await webContents.executeJavaScript(`
       new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     `);
 
-    const result = (await webContents.debugger.sendCommand('Page.captureScreenshot', {
-      format: 'png',
-      fromSurface: true,
-      captureBeyondViewport: true,
-    })) as { data: string };
+    const result = (await withTimeout(
+      webContents.debugger.sendCommand('Page.captureScreenshot', {
+        format: 'png',
+        fromSurface: true,
+        captureBeyondViewport: true,
+      }),
+      CDP_CAPTURE_TIMEOUT_MS,
+      'Page.captureScreenshot',
+    )) as { data: string };
 
     if (!result?.data) {
       throw new Error('截图数据为空');
@@ -91,12 +122,18 @@ export async function captureFullPagePng(
     return Buffer.from(result.data, 'base64');
   } catch (error) {
     // Fallback: slice + stitch using capturePage (lower quality but works).
+    // Critical: CDP captureBeyondViewport often hangs without rejecting — we
+    // race it with a timeout so this path always runs.
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn('[export] CDP screenshot failed, using fallback:', reason);
     options.onProgress?.('高精度截图失败，改用兼容模式…');
     return capturePageFallback(window, cssWidth, cssHeight, options.onProgress);
   } finally {
     try {
       if (webContents.debugger.isAttached()) {
-        await webContents.debugger.sendCommand('Emulation.clearDeviceMetricsOverride').catch(() => undefined);
+        await webContents.debugger
+          .sendCommand('Emulation.clearDeviceMetricsOverride')
+          .catch(() => undefined);
       }
     } catch {
       // ignore
@@ -118,7 +155,7 @@ async function capturePageFallback(
   onProgress?: (message: string) => void,
 ): Promise<Buffer> {
   const { PNG } = await import('pngjs');
-  const chunkHeight = 1600;
+  const chunkHeight = 1200;
   const slices: Buffer[] = [];
   const chunkCount = Math.max(1, Math.ceil(totalHeight / chunkHeight));
 
@@ -133,14 +170,14 @@ async function capturePageFallback(
   for (let offset = 0, index = 0; offset < totalHeight; offset += chunkHeight, index += 1) {
     const currentHeight = Math.min(chunkHeight, totalHeight - offset);
     onProgress?.(`正在截取长图… (${index + 1}/${chunkCount})`);
-    window.setContentSize(totalWidth, currentHeight);
+    window.setContentSize(totalWidth, Math.max(currentHeight, 200));
 
     await window.webContents.executeJavaScript(`
       new Promise((resolve) => {
         document.documentElement.scrollTop = ${offset};
         document.body.scrollTop = ${offset};
         window.scrollTo(0, ${offset});
-        requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 40)));
+        requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 50)));
       })
     `);
 
@@ -160,6 +197,9 @@ async function capturePageFallback(
   const decoded = slices.map((slice) => PNG.sync.read(slice));
   const width = decoded[0]?.width ?? 0;
   const height = decoded.reduce((sum, slice) => sum + slice.height, 0);
+  if (!width || !height) {
+    throw new Error('兼容模式截图尺寸无效');
+  }
   const output = new PNG({ width, height });
   let y = 0;
   for (const slice of decoded) {

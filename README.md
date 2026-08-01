@@ -93,16 +93,30 @@ npm run build:linux:dir
 
 ## 安装到系统 (Linux)
 
-构建完成后，可以一键安装到系统：
+从源码构建并安装最新版，直接执行：
 
 ```bash
-npm run install:linux
+sudo npm run install:linux
 ```
 
-或手动执行安装脚本：
+它会先执行 `npm run build:linux:dir`，再执行 `scripts/install-linux.sh`，等价于：
 
 ```bash
-bash scripts/install-linux.sh
+sudo npm run build:linux:dir
+sudo bash scripts/install-linux.sh
+```
+
+如果已经构建过 `dist/linux-unpacked`，只想重新安装当前产物，可以只执行：
+
+```bash
+sudo bash scripts/install-linux.sh
+```
+
+注意：安装脚本需要写入 `/opt` 和 `/usr/local`，所以要用 `sudo`。如果之前用 `sudo` 构建过，`out/` 和 `dist/` 可能是 root 权限，之后普通用户构建会报 `EACCES`；可以先清理再构建：
+
+```bash
+sudo rm -rf out dist
+sudo npm run install:linux
 ```
 
 安装后，可以在应用菜单中找到 Markdown Editor Pro，也可以直接在终端运行：
