@@ -14,6 +14,65 @@ async function readClipboardText(): Promise<string> {
   }
 }
 
+interface ClipboardReadPayload {
+  text: string;
+  html: string;
+  markdown: string;
+  files: File[];
+}
+
+async function readClipboardPayload(): Promise<ClipboardReadPayload> {
+  try {
+    if (navigator.clipboard?.read) {
+      const items = await navigator.clipboard.read();
+      let text = '';
+      let html = '';
+      let markdown = '';
+      const files: File[] = [];
+
+      for (const item of items) {
+        for (const type of item.types) {
+          const blob = await item.getType(type);
+          if (type === 'text/plain') {
+            text = await blob.text();
+          } else if (type === 'text/html') {
+            html = await blob.text();
+          } else if (type === 'text/markdown' || type === 'text/x-markdown') {
+            markdown = await blob.text();
+          } else if (blob.type.startsWith('image/')) {
+            const ext = blob.type.split('/')[1]?.split(';')[0] || 'png';
+            files.push(new File([blob], `clipboard.${ext}`, { type: blob.type }));
+          }
+        }
+      }
+
+      return { text, html, markdown, files };
+    }
+  } catch {
+    // Fall through to readText, which works in narrower clipboard contexts.
+  }
+
+  const text = await readClipboardText();
+  return { text, html: '', markdown: '', files: [] };
+}
+
+function runVisualPaste(editor: Editor, payload: ClipboardReadPayload): void {
+  const event = new ClipboardEvent('paste', { clipboardData: new DataTransfer() });
+  const data = event.clipboardData;
+  if (data) {
+    data.setData('text/plain', payload.text);
+    if (payload.html) data.setData('text/html', payload.html);
+    if (payload.markdown) {
+      data.setData('text/markdown', payload.markdown);
+      data.setData('text/x-markdown', payload.markdown);
+    }
+    for (const file of payload.files) {
+      data.items.add(file);
+    }
+  }
+  editor.view.pasteText(payload.text, event);
+}
+
 async function writeClipboardText(text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text);
@@ -193,9 +252,10 @@ export function buildVisualContextMenu(options: {
       icon: 'paste',
       shortcut: `${mod}V`,
       onSelect: () => {
-        void readClipboardText().then((text) => {
-          if (!text) return;
-          editor.chain().focus().insertContent(text.replace(/\r\n/g, '\n')).run();
+        void readClipboardPayload().then((payload) => {
+          if (!payload.text && !payload.html && payload.files.length === 0) return;
+          editor.chain().focus().run();
+          runVisualPaste(editor, payload);
         });
       },
     },

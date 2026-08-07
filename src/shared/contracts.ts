@@ -71,15 +71,20 @@ export interface SaveDocumentPayload {
   currentPath: string | null;
 }
 
+export type ImageSaveDestination = 'default' | 'document' | 'other';
+
 export interface SaveImagePayload {
-  base64: string;
+  base64?: string;
+  sourcePath?: string | null;
   suggestedName: string;
   currentPath: string | null;
+  destination?: ImageSaveDestination;
+  targetDirectory?: string | null;
 }
 
 export interface SavedImage {
   markdownPath: string;
-  absolutePath?: string;
+  absolutePath: string;
   kind: 'file' | 'data-url';
 }
 
@@ -105,6 +110,8 @@ export interface MarkdownEditorApi {
   saveDocument: (payload: SaveDocumentPayload) => Promise<SavedDocument | null>;
   saveDocumentAs: (payload: SaveDocumentPayload) => Promise<SavedDocument | null>;
   saveImage: (payload: SaveImagePayload) => Promise<SavedImage>;
+  chooseImageDirectory: () => Promise<string | null>;
+  getPathForFile?: (file: unknown) => string;
   openExternal: (url: string) => Promise<void>;
   exportClipboardDebug: () => Promise<string | null>;
   exportAsPdf: (payload: ExportDocumentPayload) => Promise<boolean>;
@@ -119,6 +126,9 @@ export interface MarkdownEditorApi {
   setPandocTemplate: (format: PandocExportFormat, templatePath: string | null) => Promise<PandocTemplateMap>;
   choosePandocTemplate: (format: PandocExportFormat) => Promise<string | null>;
   setTheme: (theme: ThemeMode) => Promise<void>;
+  zoomIn: () => Promise<void>;
+  zoomOut: () => Promise<void>;
+  zoomReset: () => Promise<void>;
   setWindowDirty: (dirty: boolean) => Promise<void>;
   setWindowDocumentState: (state: WindowDocumentState) => Promise<void>;
   respondSaveBeforeClose: (saved: boolean) => void;

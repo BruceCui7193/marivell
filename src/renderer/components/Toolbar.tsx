@@ -1,9 +1,10 @@
 import { memo, useEffect, useRef, useState, type ComponentProps } from 'react';
+import { createPortal } from 'react-dom';
 import clsx from 'clsx';
 import type { JSONContent } from '@tiptap/core';
 import type { Editor } from '@tiptap/react';
-import type { ThemeMode } from '@shared/contracts';
-import { THEME_PALETTE_OPTIONS, type ThemePalette } from '../theme';
+import type { PandocExportFormat, ThemeMode } from '@shared/contracts';
+import { GLASS_EFFECT_OPTIONS, THEME_PALETTE_OPTIONS, type GlassEffect, type ThemePalette } from '../theme';
 import { CODE_LANGUAGE_OPTIONS } from '../editor/code-languages';
 import Icon from './icons';
 
@@ -11,6 +12,7 @@ interface ToolbarProps {
   editor: Editor | null;
   theme: ThemeMode;
   themePalette: ThemePalette;
+  glassEffect: GlassEffect;
   searchVisible: boolean;
   sourceMode: boolean;
   toolbarVisible: boolean;
@@ -25,9 +27,13 @@ interface ToolbarProps {
   onInsertImage: () => void;
   onSetTheme: (theme: ThemeMode) => void;
   onSetThemePalette: (palette: ThemePalette) => void;
+  onSetGlassEffect: (effect: GlassEffect) => void;
   onToggleToolbar: () => void;
   onToggleSidebar: () => void;
   onToggleSourceMode: () => void;
+  onExportPdf: () => void;
+  onExportImage: () => void;
+  onExportPandoc: (format: PandocExportFormat) => void;
 }
 
 interface ToolbarButtonProps {
@@ -36,11 +42,65 @@ interface ToolbarButtonProps {
   hidden?: boolean;
   onClick: () => void;
   disabled?: boolean;
+  shortcut?: string;
   title: string;
 }
 
 type ToolbarLayoutMode = 'full' | 'dense' | 'compact';
 type ToolbarGroupId = 'document' | 'text-style' | 'structure' | 'insert' | 'view';
+
+const PANDOC_EXPORT_OPTIONS: Array<{ id: PandocExportFormat; label: string }> = [
+  { id: 'docx', label: 'Word 文档 (DOCX)' },
+  { id: 'html', label: 'HTML 网页' },
+  { id: 'odt', label: 'OpenDocument (ODT)' },
+  { id: 'epub', label: 'EPUB 电子书' },
+  { id: 'latex', label: 'LaTeX 源文件' },
+  { id: 'rtf', label: 'RTF 富文本' },
+  { id: 'pptx', label: 'PowerPoint (PPTX)' },
+  { id: 'plain', label: '纯文本' },
+  { id: 'gfm', label: 'GitHub Flavored Markdown' },
+];
+
+const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
+const mod = isMac ? '⌘' : 'Ctrl+';
+const shift = isMac ? '⇧' : 'Shift+';
+const alt = isMac ? '⌥' : 'Alt+';
+
+const shortcutLabels = {
+  newWindow: `${mod}N`,
+  openFile: `${mod}O`,
+  openFolder: `${mod}${shift}O`,
+  save: `${mod}S`,
+  saveAs: `${mod}${shift}S`,
+  find: `${mod}F`,
+  exportPdf: `${mod}${shift}P`,
+  exportImage: `${mod}${shift}I`,
+  undo: `${mod}Z`,
+  redo: isMac ? `⇧${mod}Z` : `${mod}${shift}Z`,
+  cut: `${mod}X`,
+  copy: `${mod}C`,
+  paste: `${mod}V`,
+  selectAll: `${mod}A`,
+  heading1: `${mod}${alt}1`,
+  heading2: `${mod}${alt}2`,
+  bold: `${mod}B`,
+  italic: `${mod}I`,
+  underline: `${mod}U`,
+  strike: `${mod}${shift}S`,
+  quote: `${mod}${shift}B`,
+  bullet: `${mod}${shift}8`,
+  ordered: `${mod}${shift}7`,
+  task: `${mod}${shift}9`,
+  code: `${mod}${alt}C`,
+  hideToolbar: `${mod}${shift}B`,
+  hideSidebar: `${mod}\\`,
+  sourceMode: `${mod}${shift}E`,
+  toggleTheme: `${mod}${shift}L`,
+  zoomIn: `${mod}+`,
+  zoomOut: `${mod}-`,
+  zoomReset: `${mod}0`,
+  reload: `${mod}R`,
+};
 
 function ToolbarButton({
   icon,
@@ -48,18 +108,21 @@ function ToolbarButton({
   hidden = false,
   onClick,
   disabled = false,
+  shortcut,
   title,
 }: ToolbarButtonProps) {
+  const displayTitle = shortcut ? `${title} (${shortcut})` : title;
   return (
     <button
       aria-hidden={hidden}
-      aria-label={title}
+      aria-label={displayTitle}
       className={clsx('toolbar-button', active && 'is-active', hidden && 'is-source-hidden')}
-      data-tooltip={title}
+      data-tooltip={displayTitle}
       disabled={disabled}
       onClick={onClick}
       onMouseDown={(event) => event.preventDefault()}
       tabIndex={hidden ? -1 : 0}
+      title={displayTitle}
       type="button"
     >
       <Icon className="toolbar-button__icon" name={icon} />
@@ -140,6 +203,7 @@ function Toolbar({
   editor,
   theme,
   themePalette,
+  glassEffect,
   searchVisible,
   sourceMode,
   toolbarVisible,
@@ -154,14 +218,20 @@ function Toolbar({
   onInsertImage,
   onSetTheme,
   onSetThemePalette,
+  onSetGlassEffect,
   onToggleToolbar,
   onToggleSidebar,
   onToggleSourceMode,
+  onExportPdf,
+  onExportImage,
+  onExportPandoc,
 }: ToolbarProps) {
   const [themePanelOpen, setThemePanelOpen] = useState(false);
   const [layoutMode, setLayoutMode] = useState<ToolbarLayoutMode>('full');
   const [denseStep, setDenseStep] = useState(0);
   const [compactGroupOpen, setCompactGroupOpen] = useState<ToolbarGroupId | null>(null);
+  const [menuOpen, setMenuOpen] = useState<'document' | 'edit' | 'view' | null>(null);
+  const [menuRect, setMenuRect] = useState<{ left: number; top: number } | null>(null);
   const [formulaMenuOpen, setFormulaMenuOpen] = useState(false);
   const [linkMenuOpen, setLinkMenuOpen] = useState(false);
   const [linkDraft, setLinkDraft] = useState('https://');
@@ -207,6 +277,10 @@ function Toolbar({
     showToolbar: '显示工具栏',
     appearanceMode: '外观模式',
     paletteScheme: '配色方案',
+    glassEffect: '透明效果',
+    glassFrosted: '毛玻璃',
+    glassLiquid: '液态玻璃',
+    glassOff: '关闭透明',
     auto: '自动',
     light: '浅色',
     dark: '深色',
@@ -215,6 +289,24 @@ function Toolbar({
     structure: '结构',
     insert: '插入',
     view: '视图',
+    fileMenu: '文件',
+    editMenu: '编辑',
+    viewMenu: '视图',
+    exportPdf: '导出 PDF…',
+    exportImage: '导出长图…',
+    pandocExport: '通过 Pandoc 导出',
+    quit: '退出',
+    undo: '撤销',
+    redo: '重做',
+    cut: '剪切',
+    copy: '复制',
+    paste: '粘贴',
+    selectAll: '全选',
+    reload: '重新加载',
+    toggleTheme: '切换主题',
+    zoomIn: '放大',
+    zoomOut: '缩小',
+    zoomReset: '重置缩放',
   };
   const themeLabel =
     theme === 'system' ? '主题：自动' : theme === 'light' ? '主题：浅色' : '主题：深色';
@@ -248,14 +340,18 @@ function Toolbar({
   }, [editor]);
 
   useEffect(() => {
-    if (!themePanelOpen && !compactGroupOpen && !formulaMenuOpen && !linkMenuOpen) {
+    if (!themePanelOpen && !compactGroupOpen && !menuOpen && !formulaMenuOpen && !linkMenuOpen) {
       return;
     }
 
     const handlePointerDown = (event: MouseEvent) => {
-      if (!toolbarRef.current?.contains(event.target as Node)) {
+      const target = event.target as Node;
+      const insideMenu = target instanceof HTMLElement && Boolean(target.closest('.toolbar-menu'));
+      if (!toolbarRef.current?.contains(target) && !insideMenu) {
         setThemePanelOpen(false);
         setCompactGroupOpen(null);
+        setMenuOpen(null);
+        setMenuRect(null);
         setFormulaMenuOpen(false);
         setLinkMenuOpen(false);
       }
@@ -265,19 +361,28 @@ function Toolbar({
       if (event.key === 'Escape') {
         setThemePanelOpen(false);
         setCompactGroupOpen(null);
+        setMenuOpen(null);
+        setMenuRect(null);
         setFormulaMenuOpen(false);
         setLinkMenuOpen(false);
       }
     };
 
+    const handleResize = () => {
+      setMenuOpen(null);
+      setMenuRect(null);
+    };
+
     document.addEventListener('mousedown', handlePointerDown);
     window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', handleResize);
 
     return () => {
       document.removeEventListener('mousedown', handlePointerDown);
       window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', handleResize);
     };
-  }, [compactGroupOpen, formulaMenuOpen, linkMenuOpen, themePanelOpen]);
+  }, [compactGroupOpen, formulaMenuOpen, linkMenuOpen, menuOpen, themePanelOpen]);
 
   useEffect(() => {
     if (!toolbarVisible) {
@@ -319,6 +424,8 @@ function Toolbar({
     if (layoutMode !== 'compact') {
       setCompactGroupOpen(null);
     }
+    setMenuOpen(null);
+    setMenuRect(null);
   }, [layoutMode]);
 
   useEffect(() => {
@@ -336,6 +443,8 @@ function Toolbar({
 
     setFormulaMenuOpen(false);
     setLinkMenuOpen(false);
+    setMenuOpen(null);
+    setMenuRect(null);
   }, [compactGroupOpen, sourceMode]);
 
   useEffect(() => {
@@ -345,6 +454,8 @@ function Toolbar({
 
     setThemePanelOpen(false);
     setCompactGroupOpen(null);
+    setMenuOpen(null);
+    setMenuRect(null);
     setFormulaMenuOpen(false);
     setLinkMenuOpen(false);
   }, [toolbarVisible]);
@@ -388,6 +499,8 @@ function Toolbar({
   const runCompactAction = (action: () => void) => {
     action();
     setCompactGroupOpen(null);
+    setMenuOpen(null);
+    setMenuRect(null);
   };
 
   const runSearchAction = () => {
@@ -632,28 +745,197 @@ function Toolbar({
     );
   };
 
+  const runMenuAction = (action: () => void) => {
+    action();
+    setCompactGroupOpen(null);
+    setMenuOpen(null);
+    setMenuRect(null);
+  };
+
+  const toggleCompactGroup = (group: ToolbarGroupId) => {
+    setMenuOpen(null);
+    setMenuRect(null);
+    setFormulaMenuOpen(false);
+    setLinkMenuOpen(false);
+    setCompactGroupOpen((current) => (current === group ? null : group));
+  };
+
+  const runEditCommand = (command: 'undo' | 'redo' | 'cut' | 'copy' | 'paste' | 'selectAll') => {
+    const sourceInput = document.querySelector<HTMLTextAreaElement>('.source-editor__input');
+    if (sourceInput) {
+      sourceInput.focus();
+      if (command === 'undo' || command === 'redo' || command === 'selectAll') {
+        document.execCommand(command);
+      } else {
+        document.execCommand(command);
+      }
+      return;
+    }
+
+    if (!editor) {
+      return;
+    }
+
+    if (command === 'undo') {
+      editor.chain().focus().undo().run();
+      return;
+    }
+    if (command === 'redo') {
+      editor.chain().focus().redo().run();
+      return;
+    }
+    if (command === 'selectAll') {
+      editor.chain().focus().selectAll().run();
+      return;
+    }
+    document.execCommand(command);
+  };
+
+  const renderToolbarMenu = (menu: 'document' | 'edit' | 'view') => {
+    if (menuOpen !== menu) {
+      return null;
+    }
+
+    const item = (
+      key: string,
+      label: string,
+      onSelect: () => void,
+      shortcut?: string,
+      disabled = false,
+    ) => (
+      <button
+        key={key}
+        className={clsx('toolbar-menu__item', disabled && 'is-disabled')}
+        disabled={disabled}
+        onClick={() => runMenuAction(onSelect)}
+        onMouseDown={(event) => event.preventDefault()}
+        role="menuitem"
+        type="button"
+      >
+        <span className="toolbar-menu__label">{label}</span>
+        {shortcut ? <span className="toolbar-menu__shortcut">{shortcut}</span> : null}
+      </button>
+    );
+
+    if (!menuRect) {
+      return null;
+    }
+
+    const menuOrigin = `${menuRect.top + 300 > window.innerHeight - 8 ? 'bottom' : 'top'} ${menuRect.left > window.innerWidth - 320 ? 'right' : 'left'}`;
+    return createPortal(
+      <div className="toolbar-menu" role="menu" style={{ left: menuRect.left, top: menuRect.top, transformOrigin: menuOrigin }}>
+        {menu === 'document' ? (
+          <>
+            {item('export-pdf', labels.exportPdf, onExportPdf, shortcutLabels.exportPdf)}
+            {item('export-image', labels.exportImage, onExportImage, shortcutLabels.exportImage)}
+            <div className="toolbar-menu__separator" role="separator" />
+            <div className="toolbar-menu__section-label">{labels.pandocExport}</div>
+            {PANDOC_EXPORT_OPTIONS.map((option) =>
+              item(`pandoc-${option.id}`, option.label, () => onExportPandoc(option.id)),
+            )}
+            <div className="toolbar-menu__separator" role="separator" />
+            {item('quit', labels.quit, () => window.close())}
+          </>
+        ) : null}
+
+        {menu === 'edit' ? (
+          <>
+            {item('undo', labels.undo, () => runEditCommand('undo'), shortcutLabels.undo)}
+            {item('redo', labels.redo, () => runEditCommand('redo'), shortcutLabels.redo)}
+            <div className="toolbar-menu__separator" role="separator" />
+            {item('cut', labels.cut, () => runEditCommand('cut'), shortcutLabels.cut)}
+            {item('copy', labels.copy, () => runEditCommand('copy'), shortcutLabels.copy)}
+            {item('paste', labels.paste, () => runEditCommand('paste'), shortcutLabels.paste)}
+            {item('select-all', labels.selectAll, () => runEditCommand('selectAll'), shortcutLabels.selectAll)}
+          </>
+        ) : null}
+
+        {menu === 'view' ? (
+          <>
+            {item('zoom-in', labels.zoomIn, () => void window.markdownEditor.zoomIn(), shortcutLabels.zoomIn)}
+            {item('zoom-out', labels.zoomOut, () => void window.markdownEditor.zoomOut(), shortcutLabels.zoomOut)}
+            {item('zoom-reset', labels.zoomReset, () => void window.markdownEditor.zoomReset(), shortcutLabels.zoomReset)}
+            <div className="toolbar-menu__separator" role="separator" />
+            {item('reload', labels.reload, () => window.location.reload(), shortcutLabels.reload)}
+          </>
+        ) : null}
+      </div>,
+      document.body,
+    );
+  };
+
+  const renderMenuTrigger = (menu: 'document' | 'edit' | 'view', label: string) => (
+    <div className="toolbar-menu-anchor">
+      <button
+        aria-expanded={menuOpen === menu}
+        aria-label={label}
+        className={clsx('toolbar-menu-trigger', menuOpen === menu && 'is-active')}
+        onClick={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          const menuWidth = Math.min(280, window.innerWidth - 16);
+          const left = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8));
+          const menuHeight = Math.min(420, window.innerHeight - 24);
+          const belowTop = rect.bottom + 8;
+          const top = belowTop + menuHeight > window.innerHeight - 8
+            ? Math.max(8, rect.top - menuHeight - 8)
+            : belowTop;
+          setFormulaMenuOpen(false);
+          setLinkMenuOpen(false);
+          setMenuRect({ left, top });
+          setMenuOpen((current) => (current === menu ? null : menu));
+        }}
+        onMouseDown={(event) => event.preventDefault()}
+        title={label}
+        type="button"
+      >
+        <span aria-hidden="true" className="toolbar-menu-trigger__caret" />
+      </button>
+      {renderToolbarMenu(menu)}
+    </div>
+  );
+
   const renderGroupActions = (group: ToolbarGroupId) => {
     if (group === 'document') {
       return (
         <>
-          <ToolbarButton icon="menu" onClick={() => runCompactAction(onToggleToolbar)} title={labels.hideToolbar} />
           <ToolbarButton
-            active={sidebarVisible}
-            icon="sidebar"
-            onClick={() => runCompactAction(onToggleSidebar)}
-            title={sidebarVisible ? labels.hideSidebar : labels.showSidebar}
+            icon="newWindow"
+            onClick={() => runCompactAction(onNewWindow)}
+            shortcut={shortcutLabels.newWindow}
+            title={labels.newWindow}
           />
-          <ToolbarButton icon="newWindow" onClick={() => runCompactAction(onNewWindow)} title={labels.newWindow} />
-          <ToolbarButton icon="open" onClick={() => runCompactAction(onOpen)} title={labels.openFile} />
-          <ToolbarButton icon="folder" onClick={() => runCompactAction(onOpenFolder)} title={labels.openFolder} />
-          <ToolbarButton icon="save" onClick={() => runCompactAction(onSave)} title={labels.save} />
-          <ToolbarButton icon="saveAs" onClick={() => runCompactAction(onSaveAs)} title={labels.saveAs} />
+          <ToolbarButton
+            icon="open"
+            onClick={() => runCompactAction(onOpen)}
+            shortcut={shortcutLabels.openFile}
+            title={labels.openFile}
+          />
+          <ToolbarButton
+            icon="folder"
+            onClick={() => runCompactAction(onOpenFolder)}
+            shortcut={shortcutLabels.openFolder}
+            title={labels.openFolder}
+          />
+          <ToolbarButton
+            icon="save"
+            onClick={() => runCompactAction(onSave)}
+            shortcut={shortcutLabels.save}
+            title={labels.save}
+          />
+          <ToolbarButton
+            icon="saveAs"
+            onClick={() => runCompactAction(onSaveAs)}
+            shortcut={shortcutLabels.saveAs}
+            title={labels.saveAs}
+          />
           <ToolbarButton
             active={searchVisible}
             icon="search"
             onClick={() => runCompactAction(runSearchAction)}
+            shortcut={shortcutLabels.find}
             title={labels.findReplace}
           />
+          {renderMenuTrigger('document', labels.fileMenu)}
         </>
       );
     }
@@ -667,6 +949,7 @@ function Toolbar({
             hidden={editingControlsHidden}
             icon="heading1"
             onClick={() => runCompactAction(() => editor?.chain().focus().toggleHeading({ level: 1 }).run())}
+            shortcut={shortcutLabels.heading1}
             title={labels.heading1}
           />
           <ToolbarButton
@@ -675,6 +958,7 @@ function Toolbar({
             hidden={editingControlsHidden}
             icon="heading2"
             onClick={() => runCompactAction(() => editor?.chain().focus().toggleHeading({ level: 2 }).run())}
+            shortcut={shortcutLabels.heading2}
             title={labels.heading2}
           />
           <ToolbarButton
@@ -683,6 +967,7 @@ function Toolbar({
             hidden={editingControlsHidden}
             icon="bold"
             onClick={() => runCompactAction(() => editor?.chain().focus().toggleBold().run())}
+            shortcut={shortcutLabels.bold}
             title={labels.bold}
           />
           <ToolbarButton
@@ -691,6 +976,7 @@ function Toolbar({
             hidden={editingControlsHidden}
             icon="italic"
             onClick={() => runCompactAction(() => editor?.chain().focus().toggleItalic().run())}
+            shortcut={shortcutLabels.italic}
             title={labels.italic}
           />
           <ToolbarButton
@@ -699,6 +985,7 @@ function Toolbar({
             hidden={editingControlsHidden}
             icon="underline"
             onClick={() => runCompactAction(() => editor?.chain().focus().toggleUnderline().run())}
+            shortcut={shortcutLabels.underline}
             title={labels.underline}
           />
           <ToolbarButton
@@ -707,6 +994,7 @@ function Toolbar({
             hidden={editingControlsHidden}
             icon="strike"
             onClick={() => runCompactAction(() => editor?.chain().focus().toggleStrike().run())}
+            shortcut={shortcutLabels.strike}
             title={labels.strike}
           />
           <div
@@ -767,6 +1055,7 @@ function Toolbar({
               </button>
             </div>
           </div>
+          {renderMenuTrigger('edit', labels.editMenu)}
         </>
       );
     }
@@ -780,6 +1069,7 @@ function Toolbar({
             hidden={editingControlsHidden}
             icon="quote"
             onClick={() => runCompactAction(() => editor?.chain().focus().toggleBlockquote().run())}
+            shortcut={shortcutLabels.quote}
             title={labels.quote}
           />
           <ToolbarButton
@@ -788,6 +1078,7 @@ function Toolbar({
             hidden={editingControlsHidden}
             icon="bullet"
             onClick={() => runCompactAction(() => editor?.chain().focus().toggleBulletList().run())}
+            shortcut={shortcutLabels.bullet}
             title={labels.bullet}
           />
           <ToolbarButton
@@ -796,6 +1087,7 @@ function Toolbar({
             hidden={editingControlsHidden}
             icon="ordered"
             onClick={() => runCompactAction(() => editor?.chain().focus().toggleOrderedList().run())}
+            shortcut={shortcutLabels.ordered}
             title={labels.ordered}
           />
           <ToolbarButton
@@ -804,6 +1096,7 @@ function Toolbar({
             hidden={editingControlsHidden}
             icon="task"
             onClick={() => runCompactAction(() => editor?.chain().focus().toggleTaskList().run())}
+            shortcut={shortcutLabels.task}
             title={labels.task}
           />
           <ToolbarButton
@@ -825,6 +1118,7 @@ function Toolbar({
             hidden={editingControlsHidden}
             icon="code"
             onClick={() => runCompactAction(insertCodeBlock)}
+            shortcut={shortcutLabels.code}
             title={labels.code}
           />
           {isCodeBlockActive ? (
@@ -946,17 +1240,33 @@ function Toolbar({
     return (
       <>
         <ToolbarButton
+          icon="menu"
+          onClick={() => runCompactAction(onToggleToolbar)}
+          shortcut={shortcutLabels.hideToolbar}
+          title={toolbarVisible ? labels.hideToolbar : labels.showToolbar}
+        />
+        <ToolbarButton
+          active={sidebarVisible}
+          icon="sidebar"
+          onClick={() => runCompactAction(onToggleSidebar)}
+          shortcut={shortcutLabels.hideSidebar}
+          title={sidebarVisible ? labels.hideSidebar : labels.showSidebar}
+        />
+        <ToolbarButton
           active={sourceMode}
           icon="source"
           onClick={() => runCompactAction(onToggleSourceMode)}
+          shortcut={shortcutLabels.sourceMode}
           title={sourceMode ? labels.sourceOn : labels.sourceOff}
         />
         <ToolbarButton
           active={themePanelOpen || theme !== 'system'}
           icon="appearance"
           onClick={() => setThemePanelOpen((current) => !current)}
+          shortcut={shortcutLabels.toggleTheme}
           title={`${labels.themePanel} / ${themeLabel} / ${currentPalette?.label ?? labels.auto}`}
         />
+        {renderMenuTrigger('view', labels.viewMenu)}
       </>
     );
   };
@@ -973,7 +1283,7 @@ function Toolbar({
             <>
               <button
                 className={clsx('toolbar-group-launcher', compactGroupOpen === 'document' && 'is-active')}
-                onClick={() => setCompactGroupOpen((current) => (current === 'document' ? null : 'document'))}
+                onClick={() => toggleCompactGroup('document')}
                 type="button"
               >
                 <Icon className="toolbar-group-launcher__icon" name="open" />
@@ -986,7 +1296,7 @@ function Toolbar({
                   compactGroupOpen === 'text-style' && 'is-active',
                   editingControlsHidden && 'is-source-hidden',
                 )}
-                onClick={() => setCompactGroupOpen((current) => (current === 'text-style' ? null : 'text-style'))}
+                onClick={() => toggleCompactGroup('text-style')}
                 tabIndex={editingControlsHidden ? -1 : 0}
                 type="button"
               >
@@ -1000,7 +1310,7 @@ function Toolbar({
                   compactGroupOpen === 'structure' && 'is-active',
                   editingControlsHidden && 'is-source-hidden',
                 )}
-                onClick={() => setCompactGroupOpen((current) => (current === 'structure' ? null : 'structure'))}
+                onClick={() => toggleCompactGroup('structure')}
                 tabIndex={editingControlsHidden ? -1 : 0}
                 type="button"
               >
@@ -1014,7 +1324,7 @@ function Toolbar({
                   compactGroupOpen === 'insert' && 'is-active',
                   editingControlsHidden && 'is-source-hidden',
                 )}
-                onClick={() => setCompactGroupOpen((current) => (current === 'insert' ? null : 'insert'))}
+                onClick={() => toggleCompactGroup('insert')}
                 tabIndex={editingControlsHidden ? -1 : 0}
                 type="button"
               >
@@ -1023,7 +1333,7 @@ function Toolbar({
               </button>
               <button
                 className={clsx('toolbar-group-launcher', compactGroupOpen === 'view' && 'is-active')}
-                onClick={() => setCompactGroupOpen((current) => (current === 'view' ? null : 'view'))}
+                onClick={() => toggleCompactGroup('view')}
                 type="button"
               >
                 <Icon className="toolbar-group-launcher__icon" name="appearance" />
@@ -1119,6 +1429,30 @@ function Toolbar({
                 <Icon className="theme-mode-button__icon" name="moon" />
                 <span>{labels.dark}</span>
               </button>
+            </div>
+          </div>
+
+          <div className="theme-panel__section">
+            <div className="theme-panel__title">{labels.glassEffect}</div>
+            <div className="theme-panel__glass-options">
+              {GLASS_EFFECT_OPTIONS.map((option) => (
+                <button
+                  className={clsx(
+                    'theme-glass-button',
+                    glassEffect === option.id && 'is-active',
+                  )}
+                  key={option.id}
+                  onClick={() => {
+                    onSetGlassEffect(option.id);
+                    setThemePanelOpen(false);
+                  }}
+                  title={option.description}
+                  type="button"
+                >
+                  <span className={clsx('theme-glass-button__preview', `is-${option.id}`)} />
+                  <span>{option.label}</span>
+                </button>
+              ))}
             </div>
           </div>
 

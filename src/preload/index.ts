@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type {
   ExportDocumentPayload,
   ExportStatus,
@@ -27,6 +27,8 @@ const api: MarkdownEditorApi = {
   saveDocument: (payload: SaveDocumentPayload) => ipcRenderer.invoke('document:save', payload),
   saveDocumentAs: (payload: SaveDocumentPayload) => ipcRenderer.invoke('document:save-as', payload),
   saveImage: (payload: SaveImagePayload) => ipcRenderer.invoke('asset:save-image', payload),
+  chooseImageDirectory: () => ipcRenderer.invoke('dialog:choose-image-directory'),
+  getPathForFile: (file: unknown) => webUtils.getPathForFile(file as Parameters<typeof webUtils.getPathForFile>[0]),
   openExternal: (url: string) => ipcRenderer.invoke('shell:open-external', url),
   exportClipboardDebug: () => ipcRenderer.invoke('clipboard:export-debug'),
   exportAsPdf: (payload: ExportDocumentPayload) => ipcRenderer.invoke('export:pdf', payload),
@@ -42,6 +44,9 @@ const api: MarkdownEditorApi = {
     ipcRenderer.invoke('export:pandoc-template-set', format, templatePath),
   choosePandocTemplate: (format) => ipcRenderer.invoke('export:pandoc-template-choose', format),
   setTheme: (theme: ThemeMode) => ipcRenderer.invoke('theme:set', theme),
+  zoomIn: () => ipcRenderer.invoke('window:zoom-in'),
+  zoomOut: () => ipcRenderer.invoke('window:zoom-out'),
+  zoomReset: () => ipcRenderer.invoke('window:zoom-reset'),
   setWindowDirty: (dirty: boolean) => ipcRenderer.invoke('window:set-dirty', dirty),
   setWindowDocumentState: (state: WindowDocumentState) =>
     ipcRenderer.invoke('window:set-document-state', state),

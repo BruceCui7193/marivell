@@ -1,4 +1,5 @@
 export type ThemePalette = 'natural' | 'forest' | 'ocean' | 'sepia' | 'graphite' | 'nord' | 'sakura' | 'lavender' | 'cyberpunk';
+export type GlassEffect = 'frosted' | 'liquid' | 'off';
 
 export interface ThemePaletteOption {
   id: ThemePalette;
@@ -11,8 +12,8 @@ export const THEME_PALETTE_OPTIONS: ThemePaletteOption[] = [
   {
     id: 'natural',
     label: '自然',
-    description: '柔和的米白与苔绿',
-    swatch: 'linear-gradient(135deg, #f6f1e6 0%, #7ba48f 100%)',
+    description: '清爽通透的蓝灰',
+    swatch: 'linear-gradient(135deg, #edf3f8 0%, #4d7592 100%)',
   },
   {
     id: 'forest',
@@ -66,4 +67,32 @@ export const THEME_PALETTE_OPTIONS: ThemePaletteOption[] = [
 
 export function isThemePalette(value: string | null): value is ThemePalette {
   return THEME_PALETTE_OPTIONS.some((option) => option.id === value);
+}
+
+export interface GlassEffectOption {
+  id: GlassEffect;
+  label: string;
+  description: string;
+}
+
+export const GLASS_EFFECT_OPTIONS: GlassEffectOption[] = [
+  {
+    id: 'frosted',
+    label: '毛玻璃',
+    description: '轻量模糊，功耗均衡',
+  },
+  {
+    id: 'liquid',
+    label: '液态玻璃',
+    description: '折射高光，更通透',
+  },
+  {
+    id: 'off',
+    label: '关闭透明',
+    description: '纯色界面，更省电',
+  },
+];
+
+export function isGlassEffect(value: string | null): value is GlassEffect {
+  return GLASS_EFFECT_OPTIONS.some((option) => option.id === value);
 }

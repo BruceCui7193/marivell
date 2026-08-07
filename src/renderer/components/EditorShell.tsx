@@ -14,15 +14,18 @@ import {
 import { EditorContent, useEditor, type Editor as TiptapEditor } from '@tiptap/react';
 import type { JSONContent } from '@tiptap/core';
 import { NodeSelection, TextSelection } from '@tiptap/pm/state';
-import type { OpenedFolder, ThemeMode } from '@shared/contracts';
+import type { OpenedFolder, SavedDocument, ThemeMode } from '@shared/contracts';
 import type { DocumentStats, EditorDocumentState } from '../App';
-import type { ThemePalette } from '../theme';
+import type { GlassEffect, ThemePalette } from '../theme';
 import Toolbar from './Toolbar';
 import StatusBar from './StatusBar';
 import Sidebar from './Sidebar';
 import SourceEditor, { type SourceCursorInfo } from './SourceEditor';
 import ContextMenu, { type ContextMenuState } from './ContextMenu';
+import ImageActionMenu from './ImageActionMenu';
+import AppDialog, { type AppDialogOptions } from './AppDialog';
 import { createEditorExtensions } from '../editor/create-editor-extensions';
+import type { PastedImageInfo } from '../editor/plugins/image-drop-paste';
 import {
   serializeSliceForClipboard,
   writeClipboardFromSelection,
@@ -52,19 +55,21 @@ interface EditorShellProps {
   folder: OpenedFolder | null;
   theme: ThemeMode;
   themePalette: ThemePalette;
+  glassEffect: GlassEffect;
   resolvedTheme: 'light' | 'dark';
   onDocumentChange: (markdown: string, stats: DocumentStats) => void;
   onDocumentMetaChange: (dirty: boolean) => void;
   onOpenDocument: () => void;
-  onOpenDocumentPath: (filePath: string) => void;
+  onOpenDocumentPath: (filePath: string) => void | Promise<void>;
   /** Reload from disk without an extra discard prompt (external change flow). */
   onReloadDocumentPath: (filePath: string) => void | Promise<void>;
   onOpenFolder: () => void;
   onSaveDocument: (markdown?: string, stats?: DocumentStats) => Promise<boolean> | boolean;
-  onSaveDocumentAs: (markdown?: string, stats?: DocumentStats) => Promise<boolean> | boolean;
+  onSaveDocumentAs: (markdown?: string, stats?: DocumentStats) => Promise<SavedDocument | null> | SavedDocument | null;
   onCreateDocument: () => void;
   onSetTheme: (theme: ThemeMode) => void;
   onSetThemePalette: (palette: ThemePalette) => void;
+  onSetGlassEffect: (effect: GlassEffect) => void;
 }
 
 function computeSourceStats(markdown: string): DocumentStats {
@@ -102,6 +107,19 @@ function toFileUrl(filePath: string): string {
   return encodeURI(normalized.startsWith('/') ? `file://${normalized}` : `file:///${normalized}`)
     .replace(/#/g, '%23')
     .replace(/\?/g, '%3F');
+}
+
+function getFileNameFromPath(filePath: string): string {
+  const parts = filePath.split(/[\\/]/);
+  return parts[parts.length - 1] || 'image.png';
+}
+
+function getImageSourcePath(file: unknown): string | null {
+  try {
+    return window.markdownEditor.getPathForFile?.(file) || (file as any).path || null;
+  } catch {
+    return (file as any).path || null;
+  }
 }
 
 function resolveImageSource(source: string, documentPath: string | null): string {
@@ -528,6 +546,7 @@ export default function EditorShell({
   folder,
   theme,
   themePalette,
+  glassEffect,
   resolvedTheme,
   onDocumentChange,
   onDocumentMetaChange,
@@ -540,6 +559,7 @@ export default function EditorShell({
   onCreateDocument,
   onSetTheme,
   onSetThemePalette,
+  onSetGlassEffect,
 }: EditorShellProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -612,12 +632,34 @@ export default function EditorShell({
   const [searchCurrentIndex, setSearchCurrentIndex] = useState(0);
   const [visualSearchRevision, setVisualSearchRevision] = useState(0);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [imageActionMenu, setImageActionMenu] = useState<PastedImageInfo | null>(null);
+  const [imageActionMenuPos, setImageActionMenuPos] = useState({ x: 0, y: 0 });
+  const [appDialog, setAppDialog] = useState<AppDialogOptions | null>(null);
+  const appDialogRef = useRef<AppDialogOptions | null>(null);
+  const editorRef = useRef<TiptapEditor | null>(null);
+  const onImagePastedRef = useRef<(info: PastedImageInfo) => void>(() => {});
   const [sourceCursor, setSourceCursor] = useState<SourceCursorInfo>({
     line: 1,
     column: 1,
     start: 0,
     end: 0,
   });
+
+  const openAppDialog = useCallback((dialog: AppDialogOptions) => {
+    appDialogRef.current = dialog;
+    setAppDialog(dialog);
+  }, []);
+
+  const closeAppDialog = useCallback(() => {
+    appDialogRef.current = null;
+    setAppDialog(null);
+  }, []);
+
+  const resolveAppDialog = useCallback((value: string) => {
+    const dialog = appDialogRef.current;
+    closeAppDialog();
+    dialog?.onResolve(value);
+  }, [closeAppDialog]);
 
   useEffect(() => {
     documentPathRef.current = document.path;
@@ -1014,19 +1056,54 @@ export default function EditorShell({
     }
   }, [sourceMode]);
 
+  const showImageActionMenu = useCallback((info: PastedImageInfo) => {
+    const currentEditor = editorRef.current;
+    let x = 16;
+    let y = 16;
+    if (currentEditor && info.pos != null) {
+      try {
+        const coords = currentEditor.view.coordsAtPos(info.pos);
+        x = coords.left;
+        y = coords.bottom + 8;
+      } catch {
+        // Keep the menu near the viewport if the image position is transient.
+      }
+    }
+    x = Math.max(8, Math.min(x, window.innerWidth - 280));
+    y = Math.max(8, Math.min(y, window.innerHeight - 180));
+    setImageActionMenuPos({ x, y });
+    setImageActionMenu(info);
+  }, []);
+
+  useEffect(() => {
+    onImagePastedRef.current = showImageActionMenu;
+  }, [showImageActionMenu]);
+
+  const closeImageActionMenu = useCallback(() => {
+    setImageActionMenu(null);
+  }, []);
+
   const extensions = useMemo(
     () =>
       createEditorExtensions({
         onUploadImage: async (file) => {
+          const sourcePath = getImageSourcePath(file);
           const base64 = await fileToBase64(file);
           const saved = await window.markdownEditor.saveImage({
             base64,
             suggestedName: file.name,
             currentPath: documentPathRef.current,
+            destination: 'default',
+            sourcePath,
           });
 
-          return saved.markdownPath;
+          return {
+            src: saved.markdownPath,
+            absolutePath: saved.absolutePath,
+            sourcePath,
+          };
         },
+        onImagePasted: (info) => onImagePastedRef.current?.(info),
         onResolveImageSource: (source) => resolveImageSource(source, documentPathRef.current),
       }),
     [],
@@ -1211,6 +1288,108 @@ export default function EditorShell({
   }, []);
 
   useEffect(() => {
+    editorRef.current = editor;
+  }, [editor]);
+
+  const updateImageSrc = useCallback((oldSrc: string, newSrc: string) => {
+    if (!editor) {
+      return;
+    }
+
+    let targetPos: number | null = null;
+    editor.state.doc.descendants((node, pos) => {
+      if (node.type.name === 'image' && node.attrs.src === oldSrc) {
+        targetPos = pos;
+        return false;
+      }
+      return true;
+    });
+
+    if (targetPos == null) {
+      return;
+    }
+
+    const targetNode = editor.state.doc.nodeAt(targetPos);
+    if (!targetNode) {
+      return;
+    }
+
+    const transaction = editor.state.tr.setNodeMarkup(targetPos, undefined, {
+      ...targetNode.attrs,
+      src: newSrc,
+    });
+    editor.view.dispatch(transaction.scrollIntoView());
+  }, [editor]);
+
+  const copyImageToCurrent = useCallback(async () => {
+    const target = imageActionMenu;
+    if (!target) {
+      return;
+    }
+
+    let currentPath = documentPathRef.current;
+    if (!currentPath) {
+      const visualState = sourceModeRef.current ? null : flushVisualSync();
+      const saved = await onSaveDocumentAs(
+        sourceModeRef.current ? sourceDraftRef.current : visualState?.markdown,
+        sourceModeRef.current ? computeSourceStats(sourceDraftRef.current) : visualState?.stats,
+      );
+      if (!saved?.path) {
+        return;
+      }
+
+      currentPath = saved.path;
+    }
+
+    const savedImage = await window.markdownEditor.saveImage({
+      sourcePath: target.absolutePath,
+      suggestedName: getFileNameFromPath(target.absolutePath),
+      currentPath,
+      destination: 'document',
+    });
+    updateImageSrc(target.src, savedImage.markdownPath);
+
+    const visualState = sourceModeRef.current ? null : flushVisualSync();
+    await onSaveDocument(
+      sourceModeRef.current ? sourceDraftRef.current : visualState?.markdown,
+      sourceModeRef.current ? computeSourceStats(sourceDraftRef.current) : visualState?.stats,
+    );
+    closeImageActionMenu();
+  }, [closeImageActionMenu, imageActionMenu, onSaveDocument, onSaveDocumentAs, updateImageSrc]);
+
+  const keepOriginalPath = useCallback(async () => {
+    const target = imageActionMenu;
+    if (!target?.sourcePath) {
+      return;
+    }
+
+    updateImageSrc(target.src, target.sourcePath);
+    closeImageActionMenu();
+  }, [closeImageActionMenu, imageActionMenu, updateImageSrc]);
+
+  const copyImageToOther = useCallback(async () => {
+    const target = imageActionMenu;
+    if (!target) {
+      return;
+    }
+
+    const targetDirectory = await window.markdownEditor.chooseImageDirectory();
+    if (!targetDirectory) {
+      return;
+    }
+
+    const savedImage = await window.markdownEditor.saveImage({
+      sourcePath: target.absolutePath,
+      suggestedName: getFileNameFromPath(target.absolutePath),
+      currentPath: documentPathRef.current,
+      destination: 'other',
+      targetDirectory,
+    });
+    updateImageSrc(target.src, savedImage.markdownPath);
+    closeImageActionMenu();
+  }, [closeImageActionMenu, imageActionMenu, updateImageSrc]);
+
+  useEffect(() => {
     if (!editor) {
       return;
     }
@@ -1342,7 +1521,7 @@ export default function EditorShell({
       }
       editor.setEditable(true);
       setLoadingExternalDocument(false);
-      // window.confirm() steals focus; put the caret back after content is ready.
+      // A dialog can steal focus; put the caret back after content is ready.
       // startupCaretPlaced effect also runs when loading flips false.
       requestAnimationFrame(() => {
         if (!isActiveLoad() || sourceModeRef.current || !editor.isEditable) {
@@ -2267,11 +2446,16 @@ export default function EditorShell({
   ]);
 
   const externalChangePromptRef = useRef(false);
+  const closePromptHandlingRef = useRef(false);
 
   useEffect(() => {
     return window.markdownEditor.onExternalFileChange((event) => {
-      // Single-flight: never stack multiple native confirms for the same burst.
-      if (externalChangePromptRef.current) {
+      // Single-flight: never stack multiple prompts for the same burst.
+      if (
+        externalChangePromptRef.current ||
+        closePromptHandlingRef.current ||
+        appDialogRef.current
+      ) {
         void window.markdownEditor.acknowledgeExternalFileChange({
           path: event.path,
           dismissed: true,
@@ -2281,65 +2465,133 @@ export default function EditorShell({
 
       externalChangePromptRef.current = true;
 
-      void (async () => {
-        try {
-          if (event.kind === 'deleted') {
-            const shouldSave = window.confirm(
-              `文档 "${event.title}" 已被外部程序删除。\n\n是否另存为以保留当前内容？`,
-            );
-            void window.markdownEditor.acknowledgeExternalFileChange({
-              path: event.path,
-              dismissed: !shouldSave,
-            });
-            if (shouldSave) {
+      if (event.kind === 'deleted') {
+        openAppDialog({
+          title: '文件已被删除',
+          message: `文档 "${event.title}" 已被外部程序删除。`,
+          detail: '是否另存为以保留当前内容？',
+          buttons: [
+            { value: 'save-as', label: '另存为', variant: 'primary' },
+            { value: 'dismiss', label: '忽略' },
+          ],
+          cancelValue: 'dismiss',
+          onResolve: (action) => {
+            void (async () => {
+              try {
+                if (action !== 'save-as') {
+                  void window.markdownEditor.acknowledgeExternalFileChange({
+                    path: event.path,
+                    dismissed: true,
+                  });
+                  return;
+                }
+
+                const visualState = sourceModeRef.current ? null : flushVisualSync();
+                const saved = await onSaveDocumentAs(
+                  sourceModeRef.current ? sourceDraftRef.current : visualState?.markdown,
+                  sourceModeRef.current
+                    ? computeSourceStats(sourceDraftRef.current)
+                    : visualState?.stats,
+                );
+                void window.markdownEditor.acknowledgeExternalFileChange({
+                  path: event.path,
+                  dismissed: !saved,
+                });
+              } finally {
+                externalChangePromptRef.current = false;
+              }
+            })();
+          },
+        });
+        return;
+      }
+
+      openAppDialog({
+        title: '文件已被修改',
+        message: `文档 "${event.title}" 已被外部程序修改。`,
+        detail: '是否重新加载最新内容？注意：重新加载将丢弃当前未保存的修改。',
+        buttons: [
+          { value: 'reload', label: '重新加载', variant: 'primary' },
+          { value: 'dismiss', label: '忽略' },
+        ],
+        cancelValue: 'dismiss',
+        onResolve: (action) => {
+          void (async () => {
+            try {
+              if (action !== 'reload') {
+                void window.markdownEditor.acknowledgeExternalFileChange({
+                  path: event.path,
+                  dismissed: true,
+                });
+                return;
+              }
+
+              // Apply the reloaded document into React state (IPC-only open was a no-op).
+              await onReloadDocumentPath(event.path);
+              void window.markdownEditor.acknowledgeExternalFileChange({
+                path: event.path,
+                reloaded: true,
+              });
+            } finally {
+              externalChangePromptRef.current = false;
+            }
+          })();
+        },
+      });
+    });
+  }, [onReloadDocumentPath, onSaveDocumentAs, openAppDialog]);
+
+  useEffect(() => {
+    return window.markdownEditor.onRequestSaveBeforeClose(() => {
+      if (
+        appDialogRef.current ||
+        externalChangePromptRef.current ||
+        closePromptHandlingRef.current
+      ) {
+        window.markdownEditor.respondSaveBeforeClose(false);
+        return;
+      }
+
+      closePromptHandlingRef.current = true;
+      openAppDialog({
+        title: '未保存的修改',
+        message: '当前文档有未保存的修改。',
+        detail: '关闭窗口前，是否先保存当前文档？',
+        buttons: [
+          { value: 'save', label: '保存并关闭', variant: 'primary' },
+          { value: 'discard', label: '不保存' },
+          { value: 'cancel', label: '取消' },
+        ],
+        cancelValue: 'cancel',
+        onResolve: (action) => {
+          void (async () => {
+            try {
+              if (action === 'cancel') {
+                window.markdownEditor.respondSaveBeforeClose(false);
+                return;
+              }
+
+              if (action === 'discard') {
+                window.markdownEditor.respondSaveBeforeClose(true);
+                return;
+              }
+
               const visualState = sourceModeRef.current ? null : flushVisualSync();
-              await onSaveDocumentAs(
+              const saved = await onSaveDocument(
                 sourceModeRef.current ? sourceDraftRef.current : visualState?.markdown,
                 sourceModeRef.current
                   ? computeSourceStats(sourceDraftRef.current)
                   : visualState?.stats,
               );
+              window.markdownEditor.respondSaveBeforeClose(Boolean(saved));
+            } finally {
+              closePromptHandlingRef.current = false;
             }
-            return;
-          }
-
-          const shouldReload = window.confirm(
-            `文档 "${event.title}" 已被外部程序修改。\n\n是否重新加载最新内容？\n\n注意：重新加载将丢弃当前未保存的修改。`,
-          );
-
-          if (!shouldReload) {
-            void window.markdownEditor.acknowledgeExternalFileChange({
-              path: event.path,
-              dismissed: true,
-            });
-            return;
-          }
-
-          // Apply the reloaded document into React state (IPC-only open was a no-op).
-          await onReloadDocumentPath(event.path);
-          void window.markdownEditor.acknowledgeExternalFileChange({
-            path: event.path,
-            reloaded: true,
-          });
-        } finally {
-          externalChangePromptRef.current = false;
-        }
-      })();
+          })();
+        },
+      });
     });
-  }, [onReloadDocumentPath, onSaveDocumentAs]);
-
-  useEffect(() => {
-    return window.markdownEditor.onRequestSaveBeforeClose(() => {
-      void (async () => {
-        const visualState = sourceModeRef.current ? null : flushVisualSync();
-        const saved = await onSaveDocument(
-          sourceModeRef.current ? sourceDraftRef.current : visualState?.markdown,
-          sourceModeRef.current ? computeSourceStats(sourceDraftRef.current) : visualState?.stats,
-        );
-        window.markdownEditor.respondSaveBeforeClose(Boolean(saved));
-      })();
-    });
-  }, [onSaveDocument, editor]);
+  }, [onSaveDocument, openAppDialog]);
 
   const getExportPayload = useCallback(() => {
     const visualState = sourceModeRef.current ? null : flushVisualSync();
@@ -2513,6 +2765,21 @@ export default function EditorShell({
     );
   }, [document.savedMarkdown, onSaveDocumentAs, editor]);
 
+  const handleExportPdf = useCallback(() => {
+    void window.markdownEditor.exportAsPdf(getExportPayload());
+  }, [getExportPayload]);
+
+  const handleExportImage = useCallback(() => {
+    void window.markdownEditor.exportAsImage(getExportPayload());
+  }, [getExportPayload]);
+
+  const handleExportPandoc = useCallback(
+    (format: Parameters<typeof window.markdownEditor.exportWithPandoc>[1]) => {
+      void window.markdownEditor.exportWithPandoc(getExportPayload(), format);
+    },
+    [getExportPayload],
+  );
+
   const handleInsertImage = useCallback(() => {
     fileInputRef.current?.click();
   }, []);
@@ -2645,9 +2912,14 @@ export default function EditorShell({
         sourceMode={sourceMode}
         theme={theme}
         themePalette={themePalette}
+        glassEffect={glassEffect}
         toolbarVisible={toolbarVisible}
+        onExportPdf={handleExportPdf}
+        onExportImage={handleExportImage}
+        onExportPandoc={handleExportPandoc}
         onSetTheme={onSetTheme}
         onSetThemePalette={onSetThemePalette}
+        onSetGlassEffect={onSetGlassEffect}
       />
 
       <main className={sidebarVisible ? 'workspace workspace--with-sidebar' : 'workspace workspace--with-sidebar is-sidebar-collapsed'}>
@@ -2694,6 +2966,30 @@ export default function EditorShell({
 
       <ContextMenu menu={contextMenu} onClose={closeContextMenu} />
 
+      {appDialog ? (
+        <AppDialog
+          buttons={appDialog.buttons}
+          cancelValue={appDialog.cancelValue}
+          detail={appDialog.detail}
+          message={appDialog.message}
+          onResolve={resolveAppDialog}
+          title={appDialog.title}
+        />
+      ) : null}
+
+      {imageActionMenu ? (
+        <ImageActionMenu
+          currentPathAvailable={Boolean(document.path)}
+          onClose={closeImageActionMenu}
+          onCopyToCurrent={() => void copyImageToCurrent()}
+          onCopyToOther={() => void copyImageToOther()}
+          onKeepOriginal={() => void keepOriginalPath()}
+          originalPathAvailable={Boolean(imageActionMenu.sourcePath)}
+          x={imageActionMenuPos.x}
+          y={imageActionMenuPos.y}
+        />
+      ) : null}
+
       <input
         accept="image/*"
         className="sr-only"
@@ -2703,11 +2999,14 @@ export default function EditorShell({
             return;
           }
 
+          const sourcePath = getImageSourcePath(file);
           const base64 = await fileToBase64(file);
           const saved = await window.markdownEditor.saveImage({
             base64,
             suggestedName: file.name,
             currentPath: documentPathRef.current,
+            destination: 'default',
+            sourcePath,
           });
 
           if (sourceMode) {
@@ -2730,6 +3029,45 @@ export default function EditorShell({
           }
 
           editor.chain().focus().setImage({ src: saved.markdownPath, alt: '', title: undefined }).run();
+
+          let imagePos: number | null = null;
+          editor.state.doc.descendants((node, pos) => {
+            if (node.type.name === 'image' && node.attrs.src === saved.markdownPath) {
+              imagePos = pos;
+              return false;
+            }
+            return true;
+          });
+
+          if (imagePos != null) {
+            const imageNode = editor.state.doc.nodeAt(imagePos);
+            if (imageNode) {
+              let after = imagePos + imageNode.nodeSize;
+              let transaction = editor.state.tr;
+              let insertedParagraph = false;
+              if (after >= editor.state.doc.content.size) {
+                const paragraph = editor.state.schema.nodes.paragraph?.create();
+                if (paragraph) {
+                  transaction = transaction.insert(after, paragraph);
+                  insertedParagraph = true;
+                }
+              }
+              const caret = Math.min(
+                after + (insertedParagraph ? 1 : 0),
+                transaction.doc.content.size,
+              );
+              transaction.setSelection(TextSelection.near(transaction.doc.resolve(caret)));
+              editor.view.dispatch(transaction.scrollIntoView());
+              editor.view.focus();
+            }
+          }
+
+          showImageActionMenu({
+            src: saved.markdownPath,
+            absolutePath: saved.absolutePath,
+            sourcePath,
+            pos: imagePos,
+          });
           event.target.value = '';
         }}
         ref={fileInputRef}

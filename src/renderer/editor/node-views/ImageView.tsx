@@ -111,7 +111,8 @@ function ImageView({ editor, extension, getPos, node, selected, updateAttributes
     <NodeViewWrapper
       className={`image-node ${selected ? 'is-selected' : ''} ${editing ? 'is-editing' : ''}`}
       onClick={(event: any) => {
-        if (!editing && !(event.target as HTMLElement).closest('.image-node__editor')) {
+        const target = event.target as HTMLElement;
+        if (!editing && target.closest('.image-node__image')) {
           setEditing(true);
         }
       }}

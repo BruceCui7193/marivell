@@ -1,5 +1,15 @@
 import { Extension } from '@tiptap/core';
-import { Plugin } from '@tiptap/pm/state';
+import { Plugin, TextSelection } from '@tiptap/pm/state';
+
+export interface UploadedImage {
+  src: string;
+  absolutePath: string;
+  sourcePath?: string | null;
+}
+
+export interface PastedImageInfo extends UploadedImage {
+  pos: number | null;
+}
 
 function clipboardContainsStructuredTable(event: ClipboardEvent): boolean {
   const html = event.clipboardData?.getData('text/html') ?? '';
@@ -16,7 +26,57 @@ function clipboardContainsStructuredTable(event: ClipboardEvent): boolean {
   return rows.length >= 2 && rows.every((row) => row.includes('\t'));
 }
 
-export function createImageDropPasteExtension(onUploadImage: (file: File) => Promise<string>) {
+function findImagePos(view: any, src: string): number | null {
+  let found: number | null = null;
+  view.state.doc.descendants((node: any, pos: number) => {
+    if (node.type.name === 'image' && node.attrs.src === src) {
+      found = pos;
+      return false;
+    }
+    return true;
+  });
+  return found;
+}
+
+function insertImageWithCaret(view: any, node: any, insertAt?: number): number {
+  let transaction: any;
+  let imageEnd: number;
+
+  if (insertAt == null) {
+    const from = view.state.selection.from;
+    transaction = view.state.tr.replaceSelectionWith(node);
+    imageEnd = transaction.mapping.map(from) + node.nodeSize;
+  } else {
+    transaction = view.state.tr.insert(insertAt, node);
+    imageEnd = insertAt + node.nodeSize;
+  }
+
+  let caret = Math.min(imageEnd, transaction.doc.content.size);
+  let insertedParagraph = false;
+
+  if (caret >= transaction.doc.content.size) {
+    const paragraph = view.state.schema.nodes.paragraph?.create();
+    if (paragraph) {
+      transaction = transaction.insert(caret, paragraph);
+      insertedParagraph = true;
+    }
+  }
+
+  caret = Math.min(
+    imageEnd + (insertedParagraph ? 1 : 0),
+    transaction.doc.content.size,
+  );
+  transaction.setSelection(TextSelection.near(transaction.doc.resolve(caret)));
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+
+  return imageEnd;
+}
+
+export function createImageDropPasteExtension(
+  onUploadImage: (file: File) => Promise<UploadedImage>,
+  onImagePasted?: (info: PastedImageInfo) => void,
+) {
   return Extension.create({
     name: 'imageDropPaste',
 
@@ -37,9 +97,9 @@ export function createImageDropPasteExtension(onUploadImage: (file: File) => Pro
 
               void (async () => {
                 for (const file of files) {
-                  const src = await onUploadImage(file);
+                  const uploaded = await onUploadImage(file);
                   const node = view.state.schema.nodes.image?.create({
-                    src,
+                    src: uploaded.src,
                     alt: '',
                     title: null,
                   });
@@ -48,8 +108,12 @@ export function createImageDropPasteExtension(onUploadImage: (file: File) => Pro
                     continue;
                   }
 
-                  const transaction = view.state.tr.replaceSelectionWith(node);
-                  view.dispatch(transaction.scrollIntoView());
+                  insertImageWithCaret(view, node);
+
+                  onImagePasted?.({
+                    ...uploaded,
+                    pos: findImagePos(view, uploaded.src),
+                  });
                 }
               })();
 
@@ -72,12 +136,12 @@ export function createImageDropPasteExtension(onUploadImage: (file: File) => Pro
               const dropPosition = coordinates?.pos ?? view.state.selection.from;
 
               void (async () => {
-                let offset = 0;
+                let insertAt = dropPosition;
 
                 for (const file of files) {
-                  const src = await onUploadImage(file);
+                  const uploaded = await onUploadImage(file);
                   const node = view.state.schema.nodes.image?.create({
-                    src,
+                    src: uploaded.src,
                     alt: '',
                     title: null,
                   });
@@ -86,9 +150,13 @@ export function createImageDropPasteExtension(onUploadImage: (file: File) => Pro
                     continue;
                   }
 
-                  const transaction = view.state.tr.insert(dropPosition + offset, node);
-                  offset += node.nodeSize;
-                  view.dispatch(transaction.scrollIntoView());
+                  const imageEnd = insertImageWithCaret(view, node, insertAt);
+                  insertAt = imageEnd;
+
+                  onImagePasted?.({
+                    ...uploaded,
+                    pos: findImagePos(view, uploaded.src),
+                  });
                 }
               })();
 

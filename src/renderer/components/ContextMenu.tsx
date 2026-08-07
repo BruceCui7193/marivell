@@ -41,6 +41,7 @@ function isItem(entry: ContextMenuEntry): entry is ContextMenuItem {
 export default function ContextMenu({ menu, onClose }: ContextMenuProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState({ x: 0, y: 0 });
+  const [origin, setOrigin] = useState('top left');
 
   useLayoutEffect(() => {
     if (!menu || !rootRef.current) {
@@ -57,10 +58,14 @@ export default function ContextMenu({ menu, onClose }: ContextMenuProps) {
       y = Math.max(pad, menu.y - Math.min(rect.height, maxH));
     }
     const x = Math.min(menu.x, window.innerWidth - rect.width - pad);
-    setPos({
-      x: Math.max(pad, x),
-      y: Math.max(pad, Math.min(y, window.innerHeight - Math.min(rect.height, maxH) - pad)),
-    });
+    const nextX = Math.max(pad, x);
+    const nextY = Math.max(pad, Math.min(y, window.innerHeight - Math.min(rect.height, maxH) - pad));
+    setPos({ x: nextX, y: nextY });
+    setOrigin(
+      `${nextY + rect.height > window.innerHeight - pad ? 'bottom' : 'top'} ${
+        nextX + rect.width > window.innerWidth - pad ? 'right' : 'left'
+      }`,
+    );
   }, [menu]);
 
   useEffect(() => {
@@ -109,7 +114,7 @@ export default function ContextMenu({ menu, onClose }: ContextMenuProps) {
       ref={rootRef}
       className="context-menu"
       role="menu"
-      style={{ left: pos.x, top: pos.y }}
+      style={{ left: pos.x, top: pos.y, transformOrigin: origin }}
       onContextMenu={(event) => event.preventDefault()}
     >
       {menu.items.map((entry) => {

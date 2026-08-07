@@ -270,6 +270,168 @@ function extractMarkdownFromClipboard(event: ClipboardEvent): string {
   return markdown;
 }
 
+export interface ClipboardPastePayload {
+  text: string;
+  html: string;
+  markdown?: string;
+  files?: File[];
+}
+
+export function pasteClipboardPayload(editor: any, payload: ClipboardPastePayload): boolean {
+  const { view } = editor;
+  const text = payload.text ?? '';
+  const html = payload.html ?? '';
+  const clipboardMarkdown = payload.markdown ?? '';
+  const imageFiles = (payload.files ?? []).filter((file) => file.type.startsWith('image/'));
+  const hasStructuredHtml = looksLikeStructuredHtml(html) && !isOurMarkdownHtml(html);
+  const hasExclusiveMarkdown = hasExclusiveMarkdownStructure(clipboardMarkdown || text);
+  const htmlTable = extractHtmlTableElement(html);
+  const hasTabularText = looksLikeTabularPlainText(text);
+  const insideTable = isInsideTableCell(view);
+
+  // Code blocks / math: always paste as raw text.
+  if (pasteRequiresPlainText(view)) {
+    if (!text) {
+      return false;
+    }
+    return insertPlainText(view, text);
+  }
+
+  if (imageFiles.length > 0 && !htmlTable && !hasStructuredHtml && !hasTabularText) {
+    return false;
+  }
+
+  // Inside a table cell: never paste a whole nested table / block
+  // structure — flatten to plain text so the cell content stays usable.
+  if (insideTable) {
+    if (text) {
+      const cellText = text.replace(/\r\n/g, '\n').replace(/\n+/g, ' ').trim();
+      return insertPlainText(view, cellText || text);
+    }
+    return false;
+  }
+
+  // Prefer first-party Markdown MIME from our own copy handler.
+  if (clipboardMarkdown && looksLikeMarkdown(clipboardMarkdown)) {
+    const content = parseContentFromMarkdown(clipboardMarkdown);
+    if (content) {
+      try {
+        insertContentDirect(editor, content);
+        flushNodeViews(editor);
+        return true;
+      } catch {
+        try {
+          editor.chain().insertContent(content).scrollIntoView().run();
+          flushNodeViews(editor);
+          return true;
+        } catch {
+          /* fall through */
+        }
+      }
+    }
+  }
+
+  if (htmlTable && !hasExclusiveMarkdown) {
+    return insertHtmlTable(view, htmlTable);
+  }
+
+  if (hasStructuredHtml && !hasExclusiveMarkdown) {
+    const content =
+      parseContentFromMarkdown(convertHtmlToMarkdown(html)) ??
+      (text ? createPlainTextContent(text) : null);
+    if (content) {
+      try {
+        insertContentDirect(editor, content);
+      } catch {
+        try {
+          editor.chain().insertContent(content).scrollIntoView().run();
+        } catch {
+          /* fall through */
+        }
+      }
+      flushNodeViews(editor);
+      return true;
+    }
+  }
+
+  if (hasTabularText) {
+    const content = parseContentFromMarkdown(tabularTextToMarkdown(text));
+    if (content) {
+      try {
+        insertContentDirect(editor, content);
+      } catch {
+        try {
+          editor.chain().insertContent(content).scrollIntoView().run();
+        } catch {
+          /* fall through */
+        }
+      }
+      flushNodeViews(editor);
+      return true;
+    }
+  }
+
+  if (looksLikeMarkdown(text)) {
+    const content = parseContentFromMarkdown(text);
+    if (content) {
+      try {
+        insertContentDirect(editor, content);
+        flushNodeViews(editor);
+        return true;
+      } catch {
+        try {
+          editor.chain().insertContent(content).scrollIntoView().run();
+          flushNodeViews(editor);
+          return true;
+        } catch {
+          // Schema mismatch — fall through to plain text.
+        }
+      }
+    }
+
+    // Markdown was detected but parsing/insert failed: never drop content.
+    if (text) {
+      insertPlainText(view, text);
+      flushNodeViews(editor);
+      return true;
+    }
+  }
+
+  if (hasStructuredHtml) {
+    const content =
+      parseContentFromMarkdown(convertHtmlToMarkdown(html)) ??
+      (text ? createPlainTextContent(text) : null);
+    if (content) {
+      try {
+        insertContentDirect(editor, content);
+      } catch {
+        try {
+          editor.chain().insertContent(content).scrollIntoView().run();
+        } catch {
+          /* nothing */
+        }
+      }
+      flushNodeViews(editor);
+      return true;
+    }
+  }
+
+  // Plain text with no Markdown structure: let ProseMirror handle it
+  // for correct mid-paragraph insertion. Only force-insert when we
+  // already know structured paste failed above.
+  if (text && !html) {
+    return false;
+  }
+
+  // HTML that isn't structured (e.g. a single <span>) — prefer plain text.
+  if (text) {
+    insertPlainText(view, text);
+    return true;
+  }
+
+  return false;
+}
+
 export function createMarkdownPasteExtension() {
   return Extension.create({
     name: 'markdownPaste',
@@ -279,174 +441,16 @@ export function createMarkdownPasteExtension() {
         new Plugin({
           props: {
             handlePaste: (view, event) => {
-              // Code blocks / math: always paste as raw text.
-              if (pasteRequiresPlainText(view)) {
-                const text = event.clipboardData?.getData('text/plain') ?? '';
-                if (!text) {
-                  return false;
-                }
+              const handled = pasteClipboardPayload(this.editor, {
+                text: event.clipboardData?.getData('text/plain') ?? '',
+                html: event.clipboardData?.getData('text/html') ?? '',
+                markdown: extractMarkdownFromClipboard(event),
+                files: Array.from(event.clipboardData?.files ?? []),
+              });
+              if (handled) {
                 event.preventDefault();
-                return insertPlainText(view, text);
               }
-
-              const text = event.clipboardData?.getData('text/plain') ?? '';
-              const html = event.clipboardData?.getData('text/html') ?? '';
-              const clipboardMarkdown = extractMarkdownFromClipboard(event);
-              const imageFiles = Array.from(event.clipboardData?.files ?? []).filter((file) =>
-                file.type.startsWith('image/'),
-              );
-              const hasStructuredHtml = looksLikeStructuredHtml(html) && !isOurMarkdownHtml(html);
-              const hasExclusiveMarkdown = hasExclusiveMarkdownStructure(
-                clipboardMarkdown || text,
-              );
-              const htmlTable = extractHtmlTableElement(html);
-              const hasTabularText = looksLikeTabularPlainText(text);
-              const insideTable = isInsideTableCell(view);
-
-              if (imageFiles.length > 0 && !htmlTable && !hasStructuredHtml && !hasTabularText) {
-                return false;
-              }
-
-              // Inside a table cell: never paste a whole nested table / block
-              // structure — flatten to plain text so the cell content stays usable.
-              if (insideTable) {
-                if (text) {
-                  event.preventDefault();
-                  // Collapse multi-line pastes into spaces for a single cell.
-                  const cellText = text.replace(/\r\n/g, '\n').replace(/\n+/g, ' ').trim();
-                  return insertPlainText(view, cellText || text);
-                }
-                return false;
-              }
-
-              // Prefer first-party Markdown MIME from our own copy handler.
-              if (clipboardMarkdown && looksLikeMarkdown(clipboardMarkdown)) {
-                const content = parseContentFromMarkdown(clipboardMarkdown);
-                if (content) {
-                  event.preventDefault();
-                  try {
-                    insertContentDirect(this.editor, content);
-                    flushNodeViews(this.editor);
-                    return true;
-                  } catch {
-                    try {
-                      this.editor.chain().insertContent(content).scrollIntoView().run();
-                      flushNodeViews(this.editor);
-                      return true;
-                    } catch {
-                      /* fall through */
-                    }
-                  }
-                }
-              }
-
-              if (htmlTable && !hasExclusiveMarkdown) {
-                event.preventDefault();
-                return insertHtmlTable(view, htmlTable);
-              }
-
-              if (hasStructuredHtml && !hasExclusiveMarkdown) {
-                const content =
-                  parseContentFromMarkdown(convertHtmlToMarkdown(html)) ??
-                  (text ? createPlainTextContent(text) : null);
-                if (content) {
-                  event.preventDefault();
-                  try {
-                    insertContentDirect(this.editor, content);
-                  } catch {
-                    try {
-                      this.editor.chain().insertContent(content).scrollIntoView().run();
-                    } catch {
-                      /* fall through */
-                    }
-                  }
-                  flushNodeViews(this.editor);
-                  return true;
-                }
-              }
-
-              if (hasTabularText) {
-                const content = parseContentFromMarkdown(tabularTextToMarkdown(text));
-                if (content) {
-                  event.preventDefault();
-                  try {
-                    insertContentDirect(this.editor, content);
-                  } catch {
-                    try {
-                      this.editor.chain().insertContent(content).scrollIntoView().run();
-                    } catch {
-                      /* fall through */
-                    }
-                  }
-                  flushNodeViews(this.editor);
-                  return true;
-                }
-              }
-
-              if (looksLikeMarkdown(text)) {
-                const content = parseContentFromMarkdown(text);
-                if (content) {
-                  event.preventDefault();
-                  try {
-                    insertContentDirect(this.editor, content);
-                    flushNodeViews(this.editor);
-                    return true;
-                  } catch {
-                    try {
-                      this.editor.chain().insertContent(content).scrollIntoView().run();
-                      flushNodeViews(this.editor);
-                      return true;
-                    } catch {
-                      // Schema mismatch — fall through to plain text.
-                    }
-                  }
-                }
-
-                // Markdown was detected but parsing/insert failed: never drop content.
-                if (text) {
-                  event.preventDefault();
-                  insertPlainText(view, text);
-                  flushNodeViews(this.editor);
-                  return true;
-                }
-              }
-
-              if (hasStructuredHtml) {
-                const content =
-                  parseContentFromMarkdown(convertHtmlToMarkdown(html)) ??
-                  (text ? createPlainTextContent(text) : null);
-                if (content) {
-                  event.preventDefault();
-                  try {
-                    insertContentDirect(this.editor, content);
-                  } catch {
-                    try {
-                      this.editor.chain().insertContent(content).scrollIntoView().run();
-                    } catch {
-                      /* nothing */
-                    }
-                  }
-                  flushNodeViews(this.editor);
-                  return true;
-                }
-              }
-
-              // Plain text with no Markdown structure: let ProseMirror handle it
-              // for correct mid-paragraph insertion. Only force-insert when we
-              // already know structured paste failed above.
-              if (text && !html) {
-                // Explicit plain-only clipboard — PM default is fine.
-                return false;
-              }
-
-              // HTML that isn't structured (e.g. a single <span>) — prefer plain text.
-              if (text) {
-                event.preventDefault();
-                insertPlainText(view, text);
-                return true;
-              }
-
-              return false;
+              return handled;
             },
           },
         }),

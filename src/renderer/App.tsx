@@ -7,7 +7,8 @@ import type {
   SavedDocument,
   ThemeMode,
 } from '@shared/contracts';
-import { type ThemePalette, isThemePalette } from './theme';
+import { type GlassEffect, type ThemePalette, isGlassEffect, isThemePalette } from './theme';
+import AppDialog, { type AppDialogOptions } from './components/AppDialog';
 
 const EditorShell = lazy(() => import('./components/EditorShell'));
 
@@ -86,10 +87,16 @@ export default function App() {
   });
   const [editorDocument, setEditorDocument] = useState<EditorDocumentState>(createUntitledDocument);
   const [currentFolder, setCurrentFolder] = useState<OpenedFolder | null>(null);
+  const [discardConfirm, setDiscardConfirm] = useState<AppDialogOptions | null>(null);
+  const discardConfirmRef = useRef<AppDialogOptions | null>(null);
   const [, setMessage] = useState('\u5c31\u7eea');
   const [themePalette, setThemePalette] = useState<ThemePalette>(() => {
     const persisted = window.localStorage.getItem('markdown-editor-theme-palette');
     return isThemePalette(persisted) ? persisted : 'natural';
+  });
+  const [glassEffect, setGlassEffect] = useState<GlassEffect>(() => {
+    const persisted = window.localStorage.getItem('markdown-editor-glass-effect');
+    return isGlassEffect(persisted) ? persisted : 'frosted';
   });
   const documentRef = useRef(editorDocument);
 
@@ -129,6 +136,11 @@ export default function App() {
     document.documentElement.dataset.colorScheme = themePalette;
     window.localStorage.setItem('markdown-editor-theme-palette', themePalette);
   }, [themePalette]);
+
+  useEffect(() => {
+    document.documentElement.dataset.glassEffect = glassEffect;
+    window.localStorage.setItem('markdown-editor-glass-effect', glassEffect);
+  }, [glassEffect]);
 
   useEffect(() => {
     void window.markdownEditor.setWindowDirty(editorDocument.dirty);
@@ -201,12 +213,33 @@ export default function App() {
     void refreshFolderForDocument(savedDocument.path);
   }, [refreshFolderForDocument]);
 
-  const confirmDiscardChanges = useCallback((): boolean => {
+  const confirmDiscardChanges = useCallback((): Promise<boolean> => {
     if (!documentRef.current.dirty) {
-      return true;
+      return Promise.resolve(true);
     }
 
-    return window.confirm('\u5f53\u524d\u6587\u6863\u6709\u672a\u4fdd\u5b58\u7684\u4fee\u6539\uff0c\u786e\u5b9a\u4e22\u5f03\u5e76\u7ee7\u7eed\u5417\uff1f');
+    return new Promise<boolean>((resolve) => {
+      const dialog: AppDialogOptions = {
+        title: '\u672a\u4fdd\u5b58\u7684\u4fee\u6539',
+        message: '\u5f53\u524d\u6587\u6863\u6709\u672a\u4fdd\u5b58\u7684\u4fee\u6539\u3002',
+        detail: '\u786e\u5b9a\u4e22\u5f03\u5e76\u7ee7\u7eed\u5417\uff1f',
+        buttons: [
+          { value: 'discard', label: '\u653e\u5f03\u4fee\u6539', variant: 'danger' },
+          { value: 'cancel', label: '\u53d6\u6d88' },
+        ],
+        cancelValue: 'cancel',
+        onResolve: (value) => resolve(value === 'discard'),
+      };
+      discardConfirmRef.current = dialog;
+      setDiscardConfirm(dialog);
+    });
+  }, []);
+
+  const resolveDiscardConfirm = useCallback((value: string) => {
+    const dialog = discardConfirmRef.current;
+    discardConfirmRef.current = null;
+    setDiscardConfirm(null);
+    dialog?.onResolve(value);
   }, []);
 
   const openDocument = useCallback(async (): Promise<void> => {
@@ -217,7 +250,7 @@ export default function App() {
   }, []);
 
   const openDocumentPath = useCallback(async (filePath: string): Promise<void> => {
-    if (!confirmDiscardChanges()) {
+    if (!(await confirmDiscardChanges())) {
       return;
     }
 
@@ -357,18 +390,59 @@ export default function App() {
     [saveDocument],
   );
 
+  const saveDocumentAs = useCallback(async (
+    overrideMarkdown?: string,
+    overrideStats?: DocumentStats,
+  ): Promise<SavedDocument | null> => {
+    const currentDocument = documentRef.current;
+    const markdown = overrideMarkdown ?? currentDocument.markdown;
+
+    if (overrideMarkdown !== undefined && overrideStats) {
+      setEditorDocument((current) => ({
+        ...current,
+        markdown: overrideMarkdown,
+        dirty: overrideMarkdown !== current.savedMarkdown,
+        stats: overrideStats,
+      }));
+    }
+
+    const result = await window.markdownEditor.saveDocumentAs({
+      markdown,
+      currentPath: currentDocument.path,
+    });
+
+    if (!result) {
+      setMessage('\u5df2\u53d6\u6d88\u4fdd\u5b58');
+      return null;
+    }
+
+    documentRef.current = {
+      ...currentDocument,
+      path: result.path,
+      title: result.title,
+      markdown: result.markdown,
+      savedMarkdown: result.markdown,
+      dirty: false,
+      lastSavedAt: Date.now(),
+    };
+    applySavedDocument(result);
+    return result;
+  }, [applySavedDocument]);
+
   const handleSaveDocumentAs = useCallback(
-    (markdown?: string, stats?: DocumentStats) => saveDocument(true, markdown, stats),
-    [saveDocument],
+    (markdown?: string, stats?: DocumentStats) => saveDocumentAs(markdown, stats),
+    [saveDocumentAs],
   );
 
   useEffect(() => {
     const offDocumentOpened = window.markdownEditor.onDocumentOpened((openedDocument) => {
-      if (!confirmDiscardChanges()) {
-        return;
-      }
+      void (async () => {
+        if (!(await confirmDiscardChanges())) {
+          return;
+        }
 
-      applyOpenedDocument(openedDocument);
+        applyOpenedDocument(openedDocument);
+      })();
     });
     const offFolderOpened = window.markdownEditor.onFolderOpened((openedFolder) => {
       setCurrentFolder(openedFolder);
@@ -410,11 +484,23 @@ export default function App() {
           onSaveDocumentAs={handleSaveDocumentAs}
           resolvedTheme={resolvedTheme}
           theme={theme}
+          glassEffect={glassEffect}
           onSetTheme={setTheme}
           onSetThemePalette={setThemePalette}
+          onSetGlassEffect={setGlassEffect}
           themePalette={themePalette}
         />
       </Suspense>
+      {discardConfirm ? (
+        <AppDialog
+          buttons={discardConfirm.buttons}
+          cancelValue={discardConfirm.cancelValue}
+          detail={discardConfirm.detail}
+          message={discardConfirm.message}
+          onResolve={resolveDiscardConfirm}
+          title={discardConfirm.title}
+        />
+      ) : null}
       {exportStatus ? <div className="app-exporting">{exportStatus.message}</div> : null}
     </>
   );

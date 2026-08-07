@@ -314,19 +314,12 @@ function requestRendererSaveBeforeClose(window: BrowserWindow): Promise<boolean>
   const webContentsId = window.webContents.id;
 
   return new Promise((resolve) => {
-    const timeoutId = setTimeout(() => {
-      pendingCloseSaves.delete(webContentsId);
-      resolve(false);
-    }, 30_000);
-
     pendingCloseSaves.set(webContentsId, (saved) => {
-      clearTimeout(timeoutId);
       resolve(saved);
     });
 
     if (window.isDestroyed() || window.webContents.isDestroyed()) {
       pendingCloseSaves.delete(webContentsId);
-      clearTimeout(timeoutId);
       resolve(false);
       return;
     }
@@ -343,26 +336,9 @@ async function promptBeforeClose(window: BrowserWindow): Promise<void> {
   closePromptWindows.add(window);
 
   try {
-    const { response } = await dialog.showMessageBox(getDialogParent(window), {
-      type: 'warning',
-      buttons: ['\u4fdd\u5b58\u5e76\u5173\u95ed', '\u4e0d\u4fdd\u5b58', '\u53d6\u6d88'],
-      defaultId: 0,
-      cancelId: 2,
-      noLink: true,
-      title: '\u672a\u4fdd\u5b58\u7684\u4fee\u6539',
-      message: '\u5f53\u524d\u6587\u6863\u6709\u672a\u4fdd\u5b58\u7684\u4fee\u6539\u3002',
-      detail: '\u5173\u95ed\u7a97\u53e3\u524d\uff0c\u662f\u5426\u5148\u4fdd\u5b58\u5f53\u524d\u6587\u6863\uff1f',
-    });
-
-    if (response === 2) {
+    const shouldClose = await requestRendererSaveBeforeClose(window);
+    if (!shouldClose || window.isDestroyed()) {
       return;
-    }
-
-    if (response === 0) {
-      const saved = await requestRendererSaveBeforeClose(window);
-      if (!saved || window.isDestroyed()) {
-        return;
-      }
     }
 
     markWindowDirty(window, false);
@@ -853,6 +829,7 @@ async function createMainWindow(options: WindowInitOptions = {}): Promise<Browse
     minWidth: 420,
     minHeight: 680,
     show: false,
+    autoHideMenuBar: true,
     backgroundColor: '#f3f4f2',
     icon: resolveWindowIcon(),
     webPreferences: {
@@ -1090,6 +1067,10 @@ function createAssetDirectory(documentPath: string): string {
   return path.join(path.dirname(documentPath), `${stem}.assets`);
 }
 
+function createDefaultImageDirectory(): string {
+  return path.join(app.getPath('userData'), 'assets');
+}
+
 function buildImageName(originalName: string): string {
   const extension = path.extname(originalName) || '.png';
   const stem = path.basename(originalName, extension).replace(/[^\w-]+/g, '-');
@@ -1098,24 +1079,35 @@ function buildImageName(originalName: string): string {
 }
 
 async function saveImage(payload: SaveImagePayload) {
-  if (!payload.currentPath) {
-    return {
-      kind: 'data-url' as const,
-      markdownPath: `data:image/png;base64,${payload.base64}`,
-    };
-  }
+  const destination = payload.destination ?? 'default';
+  const targetDirectory =
+    destination === 'document' && payload.currentPath
+      ? createAssetDirectory(payload.currentPath)
+      : destination === 'other' && payload.targetDirectory
+        ? payload.targetDirectory
+        : createDefaultImageDirectory();
 
-  const assetDirectory = createAssetDirectory(payload.currentPath);
-  await fs.mkdir(assetDirectory, { recursive: true });
+  await fs.mkdir(targetDirectory, { recursive: true });
 
   const fileName = buildImageName(payload.suggestedName);
-  const absolutePath = path.join(assetDirectory, fileName);
+  const absolutePath = path.join(targetDirectory, fileName);
 
-  await fs.writeFile(absolutePath, Buffer.from(payload.base64, 'base64'));
+  if (payload.sourcePath) {
+    if (payload.sourcePath !== absolutePath) {
+      await fs.copyFile(payload.sourcePath, absolutePath);
+    }
+  } else {
+    await fs.writeFile(absolutePath, Buffer.from(payload.base64 ?? '', 'base64'));
+  }
 
-  const markdownPath = path
-    .relative(path.dirname(payload.currentPath), absolutePath)
-    .replace(/\\/g, '/');
+  let markdownPath = absolutePath;
+  if (payload.currentPath) {
+    const documentDirectory = path.dirname(payload.currentPath);
+    const relativePath = path.relative(documentDirectory, absolutePath);
+    if (!relativePath.startsWith('..') && !path.isAbsolute(relativePath)) {
+      markdownPath = relativePath.replace(/\\/g, '/');
+    }
+  }
 
   return {
     kind: 'file' as const,
@@ -1165,6 +1157,21 @@ async function exportClipboardDebugBundle(): Promise<string | null> {
 function registerIpcHandlers(): void {
   ipcMain.handle('window:new', async () => {
     await createMainWindow();
+  });
+
+  ipcMain.handle('window:zoom-in', async (event) => {
+    const parentWindow = getWindowFromSender(event.sender);
+    parentWindow?.webContents.setZoomLevel((parentWindow.webContents.getZoomLevel() ?? 0) + 0.5);
+  });
+
+  ipcMain.handle('window:zoom-out', async (event) => {
+    const parentWindow = getWindowFromSender(event.sender);
+    parentWindow?.webContents.setZoomLevel((parentWindow.webContents.getZoomLevel() ?? 0) - 0.5);
+  });
+
+  ipcMain.handle('window:zoom-reset', async (event) => {
+    const parentWindow = getWindowFromSender(event.sender);
+    parentWindow?.webContents.setZoomLevel(0);
   });
 
   ipcMain.handle('window:set-dirty', async (event, dirty: boolean) => {
@@ -1322,6 +1329,15 @@ function registerIpcHandlers(): void {
     return saveImage(payload);
   });
 
+  ipcMain.handle('dialog:choose-image-directory', async (event) => {
+    const parentWindow = getWindowFromSender(event.sender);
+    const result = await dialog.showOpenDialog(getDialogParent(parentWindow), {
+      title: '选择图片保存位置',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  });
+
   ipcMain.handle('shell:open-external', async (_event, url: string) => {
     await shell.openExternal(url);
   });
@@ -1413,4 +1429,3 @@ app.on('window-all-closed', () => {
     app.quit();
   }
 });
-

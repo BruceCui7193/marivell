@@ -19,7 +19,7 @@ import { MermaidBlock } from './extensions/mermaid-block';
 import { TypingShortcuts } from './extensions/typing-shortcuts';
 import { MathInline } from './extensions/math-inline';
 
-import { createImageDropPasteExtension } from './plugins/image-drop-paste';
+import { createImageDropPasteExtension, type PastedImageInfo, type UploadedImage } from './plugins/image-drop-paste';
 import { createMarkdownPasteExtension } from './plugins/markdown-paste';
 import { SearchHighlight } from './plugins/search-highlight';
 import { MathSyntaxHighlight } from './plugins/math-syntax-highlight';
@@ -79,12 +79,14 @@ lowlight.registerAlias({
 });
 
 interface CreateEditorExtensionsOptions {
-  onUploadImage: (file: File) => Promise<string>;
+  onUploadImage: (file: File) => Promise<UploadedImage>;
+  onImagePasted?: (info: PastedImageInfo) => void;
   onResolveImageSource: (src: string) => string;
 }
 
 export function createEditorExtensions({
   onUploadImage,
+  onImagePasted,
   onResolveImageSource,
 }: CreateEditorExtensionsOptions): AnyExtension[] {
   return [
@@ -164,7 +166,7 @@ export function createEditorExtensions({
     FootnoteReference,
     FootnoteDefinition,
     createMarkdownPasteExtension(),
-    createImageDropPasteExtension(onUploadImage),
+    createImageDropPasteExtension(onUploadImage, onImagePasted),
     SearchHighlight,
     MathSyntaxHighlight,
     MathFocusDecoration,
