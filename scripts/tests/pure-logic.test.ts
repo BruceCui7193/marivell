@@ -34,6 +34,11 @@ import {
   getMathCompletionCaret,
   getMathCompletionItems,
 } from '../../src/renderer/editor/math-completions.ts';
+import {
+  hexToRgb,
+  isHexColor,
+  rgbToHex,
+} from '../../src/renderer/settings.ts';
 
 let passed = 0;
 let failed = 0;
@@ -228,6 +233,7 @@ section('liquid glass configuration');
     '.theme-panel',
     '.image-action-menu',
     '.math-completion',
+    '.settings-dialog',
     '.app-dialog',
   ];
   for (const selector of requiredSurfaces) {
@@ -250,6 +256,18 @@ section('math completion');
   assertEqual('math completion caret for simple command', getMathCompletionCaret('\\alpha'), 6);
   const emptyQueryItems = getMathCompletionItems('');
   assert('math completion empty query returns suggestions', emptyQueryItems.length > 0);
+}
+
+// ---------------------------------------------------------------------------
+// Settings helpers
+// ---------------------------------------------------------------------------
+section('settings helpers');
+
+{
+  assert('hex color accepts six-digit rgb hex', isHexColor('#4d7592'));
+  assert('hex color rejects short values', !isHexColor('#fff'));
+  assertEqual('hex to rgb parses channels', hexToRgb('#010203'), { r: 1, g: 2, b: 3 });
+  assertEqual('rgb to hex formats channels', rgbToHex(1, 2, 3), '#010203');
 }
 
 // ---------------------------------------------------------------------------

@@ -28,6 +28,7 @@ interface ToolbarProps {
   onSetTheme: (theme: ThemeMode) => void;
   onSetThemePalette: (palette: ThemePalette) => void;
   onSetGlassEffect: (effect: GlassEffect) => void;
+  onOpenSettings: () => void;
   onToggleToolbar: () => void;
   onToggleSidebar: () => void;
   onToggleSourceMode: () => void;
@@ -222,6 +223,7 @@ function Toolbar({
   onSetTheme,
   onSetThemePalette,
   onSetGlassEffect,
+  onOpenSettings,
   onToggleToolbar,
   onToggleSidebar,
   onToggleSourceMode,
@@ -298,6 +300,7 @@ function Toolbar({
     exportPdf: '导出 PDF…',
     exportImage: '导出长图…',
     pandocExport: '通过 Pandoc 导出',
+    settings: '设置…',
     quit: '退出',
     undo: '撤销',
     redo: '重做',
@@ -847,6 +850,7 @@ function Toolbar({
               item(`pandoc-${option.id}`, option.label, () => onExportPandoc(option.id)),
             )}
             <div className="toolbar-menu__separator" role="separator" />
+            {item('settings', labels.settings, onOpenSettings)}
             {item('quit', labels.quit, () => window.close())}
           </>
         ) : null}

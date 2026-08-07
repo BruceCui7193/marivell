@@ -2038,7 +2038,7 @@
   /* auto layout: content-driven widths; no drag-resize deforming columns */
   table-layout: auto;
   overflow: visible;
-  border-radius: 18px;
+  border-radius: 8px;
   border: 1px solid var(--ui-border);
 }
 
@@ -2051,7 +2051,7 @@
 .editor-surface td {
   position: relative;
   min-width: 3em;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border-right: 1px solid var(--ui-border);
   border-bottom: 1px solid var(--ui-border);
   vertical-align: top;
@@ -2068,7 +2068,7 @@
 }
 
 .editor-surface th {
-  background: color-mix(in srgb, var(--ui-accent) 12%, transparent);
+  background: color-mix(in srgb, var(--ui-accent) 8%, transparent);
   font-size: 0.92rem;
   text-align: left;
 }
@@ -3064,6 +3064,7 @@
 .status-bar,
 .image-action-menu,
 .math-completion,
+.settings-dialog,
 .app-dialog {
   border-color: var(--glass-border);
   background-color: var(--glass-fill);
@@ -3123,6 +3124,7 @@
   .status-bar,
   .image-action-menu,
   .math-completion,
+  .settings-dialog,
   .app-dialog {
     background: var(--ui-bg-strong);
     background-image: none;
@@ -3141,6 +3143,7 @@
   .status-bar,
   .image-action-menu,
   .math-completion,
+  .settings-dialog,
   .app-dialog
 ) {
   background-image: none;
@@ -3157,6 +3160,7 @@
   .status-bar,
   .image-action-menu,
   .math-completion,
+  .settings-dialog,
   .app-dialog
 )::before,
 :root[data-glass-effect='off'] :is(
@@ -3170,6 +3174,7 @@
   .status-bar,
   .image-action-menu,
   .math-completion,
+  .settings-dialog,
   .app-dialog
 )::after {
   display: none;
@@ -3404,6 +3409,313 @@
 .app-dialog__button.is-danger:focus-visible {
   filter: brightness(1.04);
   background: #dc2626;
+}
+
+/* Settings dialog */
+.settings-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 13000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: transparent;
+  animation: overlayIn var(--motion-duration-rich) var(--motion-ease-menu);
+}
+
+.settings-dialog {
+  position: relative;
+  isolation: isolate;
+  contain: paint;
+  width: min(760px, calc(100vw - 32px));
+  height: min(620px, calc(100vh - 48px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--ui-border) 90%, transparent);
+  border-radius: 16px;
+  background-color: var(--glass-fill);
+  background-image:
+    linear-gradient(135deg, color-mix(in srgb, var(--ui-accent) 6%, transparent), transparent 52%),
+    linear-gradient(315deg, color-mix(in srgb, var(--ui-accent) 3%, transparent), transparent 66%),
+    linear-gradient(180deg, color-mix(in srgb, var(--ui-bg-strong) 12%, transparent), transparent 40%);
+  -webkit-backdrop-filter: var(--glass-backdrop);
+  backdrop-filter: var(--glass-backdrop);
+  box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-highlight);
+  will-change: transform, opacity;
+  animation: contextMenuIn var(--motion-duration-rich) var(--motion-ease-spring);
+}
+
+.settings-dialog__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ui-border) 78%, transparent);
+}
+
+.settings-dialog__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.settings-dialog__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ui-text-soft);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.settings-dialog__close:hover {
+  border-color: color-mix(in srgb, var(--ui-accent) 40%, var(--ui-border));
+  background: var(--ui-accent-soft);
+  color: var(--ui-accent);
+}
+
+.settings-dialog__body {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  min-height: 0;
+  flex: 1;
+}
+
+.settings-dialog__tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  border-right: 1px solid color-mix(in srgb, var(--ui-border) 78%, transparent);
+}
+
+.settings-dialog__tab {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ui-text-soft);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
+}
+
+.settings-dialog__tab:hover,
+.settings-dialog__tab.is-active {
+  border-color: color-mix(in srgb, var(--ui-accent) 32%, var(--ui-border));
+  background: var(--ui-accent-soft);
+  color: var(--ui-accent);
+}
+
+.settings-dialog__content {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 18px 20px;
+}
+
+.settings-section {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.settings-section__title {
+  margin: 0 0 2px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-option {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--ui-border) 86%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ui-bg-strong) 58%, transparent);
+  color: var(--ui-text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.settings-option:hover,
+.settings-option.is-active {
+  border-color: color-mix(in srgb, var(--ui-accent) 44%, var(--ui-border));
+  background: var(--ui-accent-soft);
+  color: var(--ui-accent);
+}
+
+.settings-select {
+  width: min(360px, 100%);
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--ui-border) 86%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ui-bg-strong) 62%, transparent);
+  color: var(--ui-text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.settings-colors {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-color-field {
+  display: grid;
+  grid-template-columns: 110px 44px minmax(0, 1fr) 56px 56px 56px;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-color-field__label {
+  font-size: 13px;
+  color: var(--ui-text);
+}
+
+.settings-color-field__picker {
+  width: 36px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.settings-color-field__hex,
+.settings-color-field__rgb {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--ui-border) 86%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ui-bg-strong) 58%, transparent);
+  color: var(--ui-text);
+  font: inherit;
+  font-size: 12px;
+  box-sizing: border-box;
+}
+
+.settings-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ui-text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.settings-sliders {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-slider {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr) 72px;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.settings-slider input[type='range'] {
+  width: 100%;
+  accent-color: var(--ui-accent);
+}
+
+.settings-slider__value {
+  color: var(--ui-text-soft);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.settings-button {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid color-mix(in srgb, var(--ui-border) 86%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ui-bg-strong) 58%, transparent);
+  color: var(--ui-text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  justify-self: start;
+}
+
+.settings-button:hover,
+.settings-button:focus-visible {
+  border-color: color-mix(in srgb, var(--ui-accent) 44%, var(--ui-border));
+  background: var(--ui-accent-soft);
+  outline: none;
+}
+
+.settings-button.is-primary {
+  border-color: transparent;
+  background: var(--ui-accent);
+  color: var(--ui-bg-strong);
+}
+
+.settings-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.settings-description,
+.settings-status,
+.settings-message {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.settings-description {
+  color: var(--ui-text-soft);
+}
+
+.settings-status {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ui-accent-soft) 42%, transparent);
+  color: var(--ui-text);
+}
+
+.settings-message {
+  color: #c2410c;
+}
+
+.settings-about {
+  display: grid;
+  gap: 6px;
+  color: var(--ui-text);
+  font-size: 13px;
+}
+
+.settings-update {
+  display: grid;
+  gap: 10px;
 }
 
 /* Status bar extras */

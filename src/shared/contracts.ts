@@ -99,6 +99,34 @@ export interface WindowDocumentState {
   dirty: boolean;
 }
 
+export interface AppInfo {
+  name: string;
+  version: string;
+  platform: NodeJS.Platform;
+}
+
+export interface UpdateCheckResult {
+  currentVersion: string;
+  latestVersion: string;
+  releaseUrl: string | null;
+  hasUpdate: boolean;
+  error?: string;
+}
+
+export interface FileAssociationStatus {
+  platform: NodeJS.Platform;
+  supported: boolean;
+  associated: boolean;
+}
+
+export interface FileAssociationResult {
+  ok: boolean;
+  supported: boolean;
+  platform: NodeJS.Platform;
+  message: string;
+  error?: string;
+}
+
 export interface MarkdownEditorApi {
   newWindow: () => Promise<void>;
   openDocumentDialog: () => Promise<OpenedDocument | null>;
@@ -125,6 +153,10 @@ export interface MarkdownEditorApi {
   getPandocTemplates: () => Promise<PandocTemplateMap>;
   setPandocTemplate: (format: PandocExportFormat, templatePath: string | null) => Promise<PandocTemplateMap>;
   choosePandocTemplate: (format: PandocExportFormat) => Promise<string | null>;
+  getAppInfo: () => Promise<AppInfo>;
+  checkForUpdates: (includePrerelease: boolean) => Promise<UpdateCheckResult>;
+  getFileAssociationStatus: () => Promise<FileAssociationStatus>;
+  setFileAssociation: (enabled: boolean) => Promise<FileAssociationResult>;
   setTheme: (theme: ThemeMode) => Promise<void>;
   zoomIn: () => Promise<void>;
   zoomOut: () => Promise<void>;

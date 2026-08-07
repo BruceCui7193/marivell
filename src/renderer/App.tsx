@@ -9,7 +9,25 @@ import type {
 } from '@shared/contracts';
 import { type GlassEffect, type ThemePalette, isGlassEffect, isThemePalette } from './theme';
 import AppDialog, { type AppDialogOptions } from './components/AppDialog';
-import { setLiquidGlassEnabled } from './effects/liquid-glass';
+import SettingsDialog from './components/SettingsDialog';
+import { applyLiquidGlassConfig, setLiquidGlassEnabled } from './effects/liquid-glass';
+import {
+  DEFAULT_FROSTED_GLASS,
+  DEFAULT_GLASS_CUSTOMIZATION,
+  DEFAULT_LIQUID_GLASS,
+  loadCustomColors,
+  loadFrostedGlass,
+  loadGlassCustomization,
+  loadLiquidGlass,
+  saveCustomColors,
+  saveFrostedGlass,
+  saveGlassCustomization,
+  saveLiquidGlass,
+  type CustomColorSettings,
+  type FrostedGlassSettings,
+  type GlassCustomizationSettings,
+  type LiquidGlassSettings,
+} from './settings';
 
 const EditorShell = lazy(() => import('./components/EditorShell'));
 
@@ -99,6 +117,13 @@ export default function App() {
     const persisted = window.localStorage.getItem('markdown-editor-glass-effect');
     return isGlassEffect(persisted) ? persisted : 'frosted';
   });
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [customColors, setCustomColors] = useState<CustomColorSettings>(loadCustomColors);
+  const [frostedGlass, setFrostedGlass] = useState<FrostedGlassSettings>(loadFrostedGlass);
+  const [liquidGlass, setLiquidGlass] = useState<LiquidGlassSettings>(loadLiquidGlass);
+  const [glassCustomization, setGlassCustomization] = useState<GlassCustomizationSettings>(
+    loadGlassCustomization,
+  );
   const documentRef = useRef(editorDocument);
 
   const resolvedTheme = useMemo(() => resolveTheme(theme), [theme]);
@@ -142,6 +167,50 @@ export default function App() {
     document.documentElement.dataset.glassEffect = glassEffect;
     window.localStorage.setItem('markdown-editor-glass-effect', glassEffect);
   }, [glassEffect]);
+
+  useEffect(() => {
+    saveCustomColors(customColors);
+    const style = document.documentElement.style;
+    style.setProperty('--ui-accent', customColors.accent);
+    style.setProperty('--ui-bg', customColors.background);
+    style.setProperty('--ui-bg-strong', customColors.editorBackground);
+    style.setProperty('--ui-border', customColors.border);
+    style.setProperty('--ui-text', customColors.text);
+    style.setProperty('--ui-editor-bg', customColors.editorBackground);
+    style.setProperty(
+      '--ui-accent-soft',
+      `color-mix(in srgb, ${customColors.accent} 14%, transparent)`,
+    );
+  }, [customColors]);
+
+  useEffect(() => {
+    saveFrostedGlass(frostedGlass);
+    const style = document.documentElement.style;
+    if (glassCustomization.frostedEnabled) {
+      style.setProperty(
+        '--glass-backdrop',
+        `blur(${frostedGlass.blur}px) saturate(${frostedGlass.saturation}%) brightness(${frostedGlass.brightness}%)`,
+      );
+      style.setProperty(
+        '--glass-fill',
+        `color-mix(in srgb, var(--ui-bg-strong) ${Math.round(frostedGlass.fillOpacity * 100)}%, transparent)`,
+      );
+    } else {
+      style.removeProperty('--glass-backdrop');
+      style.removeProperty('--glass-fill');
+    }
+  }, [frostedGlass, glassCustomization.frostedEnabled]);
+
+  useEffect(() => {
+    saveLiquidGlass(liquidGlass);
+    applyLiquidGlassConfig(
+      glassCustomization.liquidEnabled ? liquidGlass : DEFAULT_LIQUID_GLASS,
+    );
+  }, [glassCustomization.liquidEnabled, liquidGlass]);
+
+  useEffect(() => {
+    saveGlassCustomization(glassCustomization);
+  }, [glassCustomization]);
 
   useEffect(() => {
     setLiquidGlassEnabled(glassEffect === 'liquid');
@@ -494,9 +563,29 @@ export default function App() {
           onSetTheme={setTheme}
           onSetThemePalette={setThemePalette}
           onSetGlassEffect={setGlassEffect}
+          onOpenSettings={() => setSettingsOpen(true)}
           themePalette={themePalette}
         />
       </Suspense>
+      {settingsOpen ? (
+        <SettingsDialog
+          customColors={customColors}
+          frostedGlass={frostedGlass}
+          glassCustomization={glassCustomization}
+          glassEffect={glassEffect}
+          liquidGlass={liquidGlass}
+          onClose={() => setSettingsOpen(false)}
+          onSetCustomColors={setCustomColors}
+          onSetFrostedGlass={setFrostedGlass}
+          onSetGlassCustomization={setGlassCustomization}
+          onSetGlassEffect={setGlassEffect}
+          onSetLiquidGlass={setLiquidGlass}
+          onSetTheme={setTheme}
+          onSetThemePalette={setThemePalette}
+          theme={theme}
+          themePalette={themePalette}
+        />
+      ) : null}
       {discardConfirm ? (
         <AppDialog
           buttons={discardConfirm.buttons}

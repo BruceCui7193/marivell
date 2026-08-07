@@ -78,6 +78,7 @@ interface EditorShellProps {
   onSetTheme: (theme: ThemeMode) => void;
   onSetThemePalette: (palette: ThemePalette) => void;
   onSetGlassEffect: (effect: GlassEffect) => void;
+  onOpenSettings: () => void;
 }
 
 function computeSourceStats(markdown: string): DocumentStats {
@@ -531,6 +532,7 @@ export default function EditorShell({
   onSetTheme,
   onSetThemePalette,
   onSetGlassEffect,
+  onOpenSettings,
 }: EditorShellProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -2757,6 +2759,7 @@ export default function EditorShell({
         onSetTheme={onSetTheme}
         onSetThemePalette={onSetThemePalette}
         onSetGlassEffect={onSetGlassEffect}
+        onOpenSettings={onOpenSettings}
       />
 
       <main className={sidebarVisible ? 'workspace workspace--with-sidebar' : 'workspace workspace--with-sidebar is-sidebar-collapsed'}>

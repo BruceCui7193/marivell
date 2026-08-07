@@ -38,6 +38,7 @@ export const LIQUID_GLASS_SURFACE_SELECTOR = [
   '.context-menu',
   '.image-action-menu',
   '.app-dialog',
+  '.settings-dialog',
   '.sidebar',
   '.status-bar',
   '.search-panel',
@@ -56,6 +57,7 @@ const LIQUID_GLASS_ANIMATED_SURFACE_SELECTOR = [
   '.context-menu',
   '.image-action-menu',
   '.app-dialog',
+  '.settings-dialog',
   '.code-block-node__language-menu',
   '.search-panel',
   '.math-completion',
@@ -326,7 +328,10 @@ function getLayerPlacement(element: HTMLElement): LayerPlacement | null {
     return null;
   }
   const surfaceZ = getNumericZIndex(surface);
-  if (host.classList.contains('app-dialog-overlay')) {
+  if (
+    host.classList.contains('app-dialog-overlay') ||
+    host.classList.contains('settings-dialog-overlay')
+  ) {
     return {
       host,
       before: surface,
@@ -659,6 +664,17 @@ function syncLiquidGlassVariables(enabled: boolean): void {
   }
   const config = LIQUID_GLASS_CONFIG;
   style.setProperty('--liquid-glass-outer-blur', `${config.outerShadowBlur}px`);
+}
+
+export function applyLiquidGlassConfig(partial: Partial<LiquidGlassConfig>): void {
+  Object.assign(LIQUID_GLASS_CONFIG, partial);
+  state.mapCache.clear();
+  syncLiquidGlassVariables(state.enabled);
+  if (state.enabled) {
+    for (const element of state.entries.keys()) {
+      schedule(element);
+    }
+  }
 }
 
 export function setLiquidGlassEnabled(enabled: boolean): void {
