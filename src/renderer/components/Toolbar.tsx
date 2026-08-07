@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState, type ComponentProps } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
 import { createPortal } from 'react-dom';
 import clsx from 'clsx';
 import type { JSONContent } from '@tiptap/core';
@@ -42,6 +42,7 @@ interface ToolbarButtonProps {
   hidden?: boolean;
   onClick: () => void;
   disabled?: boolean;
+  panelTrigger?: boolean;
   shortcut?: string;
   title: string;
 }
@@ -108,6 +109,7 @@ function ToolbarButton({
   hidden = false,
   onClick,
   disabled = false,
+  panelTrigger = false,
   shortcut,
   title,
 }: ToolbarButtonProps) {
@@ -117,6 +119,7 @@ function ToolbarButton({
       aria-hidden={hidden}
       aria-label={displayTitle}
       className={clsx('toolbar-button', active && 'is-active', hidden && 'is-source-hidden')}
+      data-panel-trigger={panelTrigger ? '' : undefined}
       data-tooltip={displayTitle}
       disabled={disabled}
       onClick={onClick}
@@ -319,6 +322,15 @@ function Toolbar({
   const hasLinkFloatingPanel = linkMenuOpen && !editingControlsHidden;
   const hasFormulaFloatingPanel = formulaMenuOpen && !editingControlsHidden;
 
+  const closeAllPanels = useCallback(() => {
+    setThemePanelOpen(false);
+    setCompactGroupOpen(null);
+    setMenuOpen(null);
+    setMenuRect(null);
+    setFormulaMenuOpen(false);
+    closeAllPanels();
+  }, []);
+
   useEffect(() => {
     if (!editor) {
       return;
@@ -346,25 +358,23 @@ function Toolbar({
 
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target as Node;
-      const insideMenu = target instanceof HTMLElement && Boolean(target.closest('.toolbar-menu'));
-      if (!toolbarRef.current?.contains(target) && !insideMenu) {
-        setThemePanelOpen(false);
-        setCompactGroupOpen(null);
-        setMenuOpen(null);
-        setMenuRect(null);
-        setFormulaMenuOpen(false);
-        setLinkMenuOpen(false);
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      const insideOpenMenu = Boolean(
+        target.closest('.toolbar-menu, .toolbar-submenu.is-open, .toolbar-compact-panel, .theme-panel.is-open'),
+      );
+      const isPanelTrigger = Boolean(
+        target.closest('.toolbar-menu-trigger, .toolbar-group-launcher, [data-panel-trigger]'),
+      );
+      if (!insideOpenMenu && !isPanelTrigger) {
+        closeAllPanels();
       }
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setThemePanelOpen(false);
-        setCompactGroupOpen(null);
-        setMenuOpen(null);
-        setMenuRect(null);
-        setFormulaMenuOpen(false);
-        setLinkMenuOpen(false);
+        closeAllPanels();
       }
     };
 
@@ -382,7 +392,7 @@ function Toolbar({
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('resize', handleResize);
     };
-  }, [compactGroupOpen, formulaMenuOpen, linkMenuOpen, menuOpen, themePanelOpen]);
+  }, [closeAllPanels, compactGroupOpen, formulaMenuOpen, linkMenuOpen, menuOpen, themePanelOpen]);
 
   useEffect(() => {
     if (!toolbarVisible) {
@@ -541,8 +551,11 @@ function Toolbar({
 
     const currentHref = String(editor.getAttributes('link').href ?? '').trim();
     setLinkDraft(currentHref || 'https://');
-    setFormulaMenuOpen(false);
-    setLinkMenuOpen((current) => !current);
+    const shouldOpen = !linkMenuOpen;
+    closeAllPanels();
+    if (shouldOpen) {
+      setLinkMenuOpen(true);
+    }
   };
 
   const applyLink = () => {
@@ -574,7 +587,7 @@ function Toolbar({
       editor.chain().focus().extendMarkRange('link').setLink({ href }).run();
     }
 
-    setLinkMenuOpen(false);
+    closeAllPanels();
   };
 
   const removeLink = () => {
@@ -583,7 +596,7 @@ function Toolbar({
     }
 
     editor.chain().focus().extendMarkRange('link').unsetLink().run();
-    setLinkMenuOpen(false);
+    closeAllPanels();
   };
 
   const insertFootnote = () => {
@@ -753,11 +766,11 @@ function Toolbar({
   };
 
   const toggleCompactGroup = (group: ToolbarGroupId) => {
-    setMenuOpen(null);
-    setMenuRect(null);
-    setFormulaMenuOpen(false);
-    setLinkMenuOpen(false);
-    setCompactGroupOpen((current) => (current === group ? null : group));
+    const shouldOpen = compactGroupOpen !== group;
+    closeAllPanels();
+    if (shouldOpen) {
+      setCompactGroupOpen(group);
+    }
   };
 
   const runEditCommand = (command: 'undo' | 'redo' | 'cut' | 'copy' | 'paste' | 'selectAll') => {
@@ -871,6 +884,7 @@ function Toolbar({
         aria-label={label}
         className={clsx('toolbar-menu-trigger', menuOpen === menu && 'is-active')}
         onClick={(event) => {
+          const shouldOpen = menuOpen !== menu;
           const rect = event.currentTarget.getBoundingClientRect();
           const menuWidth = Math.min(280, window.innerWidth - 16);
           const left = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8));
@@ -879,10 +893,11 @@ function Toolbar({
           const top = belowTop + menuHeight > window.innerHeight - 8
             ? Math.max(8, rect.top - menuHeight - 8)
             : belowTop;
-          setFormulaMenuOpen(false);
-          setLinkMenuOpen(false);
-          setMenuRect({ left, top });
-          setMenuOpen((current) => (current === menu ? null : menu));
+          closeAllPanels();
+          if (shouldOpen) {
+            setMenuRect({ left, top });
+            setMenuOpen(menu);
+          }
         }}
         onMouseDown={(event) => event.preventDefault()}
         title={label}
@@ -1009,9 +1024,10 @@ function Toolbar({
               aria-label={labels.link}
               aria-expanded={linkMenuOpen}
               className={clsx('toolbar-button', isLinkActive && 'is-active', linkMenuOpen && 'is-active', editingControlsHidden && 'is-source-hidden')}
+              data-panel-trigger
               data-tooltip={labels.link}
               disabled={!editor}
-              onClick={() => runCompactAction(openLinkMenu)}
+              onClick={openLinkMenu}
               onMouseDown={(event) => event.preventDefault()}
               tabIndex={editingControlsHidden ? -1 : 0}
               type="button"
@@ -1170,11 +1186,15 @@ function Toolbar({
               aria-label={labels.math}
               aria-expanded={formulaMenuOpen}
               className={clsx('toolbar-button', formulaMenuOpen && 'is-active', editingControlsHidden && 'is-source-hidden')}
+              data-panel-trigger
               data-tooltip={labels.math}
               disabled={!editor}
               onClick={() => {
-                setLinkMenuOpen(false);
-                setFormulaMenuOpen((current) => !current);
+                const shouldOpen = !formulaMenuOpen;
+                closeAllPanels();
+                if (shouldOpen) {
+                  setFormulaMenuOpen(true);
+                }
               }}
               onMouseDown={(event) => event.preventDefault()}
               tabIndex={editingControlsHidden ? -1 : 0}
@@ -1262,7 +1282,14 @@ function Toolbar({
         <ToolbarButton
           active={themePanelOpen || theme !== 'system'}
           icon="appearance"
-          onClick={() => setThemePanelOpen((current) => !current)}
+          onClick={() => {
+            const shouldOpen = !themePanelOpen;
+            closeAllPanels();
+            if (shouldOpen) {
+              setThemePanelOpen(true);
+            }
+          }}
+          panelTrigger
           shortcut={shortcutLabels.toggleTheme}
           title={`${labels.themePanel} / ${themeLabel} / ${currentPalette?.label ?? labels.auto}`}
         />

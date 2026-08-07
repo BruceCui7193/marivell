@@ -24,6 +24,7 @@ import SourceEditor, { type SourceCursorInfo } from './SourceEditor';
 import ContextMenu, { type ContextMenuState } from './ContextMenu';
 import ImageActionMenu from './ImageActionMenu';
 import AppDialog, { type AppDialogOptions } from './AppDialog';
+import GoToLineDialog from './GoToLineDialog';
 import { createEditorExtensions } from '../editor/create-editor-extensions';
 import type { PastedImageInfo } from '../editor/plugins/image-drop-paste';
 import {
@@ -614,6 +615,8 @@ export default function EditorShell({
     start: 0,
     end: 0,
   });
+  const [gotoLineOpen, setGotoLineOpen] = useState(false);
+  const gotoLineDefaultRef = useRef('1');
 
   const openAppDialog = useCallback((dialog: AppDialogOptions) => {
     appDialogRef.current = dialog;
@@ -2078,15 +2081,16 @@ export default function EditorShell({
   }, []);
 
   const handleGoToLine = useCallback(() => {
+    gotoLineDefaultRef.current = sourceModeRef.current ? String(sourceCursor.line || 1) : '1';
+    setGotoLineOpen(true);
+  }, [sourceCursor.line]);
+
+  const jumpToLineNumber = useCallback((raw: string) => {
+    const targetLine = Math.max(1, Number.parseInt(raw, 10) || 1);
     if (!sourceModeRef.current) {
       if (!editor) {
         return;
       }
-      const raw = window.prompt('跳转到行号', '1');
-      if (!raw) {
-        return;
-      }
-      const targetLine = Math.max(1, Number.parseInt(raw, 10) || 1);
       let line = 1;
       let found = 1;
       editor.state.doc.descendants((node, pos) => {
@@ -2112,11 +2116,6 @@ export default function EditorShell({
       return;
     }
 
-    const raw = window.prompt('跳转到行号', String(sourceCursor.line || 1));
-    if (!raw) {
-      return;
-    }
-    const targetLine = Math.max(1, Number.parseInt(raw, 10) || 1);
     const markdown = sourceDraftRef.current;
     let offset = 0;
     let current = 1;
@@ -2129,7 +2128,12 @@ export default function EditorShell({
       current += 1;
     }
     jumpSourceToOffset(Math.max(0, markdown.length));
-  }, [editor, jumpSourceToOffset, sourceCursor.line]);
+  }, [editor, jumpSourceToOffset]);
+
+  const submitGoToLine = useCallback((line: number) => {
+    setGotoLineOpen(false);
+    jumpToLineNumber(String(line));
+  }, [jumpToLineNumber]);
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -2798,6 +2802,14 @@ export default function EditorShell({
       />
 
       <ContextMenu menu={contextMenu} onClose={closeContextMenu} />
+
+      {gotoLineOpen ? (
+        <GoToLineDialog
+          defaultValue={gotoLineDefaultRef.current}
+          onCancel={() => setGotoLineOpen(false)}
+          onSubmit={submitGoToLine}
+        />
+      ) : null}
 
       {appDialog ? (
         <AppDialog

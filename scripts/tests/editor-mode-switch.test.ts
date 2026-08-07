@@ -188,6 +188,42 @@ function runAdjacentImageMarkerSwitch(): void {
 
 runAdjacentImageMarkerSwitch();
 
+function runMathInsertionFocusTests(): void {
+  const inlineEditor = makeEditor();
+  try {
+    inlineEditor.commands.setContent(parseMarkdown('abc'), false);
+    inlineEditor.commands.setTextSelection(2);
+    inlineEditor.commands.insertInlineMath();
+    const inlineSelection = inlineEditor.state.selection;
+    assert(
+      'inline math insertion puts caret inside math node',
+      inlineSelection.empty && inlineSelection.$from.parent.type.name === 'inlineMath',
+      `parent=${inlineSelection.$from.parent.type.name}`,
+    );
+  } finally {
+    inlineEditor.destroy();
+  }
+
+  const blockEditor = makeEditor();
+  try {
+    blockEditor.commands.setContent(parseMarkdown('abc'), false);
+    blockEditor.commands.setTextSelection(2);
+    blockEditor.commands.insertMathBlock();
+    const blockSelection = blockEditor.state.selection;
+    assert(
+      'block math insertion puts caret inside math node',
+      blockSelection.empty &&
+        blockSelection.$from.parent.type.name === 'inlineMath' &&
+        blockSelection.$from.parent.attrs.display === 'yes',
+      `parent=${blockSelection.$from.parent.type.name} display=${blockSelection.$from.parent.attrs.display}`,
+    );
+  } finally {
+    blockEditor.destroy();
+  }
+}
+
+runMathInsertionFocusTests();
+
 console.log(`\n================================================`);
 console.log(`Results: ${passed} passed, ${failed} failed`);
 if (failed > 0) {

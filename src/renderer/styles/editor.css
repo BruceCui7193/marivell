@@ -3268,6 +3268,26 @@
   overflow-wrap: anywhere;
 }
 
+.app-dialog__input {
+  width: 100%;
+  margin-top: 14px;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--ui-border) 86%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ui-bg-strong) 58%, transparent);
+  color: var(--ui-text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.app-dialog__input:focus {
+  border-color: color-mix(in srgb, var(--ui-accent) 46%, var(--ui-border));
+  background: color-mix(in srgb, var(--ui-accent-soft) 30%, transparent);
+}
+
 .app-dialog__detail {
   margin: 6px 0 0;
   color: var(--ui-text-soft);

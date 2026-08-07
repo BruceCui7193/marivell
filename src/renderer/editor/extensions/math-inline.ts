@@ -171,12 +171,26 @@ export const MathInline = Node.create({
     return {
       insertInlineMath:
         (value = '') =>
-        ({ commands }) =>
-          commands.insertContent({
-            type: this.name,
-            attrs: { display: 'no' },
-            content: value ? [{ type: 'text', text: value }] : undefined,
-          }),
+        ({ state, tr, dispatch }) => {
+          const mathNode = state.schema.nodes.inlineMath?.create(
+            { display: 'no' },
+            value ? state.schema.text(value) : undefined
+          );
+          if (!mathNode) {
+            return false;
+          }
+
+          const { from, to } = state.selection;
+          tr = tr.replaceWith(from, to, mathNode);
+          const caret = from + 1 + value.length;
+          tr = tr.setSelection(TextSelection.create(tr.doc, caret));
+
+          if (dispatch) {
+            dispatch(tr.scrollIntoView());
+          }
+
+          return true;
+        },
 
       insertMathBlock:
         (value = '') =>
@@ -199,7 +213,7 @@ export const MathInline = Node.create({
 
           const paragraphPos = from + mathNode.nodeSize;
           tr = tr.insert(paragraphPos, paragraphNode);
-          tr = tr.setSelection(TextSelection.create(tr.doc, paragraphPos + 1));
+          tr = tr.setSelection(TextSelection.create(tr.doc, from + 1 + value.length));
 
           if (dispatch) {
             dispatch(tr.scrollIntoView());
