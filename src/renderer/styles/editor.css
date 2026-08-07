@@ -3141,11 +3141,6 @@
   box-shadow: var(--liquid-glass-outer-shadow, var(--glass-shadow));
 }
 
-:root[data-glass-effect='liquid'] [data-liquid-glass] > :not(.liquid-glass-layer) {
-  position: relative;
-  z-index: 1;
-}
-
 :root[data-glass-effect='liquid'] [data-liquid-glass]::before {
   content: '';
   position: absolute;
@@ -3171,6 +3166,12 @@
 
 :root[data-glass-effect='liquid'] .sidebar,
 :root[data-glass-effect='liquid'] .status-bar {
+  position: relative;
+  z-index: 1;
+}
+
+:root[data-glass-effect='liquid'] .sidebar > *,
+:root[data-glass-effect='liquid'] .status-bar > * {
   position: relative;
   z-index: 1;
 }
