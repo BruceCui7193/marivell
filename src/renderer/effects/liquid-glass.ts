@@ -1,8 +1,8 @@
 /**
  * Shared liquid glass renderer adapted from archisvaze/liquid-glass's SVG
- * displacement approach. Every surface gets a real backdrop-filter layer
- * instead of relying on pseudo-elements, which keeps portal menus rendering
- * consistently across Chromium/Electron platforms.
+ * displacement approach. Each surface gets a real external backdrop-filter
+ * layer inserted before the nearest enclosing liquid-glass surface, so the
+ * filter still samples the page behind menus without covering their content.
  */
 
 export interface LiquidGlassConfig {
@@ -47,6 +47,18 @@ export const LIQUID_GLASS_SURFACE_SELECTOR = [
   '.app-exporting',
 ].join(',');
 
+const LIQUID_GLASS_ANIMATED_SURFACE_SELECTOR = [
+  '.toolbar-menu',
+  '.toolbar-submenu',
+  '.toolbar-compact-panel',
+  '.theme-panel',
+  '.context-menu',
+  '.image-action-menu',
+  '.app-dialog',
+  '.code-block-node__language-menu',
+  '.search-panel',
+].join(',');
+
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 interface SurfaceRecord {
@@ -55,6 +67,7 @@ interface SurfaceRecord {
   filterId: string;
   filterMarkup: string;
   settleTimer: number | null;
+  settled: boolean;
 }
 
 interface MapAssets {
@@ -274,6 +287,57 @@ function isSurfaceVisible(element: HTMLElement): boolean {
   return rect.width >= 12 && rect.height >= 12;
 }
 
+function isAnimatedSurface(element: HTMLElement): boolean {
+  if (element.matches(LIQUID_GLASS_ANIMATED_SURFACE_SELECTOR)) {
+    return true;
+  }
+  const style = getComputedStyle(element);
+  return style.animationName !== 'none';
+}
+
+function getNumericZIndex(element: HTMLElement): number {
+  const value = Number.parseFloat(getComputedStyle(element).zIndex);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function getTopLiquidSurface(element: HTMLElement): HTMLElement {
+  let current = element.parentElement;
+  while (current && current !== document.body) {
+    if (current.matches(LIQUID_GLASS_SURFACE_SELECTOR)) {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return element;
+}
+
+interface LayerPlacement {
+  host: HTMLElement;
+  before: Node;
+  zIndex: string;
+}
+
+function getLayerPlacement(element: HTMLElement): LayerPlacement | null {
+  const surface = getTopLiquidSurface(element);
+  const host = surface.parentElement;
+  if (!host) {
+    return null;
+  }
+  const surfaceZ = getNumericZIndex(surface);
+  if (host.classList.contains('app-dialog-overlay')) {
+    return {
+      host,
+      before: surface,
+      zIndex: String(Math.max(1, surfaceZ || 1)),
+    };
+  }
+  return {
+    host,
+    before: surface,
+    zIndex: String(Math.max(0, surfaceZ - 1)),
+  };
+}
+
 function ensureSvg(): void {
   if (state.svg && state.defs) {
     return;
@@ -378,6 +442,7 @@ function updateSurface(element: HTMLElement): void {
     return;
   }
   if (!isSurfaceVisible(element)) {
+    record.settled = false;
     record.layer?.remove();
     record.layer = null;
     return;
@@ -397,29 +462,36 @@ function updateSurface(element: HTMLElement): void {
     return;
   }
 
+  const placement = getLayerPlacement(element);
+  if (!placement) {
+    return;
+  }
+
   record.filterMarkup = buildFilterMarkup(record.filterId, width, height, assets);
   let layer = record.layer;
   if (!layer || !layer.isConnected) {
     layer = document.createElement('div');
     layer.className = 'liquid-glass-layer';
     layer.style.pointerEvents = 'none';
-    element.appendChild(layer);
     record.layer = layer;
+  }
+  if (layer.parentElement !== placement.host) {
+    placement.host.insertBefore(layer, placement.before);
   }
   const filter = `url("#${record.filterId}")`;
   const surfaceStyle = getComputedStyle(element);
-  layer.style.position = 'absolute';
-  layer.style.left = '0';
-  layer.style.top = '0';
-  layer.style.width = '100%';
-  layer.style.height = '100%';
+  layer.style.position = 'fixed';
+  layer.style.left = `${rect.left}px`;
+  layer.style.top = `${rect.top}px`;
+  layer.style.width = `${rect.width}px`;
+  layer.style.height = `${rect.height}px`;
   layer.style.borderRadius = surfaceStyle.borderRadius;
-  layer.style.zIndex = '-1';
+  layer.style.zIndex = placement.zIndex;
   layer.style.backgroundImage = `url("${assets.specular}")`;
   layer.style.backgroundRepeat = 'no-repeat';
   layer.style.backgroundSize = '100% 100%';
   layer.style.mixBlendMode = 'screen';
-  layer.style.opacity = '1';
+  layer.style.opacity = record.settled || !isAnimatedSurface(element) ? '1' : '0';
   layer.style.backdropFilter = filter;
   layer.style.setProperty('-webkit-backdrop-filter', filter);
 }
@@ -458,6 +530,7 @@ function registerSurface(element: HTMLElement): void {
       clearSettleTimer(existing);
       existing.settleTimer = window.setTimeout(() => {
         existing.settleTimer = null;
+        existing.settled = true;
         schedule(existing.element);
       }, 420);
     }
@@ -474,6 +547,7 @@ function registerSurface(element: HTMLElement): void {
     filterId: `liquid-glass-${state.nextFilterId += 1}`,
     filterMarkup: '',
     settleTimer: null,
+    settled: false,
   };
   state.entries.set(element, record);
   element.dataset.liquidGlass = 'true';
@@ -481,6 +555,7 @@ function registerSurface(element: HTMLElement): void {
   schedule(element);
   record.settleTimer = window.setTimeout(() => {
     record.settleTimer = null;
+    record.settled = true;
     schedule(record.element);
   }, 420);
 }

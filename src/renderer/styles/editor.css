@@ -3158,6 +3158,10 @@
   display: none;
 }
 
+:root[data-glass-effect='liquid'] .app-dialog-overlay {
+  will-change: auto;
+}
+
 :root[data-glass-effect='liquid'] .liquid-glass-layer {
   position: absolute;
   left: 0;
@@ -3168,6 +3172,8 @@
   border-radius: inherit;
   pointer-events: none;
   mix-blend-mode: screen;
+  will-change: opacity;
+  transition: opacity 180ms ease;
 }
 
 :root[data-glass-effect='liquid'] .toolbar__group {
