@@ -3181,6 +3181,12 @@
   box-shadow: none;
 }
 
+:root[data-glass-effect='liquid'] .sidebar,
+:root[data-glass-effect='liquid'] .status-bar {
+  position: relative;
+  z-index: 0;
+}
+
 :root[data-glass-effect='liquid'] .toolbar__group:hover {
   border-color: color-mix(in srgb, var(--ui-accent) 24%, var(--ui-border));
   background: color-mix(in srgb, var(--ui-accent-soft) 50%, transparent);
