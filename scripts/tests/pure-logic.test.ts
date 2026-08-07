@@ -25,6 +25,11 @@ import {
   tableMatrixToMarkdown,
   tableMatrixToTsv,
 } from '../../src/renderer/editor/clipboard.ts';
+import {
+  LIQUID_GLASS_CONFIG,
+  LIQUID_GLASS_SURFACE_SELECTOR,
+} from '../../src/renderer/effects/liquid-glass.ts';
+import { GLASS_EFFECT_OPTIONS, isGlassEffect } from '../../src/renderer/theme.ts';
 
 let passed = 0;
 let failed = 0;
@@ -180,6 +185,44 @@ section('source markdown highlight');
   const pos = offsetToLineCol('a\nbc\nd', 3);
   assertEqual('offsetToLineCol line', pos.line, 2);
   assertEqual('offsetToLineCol column', pos.column, 2);
+}
+
+// ---------------------------------------------------------------------------
+// Liquid glass configuration
+// ---------------------------------------------------------------------------
+section('liquid glass configuration');
+
+{
+  assert('liquid glass is an accepted theme option', isGlassEffect('liquid'));
+  assert(
+    'liquid glass appears in the glass effect menu',
+    GLASS_EFFECT_OPTIONS.some((option) => option.id === 'liquid'),
+  );
+  assert(
+    'liquid glass uses stronger blur than the upstream default',
+    LIQUID_GLASS_CONFIG.blurAmount >= 1.5,
+  );
+  assert(
+    'liquid glass uses thicker glass than the upstream default',
+    LIQUID_GLASS_CONFIG.glassThickness >= 100,
+  );
+  const requiredSurfaces = [
+    '.toolbar',
+    '.sidebar',
+    '.status-bar',
+    '.context-menu',
+    '.toolbar-menu',
+    '.toolbar-submenu',
+    '.theme-panel',
+    '.image-action-menu',
+    '.app-dialog',
+  ];
+  for (const selector of requiredSurfaces) {
+    assert(
+      `liquid glass surface list includes ${selector}`,
+      LIQUID_GLASS_SURFACE_SELECTOR.includes(selector),
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

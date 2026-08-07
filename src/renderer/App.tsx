@@ -9,6 +9,7 @@ import type {
 } from '@shared/contracts';
 import { type GlassEffect, type ThemePalette, isGlassEffect, isThemePalette } from './theme';
 import AppDialog, { type AppDialogOptions } from './components/AppDialog';
+import { setLiquidGlassEnabled } from './effects/liquid-glass';
 
 const EditorShell = lazy(() => import('./components/EditorShell'));
 
@@ -140,6 +141,11 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.glassEffect = glassEffect;
     window.localStorage.setItem('markdown-editor-glass-effect', glassEffect);
+  }, [glassEffect]);
+
+  useEffect(() => {
+    setLiquidGlassEnabled(glassEffect === 'liquid');
+    return () => setLiquidGlassEnabled(false);
   }, [glassEffect]);
 
   useEffect(() => {

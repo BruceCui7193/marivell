@@ -279,6 +279,7 @@ function Toolbar({
     paletteScheme: '配色方案',
     glassEffect: '透明效果',
     glassFrosted: '毛玻璃',
+    glassLiquid: '液态玻璃',
     glassOff: '关闭透明',
     auto: '自动',
     light: '浅色',
