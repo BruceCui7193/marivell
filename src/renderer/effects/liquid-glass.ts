@@ -491,7 +491,7 @@ function updateSurface(element: HTMLElement): void {
   layer.style.backgroundRepeat = 'no-repeat';
   layer.style.backgroundSize = '100% 100%';
   layer.style.mixBlendMode = 'screen';
-  layer.style.opacity = record.settled || !isAnimatedSurface(element) ? '1' : '0';
+  layer.style.opacity = '1';
   layer.style.backdropFilter = filter;
   layer.style.setProperty('-webkit-backdrop-filter', filter);
 }

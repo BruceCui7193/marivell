@@ -3229,7 +3229,7 @@
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: color-mix(in srgb, var(--ui-bg) 30%, transparent);
+  background: transparent;
   animation: overlayIn var(--motion-duration-rich) var(--motion-ease-menu);
 }
 
