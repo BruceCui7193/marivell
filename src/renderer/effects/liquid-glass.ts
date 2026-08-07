@@ -12,24 +12,20 @@ export interface LiquidGlassConfig {
   blurAmount: number;
   specularOpacity: number;
   specularSaturation: number;
-  innerShadowBlur: number;
-  innerShadowSpread: number;
   outerShadowBlur: number;
   maxMapSize: number;
 }
 
 export const LIQUID_GLASS_CONFIG: LiquidGlassConfig = {
-  glassThickness: 120,
+  glassThickness: 180,
   bezelWidth: 60,
   refractiveIndex: 3,
   scaleRatio: 1,
-  blurAmount: 1.6,
-  specularOpacity: 0.42,
-  specularSaturation: 4,
-  innerShadowBlur: 20,
-  innerShadowSpread: -5,
-  outerShadowBlur: 26,
-  maxMapSize: 320,
+  blurAmount: 7,
+  specularOpacity: 0.22,
+  specularSaturation: 2,
+  outerShadowBlur: 28,
+  maxMapSize: 640,
 };
 
 export const LIQUID_GLASS_SURFACE_SELECTOR = [
@@ -534,15 +530,11 @@ function stopObservers(): void {
 function syncLiquidGlassVariables(enabled: boolean): void {
   const style = document.documentElement.style;
   if (!enabled) {
-    style.removeProperty('--liquid-glass-inner-blur');
-    style.removeProperty('--liquid-glass-inner-spread');
     style.removeProperty('--liquid-glass-outer-blur');
     return;
   }
 
   const config = LIQUID_GLASS_CONFIG;
-  style.setProperty('--liquid-glass-inner-blur', `${config.innerShadowBlur}px`);
-  style.setProperty('--liquid-glass-inner-spread', `${config.innerShadowSpread}px`);
   style.setProperty('--liquid-glass-outer-blur', `${config.outerShadowBlur}px`);
 }
 

@@ -296,24 +296,20 @@
 
 :root[data-glass-effect='liquid'] {
   --glass-fill: transparent;
-  --glass-border: color-mix(in srgb, var(--ui-border) 78%, transparent);
+  --glass-border: transparent;
   --glass-highlight: transparent;
   --glass-backdrop: none;
   --glass-sheen: transparent;
   --glass-control-fill: color-mix(in srgb, var(--ui-bg-strong) 58%, transparent);
   --glass-shadow: 0 16px 38px rgba(10, 15, 24, 0.18), 0 3px 10px rgba(10, 15, 24, 0.1);
   --liquid-glass-tint-rgb: 255, 255, 255;
-  --liquid-glass-tint-opacity: 0.08;
-  --liquid-glass-inner-shadow: rgba(255, 255, 255, 0.48);
-  --liquid-glass-inner-blur: 20px;
-  --liquid-glass-inner-spread: -5px;
-  --liquid-glass-outer-blur: 26px;
-  --liquid-glass-outer-shadow: 0 16px var(--liquid-glass-outer-blur) rgba(10, 15, 24, 0.18), 0 3px 10px rgba(10, 15, 24, 0.1);
+  --liquid-glass-tint-opacity: 0.1;
+  --liquid-glass-outer-blur: 28px;
+  --liquid-glass-outer-shadow: 0 18px var(--liquid-glass-outer-blur) rgba(10, 15, 24, 0.16), 0 3px 10px rgba(10, 15, 24, 0.08);
 }
 
 :root[data-theme='dark'][data-glass-effect='liquid'] {
-  --liquid-glass-tint-opacity: 0.06;
-  --liquid-glass-inner-shadow: rgba(255, 255, 255, 0.28);
+  --liquid-glass-tint-opacity: 0.08;
   --liquid-glass-outer-shadow: 0 18px 40px rgba(0, 0, 0, 0.3), 0 3px 10px rgba(0, 0, 0, 0.18);
 }
 
@@ -3142,7 +3138,7 @@
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
   isolation: isolate;
-  box-shadow: var(--liquid-glass-outer-shadow, var(--glass-shadow)), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  box-shadow: var(--liquid-glass-outer-shadow, var(--glass-shadow));
 }
 
 :root[data-glass-effect='liquid'] [data-liquid-glass]::before {
@@ -3153,9 +3149,6 @@
   border-radius: inherit;
   background-image: none;
   background-color: rgba(var(--liquid-glass-tint-rgb, 255, 255, 255), var(--liquid-glass-tint-opacity, 0.08));
-  box-shadow:
-    inset 0 0 var(--liquid-glass-inner-blur, 20px) var(--liquid-glass-inner-spread, -5px)
-    var(--liquid-glass-inner-shadow, rgba(255, 255, 255, 0.48));
   pointer-events: none;
   opacity: 1;
   mix-blend-mode: normal;
