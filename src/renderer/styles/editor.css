@@ -979,6 +979,55 @@
   font-weight: 600;
 }
 
+.math-completion {
+  position: fixed;
+  z-index: 10001;
+  contain: paint;
+  max-height: min(260px, calc(100vh - 16px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--ui-border) 90%, transparent);
+  border-radius: 12px;
+  isolation: isolate;
+  background-color: var(--glass-fill);
+  background-image:
+    linear-gradient(135deg, color-mix(in srgb, var(--ui-accent) 6%, transparent), transparent 52%),
+    linear-gradient(315deg, color-mix(in srgb, var(--ui-accent) 3%, transparent), transparent 66%),
+    linear-gradient(180deg, color-mix(in srgb, var(--ui-bg-strong) 12%, transparent), transparent 40%);
+  -webkit-backdrop-filter: var(--glass-backdrop);
+  backdrop-filter: var(--glass-backdrop);
+  will-change: transform, opacity;
+  box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-highlight);
+  animation: contextMenuIn var(--motion-duration-menu) var(--motion-ease-menu);
+}
+
+.math-completion__item {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ui-text);
+  font-family: "Cascadia Code", "JetBrains Mono", "SF Mono", "Fira Code", ui-monospace, monospace;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 140ms ease, transform var(--motion-duration-fast) var(--motion-ease-spring);
+}
+
+.math-completion__item:hover,
+.math-completion__item.is-selected {
+  background: var(--ui-accent-soft);
+  color: var(--ui-accent);
+}
+
+.math-completion__item:active {
+  transform: scale(var(--motion-press-scale));
+}
+
 .toolbar-language-control {
   display: none;
 }
@@ -3014,6 +3063,7 @@
 .sidebar,
 .status-bar,
 .image-action-menu,
+.math-completion,
 .app-dialog {
   border-color: var(--glass-border);
   background-color: var(--glass-fill);
@@ -3072,6 +3122,7 @@
   .sidebar,
   .status-bar,
   .image-action-menu,
+  .math-completion,
   .app-dialog {
     background: var(--ui-bg-strong);
     background-image: none;
@@ -3089,6 +3140,7 @@
   .sidebar,
   .status-bar,
   .image-action-menu,
+  .math-completion,
   .app-dialog
 ) {
   background-image: none;
@@ -3104,6 +3156,7 @@
   .sidebar,
   .status-bar,
   .image-action-menu,
+  .math-completion,
   .app-dialog
 )::before,
 :root[data-glass-effect='off'] :is(
@@ -3116,6 +3169,7 @@
   .sidebar,
   .status-bar,
   .image-action-menu,
+  .math-completion,
   .app-dialog
 )::after {
   display: none;

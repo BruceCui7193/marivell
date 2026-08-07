@@ -24,6 +24,7 @@ import { createMarkdownPasteExtension } from './plugins/markdown-paste';
 import { SearchHighlight } from './plugins/search-highlight';
 import { MathSyntaxHighlight } from './plugins/math-syntax-highlight';
 import { MathFocusDecoration } from './plugins/math-selection';
+import { MathCompletion } from './plugins/math-completion';
 import bash from 'highlight.js/lib/languages/bash';
 import cpp from 'highlight.js/lib/languages/cpp';
 import csharp from 'highlight.js/lib/languages/csharp';
@@ -170,5 +171,6 @@ export function createEditorExtensions({
     SearchHighlight,
     MathSyntaxHighlight,
     MathFocusDecoration,
+    MathCompletion,
   ];
 }

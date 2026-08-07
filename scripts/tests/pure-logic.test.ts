@@ -30,6 +30,10 @@ import {
   LIQUID_GLASS_SURFACE_SELECTOR,
 } from '../../src/renderer/effects/liquid-glass.ts';
 import { GLASS_EFFECT_OPTIONS, isGlassEffect } from '../../src/renderer/theme.ts';
+import {
+  getMathCompletionCaret,
+  getMathCompletionItems,
+} from '../../src/renderer/editor/math-completions.ts';
 
 let passed = 0;
 let failed = 0;
@@ -223,6 +227,7 @@ section('liquid glass configuration');
     '.toolbar-submenu',
     '.theme-panel',
     '.image-action-menu',
+    '.math-completion',
     '.app-dialog',
   ];
   for (const selector of requiredSurfaces) {
@@ -231,6 +236,20 @@ section('liquid glass configuration');
       LIQUID_GLASS_SURFACE_SELECTOR.includes(selector),
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// Math completion
+// ---------------------------------------------------------------------------
+section('math completion');
+
+{
+  const fracItems = getMathCompletionItems('fr');
+  assert('math completion finds frac for \\fr', fracItems.some((item) => item.command === 'frac'));
+  assertEqual('math completion caret goes inside first braces', getMathCompletionCaret('\\frac{}{}'), 6);
+  assertEqual('math completion caret for simple command', getMathCompletionCaret('\\alpha'), 6);
+  const emptyQueryItems = getMathCompletionItems('');
+  assert('math completion empty query returns suggestions', emptyQueryItems.length > 0);
 }
 
 // ---------------------------------------------------------------------------

@@ -328,7 +328,7 @@ function Toolbar({
     setMenuOpen(null);
     setMenuRect(null);
     setFormulaMenuOpen(false);
-    closeAllPanels();
+    setLinkMenuOpen(false);
   }, []);
 
   useEffect(() => {

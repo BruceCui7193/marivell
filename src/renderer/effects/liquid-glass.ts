@@ -44,6 +44,7 @@ export const LIQUID_GLASS_SURFACE_SELECTOR = [
   '.editor-loading',
   '.code-block-node__language-menu',
   '.code-block-node__toolbar',
+  '.math-completion',
   '.app-exporting',
 ].join(',');
 
@@ -57,6 +58,7 @@ const LIQUID_GLASS_ANIMATED_SURFACE_SELECTOR = [
   '.app-dialog',
   '.code-block-node__language-menu',
   '.search-panel',
+  '.math-completion',
 ].join(',');
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
