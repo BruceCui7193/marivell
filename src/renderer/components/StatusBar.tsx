@@ -1,5 +1,6 @@
 import type { DocumentStats } from '../App';
 import type { SourceCursorInfo } from './SourceEditor';
+import { translate, useAppLanguage } from '../i18n';
 
 interface StatusBarProps {
   stats: DocumentStats;
@@ -10,12 +11,12 @@ interface StatusBarProps {
   sourceCursor?: SourceCursorInfo | null;
 }
 
-function formatTime(timestamp: number | null): string {
+function formatTime(timestamp: number | null, language: string): string {
   if (!timestamp) {
-    return '尚未保存';
+    return translate('notSaved');
   }
 
-  return new Intl.DateTimeFormat('zh-CN', {
+  return new Intl.DateTimeFormat(language === 'en' ? 'en-US' : 'zh-CN', {
     hour: '2-digit',
     minute: '2-digit',
   }).format(timestamp);
@@ -37,16 +38,20 @@ export default function StatusBar({
   sourceMode = false,
   sourceCursor = null,
 }: StatusBarProps) {
+  const appLanguage = useAppLanguage();
   const readingMinutes = estimateReadingMinutes(stats.words);
 
   return (
     <footer className="status-bar">
       <div className="status-bar__left">
         <span className={dirty ? 'status-bar__badge is-dirty' : 'status-bar__badge'}>
-          {dirty ? '未保存修改' : '已保存'}
+          {dirty ? translate('unsaved') : translate('saved')}
         </span>
-        <span className="status-bar__mode" title={sourceMode ? 'Source' : 'Visual'}>
-          {sourceMode ? '源码' : '可视化'}
+        <span
+          className="status-bar__mode"
+          title={sourceMode ? translate('source') : translate('visual')}
+        >
+          {sourceMode ? translate('source') : translate('visual')}
         </span>
         <span className="status-bar__title" title={title}>
           {title}
@@ -54,15 +59,20 @@ export default function StatusBar({
       </div>
       <div className="status-bar__right">
         {sourceMode && sourceCursor ? (
-          <span title="Ctrl+G 跳转到行">
-            行 {sourceCursor.line}，列 {sourceCursor.column}
+          <span title={`Ctrl+G ${translate('goToLine')}`}>
+            {translate('lineColumn', {
+              line: sourceCursor.line,
+              column: sourceCursor.column,
+            })}
           </span>
         ) : null}
-        <span>{stats.lines} 行</span>
-        <span>{stats.words} 字</span>
-        <span>{stats.characters} 字符</span>
-        {readingMinutes > 0 ? <span>约 {readingMinutes} 分钟</span> : null}
-        <span>{formatTime(lastSavedAt)}</span>
+        <span>{stats.lines} {translate('lines')}</span>
+        <span>{stats.words} {translate('words')}</span>
+        <span>{stats.characters} {translate('characters')}</span>
+        {readingMinutes > 0 ? (
+          <span>{translate('aboutMinutes', { count: readingMinutes })}</span>
+        ) : null}
+        <span>{formatTime(lastSavedAt, appLanguage)}</span>
       </div>
     </footer>
   );

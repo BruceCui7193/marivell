@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { translate, useAppLanguage } from '../i18n';
 
 interface GoToLineDialogProps {
   defaultValue: string;
@@ -12,6 +13,7 @@ export default function GoToLineDialog({
   onCancel,
   onSubmit,
 }: GoToLineDialogProps) {
+  useAppLanguage();
   const [value, setValue] = useState(defaultValue);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -47,9 +49,9 @@ export default function GoToLineDialog({
         }
       }}
     >
-      <section aria-label="转到行" aria-modal="true" className="app-dialog" role="dialog">
-        <h2 className="app-dialog__title">转到行</h2>
-        <p className="app-dialog__message">输入要跳转到的行号</p>
+      <section aria-label={translate('goToLineTitle')} aria-modal="true" className="app-dialog" role="dialog">
+        <h2 className="app-dialog__title">{translate('goToLineTitle')}</h2>
+        <p className="app-dialog__message">{translate('goToLineMessage')}</p>
         <input
           className="app-dialog__input"
           onChange={(event) => setValue(event.target.value)}
@@ -66,10 +68,10 @@ export default function GoToLineDialog({
         />
         <div className="app-dialog__actions">
           <button className="app-dialog__button" onClick={onCancel} type="button">
-            取消
+            {translate('cancel')}
           </button>
           <button className="app-dialog__button is-primary" onClick={submit} type="button">
-            跳转
+            {translate('jump')}
           </button>
         </div>
       </section>

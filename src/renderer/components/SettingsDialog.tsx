@@ -16,8 +16,9 @@ import {
   type GlassCustomizationSettings,
   type LiquidGlassSettings,
 } from '../settings';
+import { setAppLanguage, translate, useAppLanguage, type AppLanguage } from '../i18n';
 
-type SettingsTab = 'appearance' | 'files' | 'about';
+type SettingsTab = 'general' | 'appearance' | 'files' | 'about';
 
 interface SettingsDialogProps {
   onClose: () => void;
@@ -156,7 +157,8 @@ export default function SettingsDialog({
   onSetLiquidGlass,
   onSetGlassCustomization,
 }: SettingsDialogProps) {
-  const [tab, setTab] = useState<SettingsTab>('appearance');
+  const appLanguage = useAppLanguage();
+  const [tab, setTab] = useState<SettingsTab>('general');
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
@@ -216,9 +218,11 @@ export default function SettingsDialog({
       const result = await window.markdownEditor.setFileAssociation(next);
       if (result.ok) {
         setAssociation({ ...association, associated: next });
-        setAssociationMessage(next ? '已关联 Markdown 文件' : '已取消 Markdown 文件关联');
+        setAssociationMessage(
+          next ? translate('associationSuccess') : translate('associationRemoved'),
+        );
       } else {
-        setAssociationMessage(result.error ?? '操作失败，可能需要更高权限');
+        setAssociationMessage(result.error ?? translate('associationFailed'));
       }
     } catch (error) {
       setAssociationMessage(error instanceof Error ? error.message : String(error));
@@ -243,10 +247,10 @@ export default function SettingsDialog({
         }
       }}
     >
-      <section aria-label="设置" aria-modal="true" className="settings-dialog" role="dialog">
+      <section aria-label={translate('settings')} aria-modal="true" className="settings-dialog" role="dialog">
         <header className="settings-dialog__header">
-          <h2 className="settings-dialog__title">设置</h2>
-          <button aria-label="关闭设置" className="settings-dialog__close" onClick={onClose} type="button">
+          <h2 className="settings-dialog__title">{translate('settings')}</h2>
+          <button aria-label={translate('closeSettings')} className="settings-dialog__close" onClick={onClose} type="button">
             ×
           </button>
         </header>
@@ -254,33 +258,54 @@ export default function SettingsDialog({
         <div className="settings-dialog__body">
           <nav className="settings-dialog__tabs">
             <button
+              className={clsx('settings-dialog__tab', tab === 'general' && 'is-active')}
+              onClick={() => setTab('general')}
+              type="button"
+            >
+              {translate('general')}
+            </button>
+            <button
               className={clsx('settings-dialog__tab', tab === 'appearance' && 'is-active')}
               onClick={() => setTab('appearance')}
               type="button"
             >
-              外观
+              {translate('appearance')}
             </button>
             <button
               className={clsx('settings-dialog__tab', tab === 'files' && 'is-active')}
               onClick={() => setTab('files')}
               type="button"
             >
-              文件关联
+              {translate('fileAssociation')}
             </button>
             <button
               className={clsx('settings-dialog__tab', tab === 'about' && 'is-active')}
               onClick={() => setTab('about')}
               type="button"
             >
-              关于
+              {translate('about')}
             </button>
           </nav>
 
           <div className="settings-dialog__content">
+            {tab === 'general' ? (
+              <section className="settings-section">
+                <h3 className="settings-section__title">{translate('language')}</h3>
+                <select
+                  className="settings-select"
+                  onChange={(event) => setAppLanguage(event.target.value as AppLanguage)}
+                  value={appLanguage}
+                >
+                  <option value="zh-CN">简体中文</option>
+                  <option value="en">English</option>
+                </select>
+              </section>
+            ) : null}
+
             {tab === 'appearance' ? (
               <>
                 <section className="settings-section">
-                  <h3 className="settings-section__title">主题与配色</h3>
+                  <h3 className="settings-section__title">{translate('themePalette')}</h3>
                   <div className="settings-row">
                     {(['system', 'light', 'dark'] as ThemeMode[]).map((mode) => (
                       <button
@@ -289,7 +314,11 @@ export default function SettingsDialog({
                         onClick={() => onSetTheme(mode)}
                         type="button"
                       >
-                        {mode === 'system' ? '自动' : mode === 'light' ? '浅色' : '深色'}
+                        {mode === 'system'
+                          ? translate('auto')
+                          : mode === 'light'
+                            ? translate('light')
+                            : translate('dark')}
                       </button>
                     ))}
                   </div>
@@ -300,7 +329,7 @@ export default function SettingsDialog({
                   >
                     {THEME_PALETTE_OPTIONS.map((option) => (
                       <option key={option.id} value={option.id}>
-                        {option.label}
+                        {appLanguage === 'en' ? option.labelEn : option.label}
                       </option>
                     ))}
                   </select>
@@ -310,42 +339,44 @@ export default function SettingsDialog({
                         className={clsx('settings-option', glassEffect === option.id && 'is-active')}
                         key={option.id}
                         onClick={() => onSetGlassEffect(option.id)}
-                        title={option.description}
+                        title={
+                          appLanguage === 'en' ? option.descriptionEn : option.description
+                        }
                         type="button"
                       >
-                        {option.label}
+                        {appLanguage === 'en' ? option.labelEn : option.label}
                       </button>
                     ))}
                   </div>
                 </section>
 
                 <section className="settings-section">
-                  <h3 className="settings-section__title">自定义颜色</h3>
+                  <h3 className="settings-section__title">{translate('customColors')}</h3>
                   <div className="settings-colors">
                     <ColorField
-                      label="强调色"
+                      label={translate('accent')}
                       onChange={(accent) => onSetCustomColors({ ...customColors, accent })}
                       value={customColors.accent}
                     />
                     <ColorField
-                      label="背景"
+                      label={translate('background')}
                       onChange={(background) => onSetCustomColors({ ...customColors, background })}
                       value={customColors.background}
                     />
                     <ColorField
-                      label="编辑器背景"
+                      label={translate('editorBackground')}
                       onChange={(editorBackground) =>
                         onSetCustomColors({ ...customColors, editorBackground })
                       }
                       value={customColors.editorBackground}
                     />
                     <ColorField
-                      label="边框"
+                      label={translate('border')}
                       onChange={(border) => onSetCustomColors({ ...customColors, border })}
                       value={customColors.border}
                     />
                     <ColorField
-                      label="文字"
+                      label={translate('text')}
                       onChange={(text) => onSetCustomColors({ ...customColors, text })}
                       value={customColors.text}
                     />
@@ -353,7 +384,7 @@ export default function SettingsDialog({
                 </section>
 
                 <section className="settings-section">
-                  <h3 className="settings-section__title">玻璃参数</h3>
+                  <h3 className="settings-section__title">{translate('glassParams')}</h3>
                   <label className="settings-checkbox">
                     <input
                       checked={glassCustomization.frostedEnabled}
@@ -365,12 +396,12 @@ export default function SettingsDialog({
                       }
                       type="checkbox"
                     />
-                    <span>自定义毛玻璃</span>
+                    <span>{translate('customizeFrosted')}</span>
                   </label>
                   {glassCustomization.frostedEnabled ? (
                     <div className="settings-sliders">
                       <NumberSlider
-                        label="模糊"
+                        label={translate('blur')}
                         max={24}
                         min={2}
                         onChange={(blur) => onSetFrostedGlass({ ...frostedGlass, blur })}
@@ -378,7 +409,7 @@ export default function SettingsDialog({
                         value={frostedGlass.blur}
                       />
                       <NumberSlider
-                        label="饱和度"
+                        label={translate('saturation')}
                         max={200}
                         min={100}
                         onChange={(saturation) => onSetFrostedGlass({ ...frostedGlass, saturation })}
@@ -386,7 +417,7 @@ export default function SettingsDialog({
                         value={frostedGlass.saturation}
                       />
                       <NumberSlider
-                        label="亮度"
+                        label={translate('brightness')}
                         max={120}
                         min={90}
                         onChange={(brightness) => onSetFrostedGlass({ ...frostedGlass, brightness })}
@@ -394,7 +425,7 @@ export default function SettingsDialog({
                         value={frostedGlass.brightness}
                       />
                       <NumberSlider
-                        label="填充透明度"
+                        label={translate('fillOpacity')}
                         max={50}
                         min={5}
                         onChange={(fillOpacity) =>
@@ -417,12 +448,12 @@ export default function SettingsDialog({
                       }
                       type="checkbox"
                     />
-                    <span>自定义液态玻璃</span>
+                    <span>{translate('customizeLiquid')}</span>
                   </label>
                   {glassCustomization.liquidEnabled ? (
                     <div className="settings-sliders">
                       <NumberSlider
-                        label="模糊"
+                        label={translate('blur')}
                         max={20}
                         min={0}
                         onChange={(blurAmount) => onSetLiquidGlass({ ...liquidGlass, blurAmount })}
@@ -430,7 +461,7 @@ export default function SettingsDialog({
                         value={liquidGlass.blurAmount}
                       />
                       <NumberSlider
-                        label="厚度"
+                        label={translate('thickness')}
                         max={320}
                         min={40}
                         onChange={(glassThickness) =>
@@ -440,7 +471,7 @@ export default function SettingsDialog({
                         value={liquidGlass.glassThickness}
                       />
                       <NumberSlider
-                        label="折射率"
+                        label={translate('refraction')}
                         max={5}
                         min={1}
                         step={0.1}
@@ -450,7 +481,7 @@ export default function SettingsDialog({
                         value={liquidGlass.refractiveIndex}
                       />
                       <NumberSlider
-                        label="高光"
+                        label={translate('specular')}
                         max={1}
                         min={0}
                         step={0.05}
@@ -463,7 +494,7 @@ export default function SettingsDialog({
                   ) : null}
 
                   <button className="settings-button" onClick={resetAppearance} type="button">
-                    恢复默认
+                    {translate('resetDefaults')}
                   </button>
                 </section>
               </>
@@ -471,20 +502,18 @@ export default function SettingsDialog({
 
             {tab === 'files' ? (
               <section className="settings-section">
-                <h3 className="settings-section__title">Markdown 文件关联</h3>
-                <p className="settings-description">
-                  将 .md / .markdown 文件关联到本软件。Linux 使用用户级 MIME 配置，Windows 使用当前用户注册表，通常不需要管理员权限。
-                </p>
+                <h3 className="settings-section__title">{translate('markdownFileAssociation')}</h3>
+                <p className="settings-description">{translate('fileAssociationDescription')}</p>
                 {association ? (
                   <div className="settings-status">
                     {association.supported
                       ? association.associated
-                        ? '当前已关联'
-                        : '当前未关联'
-                      : `当前系统暂不支持运行时关联（${association.platform}）`}
+                        ? translate('currentlyAssociated')
+                        : translate('currentlyNotAssociated')
+                      : translate('unsupportedPlatform', { platform: association.platform })}
                   </div>
                 ) : (
-                  <div className="settings-status">正在读取状态…</div>
+                  <div className="settings-status">{translate('readingStatus')}</div>
                 )}
                 {associationMessage ? (
                   <div className="settings-message">{associationMessage}</div>
@@ -497,10 +526,10 @@ export default function SettingsDialog({
                     type="button"
                   >
                     {associationBusy
-                      ? '处理中…'
+                      ? translate('processing')
                       : association.associated
-                        ? '取消关联'
-                        : '关联 .md / .markdown'}
+                        ? translate('unassociate')
+                        : translate('associate')}
                   </button>
                 ) : null}
               </section>
@@ -508,13 +537,13 @@ export default function SettingsDialog({
 
             {tab === 'about' ? (
               <section className="settings-section">
-                <h3 className="settings-section__title">关于</h3>
+                <h3 className="settings-section__title">{translate('about')}</h3>
                 <div className="settings-about">
                   <div>
                     <strong>{appInfo?.name ?? 'Markdown Editor Pro'}</strong>
                   </div>
-                  <div>版本 {appInfo?.version ?? '…'}</div>
-                  <div>平台 {appInfo?.platform ?? '…'}</div>
+                  <div>{translate('version')} {appInfo?.version ?? '…'}</div>
+                  <div>{translate('platform')} {appInfo?.platform ?? '…'}</div>
                 </div>
 
                 <label className="settings-checkbox">
@@ -523,7 +552,7 @@ export default function SettingsDialog({
                     onChange={(event) => setIncludePrerelease(event.target.checked)}
                     type="checkbox"
                   />
-                  <span>检查预览版</span>
+                  <span>{translate('checkPrerelease')}</span>
                 </label>
                 <button
                   className="settings-button is-primary"
@@ -531,17 +560,22 @@ export default function SettingsDialog({
                   onClick={() => void checkUpdates()}
                   type="button"
                 >
-                  {checkingUpdates ? '检查中…' : '检查更新'}
+                  {checkingUpdates ? translate('checking') : translate('checkUpdates')}
                 </button>
 
                 {updateResult ? (
                   <div className="settings-update">
                     {updateResult.error ? (
-                      <div className="settings-message">检查失败：{updateResult.error}</div>
+                      <div className="settings-message">
+                        {translate('updateFailed', { error: updateResult.error ?? '' })}
+                      </div>
                     ) : updateResult.hasUpdate ? (
                       <>
                         <div className="settings-status">
-                          发现新版本 {updateResult.latestVersion}（当前 {updateResult.currentVersion}）
+                          {translate('updateFound', {
+                            latest: updateResult.latestVersion,
+                            current: updateResult.currentVersion,
+                          })}
                         </div>
                         {updateResult.releaseUrl ? (
                           <button
@@ -549,12 +583,12 @@ export default function SettingsDialog({
                             onClick={() => void window.markdownEditor.openExternal(updateResult.releaseUrl!)}
                             type="button"
                           >
-                            打开发布页
+                            {translate('openReleasePage')}
                           </button>
                         ) : null}
                       </>
                     ) : (
-                      <div className="settings-status">当前已是最新版本</div>
+                      <div className="settings-status">{translate('upToDate')}</div>
                     )}
                   </div>
                 ) : null}

@@ -25,6 +25,7 @@ import ContextMenu, { type ContextMenuState } from './ContextMenu';
 import ImageActionMenu from './ImageActionMenu';
 import AppDialog, { type AppDialogOptions } from './AppDialog';
 import GoToLineDialog from './GoToLineDialog';
+import { translate, useAppLanguage } from '../i18n';
 import { createEditorExtensions } from '../editor/create-editor-extensions';
 import type { PastedImageInfo } from '../editor/plugins/image-drop-paste';
 import {
@@ -372,11 +373,11 @@ const EditorViewport = memo(function EditorViewport({
       onMouseDown={onFrameMouseDown}
       onContextMenu={sourceMode ? undefined : onVisualContextMenu}
     >
-      {loading ? <div className="editor-loading">正在载入文档...</div> : null}
+      {loading ? <div className="editor-loading">{translate('loadingDocument')}</div> : null}
       {modeSwitching ? (
         <div className="editor-loading editor-loading--mode-switch" role="status" aria-live="polite">
           <span className="editor-loading__spinner" />
-          <span>正在切换模式...</span>
+          <span>{translate('switchingMode')}</span>
         </div>
       ) : null}
       {searchPanel}
@@ -457,7 +458,7 @@ const SearchPanel = memo(function SearchPanel({
       aria-hidden={!open}
       className={open ? 'search-panel is-open' : 'search-panel is-closed'}
       role="dialog"
-      aria-label="查找和替换"
+      aria-label={translate('findReplace')}
     >
       <div className="search-panel__row">
         <input
@@ -465,7 +466,7 @@ const SearchPanel = memo(function SearchPanel({
           className="search-panel__input"
           onChange={onQueryChange}
           onKeyDown={handleInputKeyDown}
-          placeholder="查找文本、公式源码、代码块内容"
+          placeholder={translate('searchPlaceholder')}
           spellCheck={false}
           type="text"
           value={query}
@@ -479,16 +480,16 @@ const SearchPanel = memo(function SearchPanel({
         </button>
         <span className="search-panel__count">{currentMatchLabel}</span>
         <button className="search-panel__button" onClick={onPrevious} type="button">
-          上一个
+          {translate('previous')}
         </button>
         <button className="search-panel__button" onClick={onNext} type="button">
-          下一个
+          {translate('next')}
         </button>
         <button className="search-panel__button" onClick={onToggleReplace} type="button">
-          {replaceVisible ? '收起替换' : '展开替换'}
+          {replaceVisible ? translate('collapseReplace') : translate('expandReplace')}
         </button>
         <button className="search-panel__button" onClick={onClose} type="button">
-          关闭
+          {translate('close')}
         </button>
       </div>
       <div className={replaceVisible ? 'search-panel__row search-panel__replace is-open' : 'search-panel__row search-panel__replace is-closed'}>
@@ -497,16 +498,16 @@ const SearchPanel = memo(function SearchPanel({
             className="search-panel__input"
             onChange={onReplacementChange}
             onKeyDown={handleInputKeyDown}
-            placeholder="替换为"
+            placeholder={translate('replaceWith')}
             spellCheck={false}
             type="text"
             value={replacement}
           />
           <button className="search-panel__button" onClick={onReplaceCurrent} type="button">
-            替换当前
+            {translate('replaceCurrent')}
           </button>
           <button className="search-panel__button" onClick={onReplaceAll} type="button">
-            全部替换
+            {translate('replaceAll')}
           </button>
         </div>
     </div>
@@ -534,6 +535,7 @@ export default function EditorShell({
   onSetGlassEffect,
   onOpenSettings,
 }: EditorShellProps) {
+  useAppLanguage();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const replaceInputRef = useRef<HTMLInputElement | null>(null);
@@ -1919,7 +1921,11 @@ export default function EditorShell({
   const searchPanel = (
     <SearchPanel
       caseSensitive={searchCaseSensitive}
-      currentMatchLabel={searchQuery ? `${searchMatches.length ? searchCurrentIndex + 1 : 0}/${searchMatches.length}` : '输入关键词'}
+      currentMatchLabel={
+        searchQuery
+          ? `${searchMatches.length ? searchCurrentIndex + 1 : 0}/${searchMatches.length}`
+          : translate('inputKeyword')
+      }
       onCaseSensitiveChange={() => setSearchCaseSensitive((current) => !current)}
       onClose={closeSearchPanel}
       onNext={() => jumpToSearchMatch(searchCurrentIndex + 1, false)}
@@ -2217,8 +2223,8 @@ export default function EditorShell({
         void window.markdownEditor.exportClipboardDebug().then((exportedPath) => {
           window.alert(
             exportedPath
-              ? `已导出剪贴板调试信息：\n${exportedPath}`
-              : '当前剪贴板没有可导出的内容。',
+              ? translate('clipboardDebugExported', { path: exportedPath })
+              : translate('noClipboardContent'),
           );
         });
         return;
@@ -2306,12 +2312,12 @@ export default function EditorShell({
 
       if (event.kind === 'deleted') {
         openAppDialog({
-          title: '文件已被删除',
-          message: `文档 "${event.title}" 已被外部程序删除。`,
-          detail: '是否另存为以保留当前内容？',
+          title: translate('fileDeleted'),
+          message: translate('fileDeletedMessage', { title: event.title }),
+          detail: translate('fileDeletedDetail'),
           buttons: [
-            { value: 'save-as', label: '另存为', variant: 'primary' },
-            { value: 'dismiss', label: '忽略' },
+            { value: 'save-as', label: translate('saveAs'), variant: 'primary' },
+            { value: 'dismiss', label: translate('ignore') },
           ],
           cancelValue: 'dismiss',
           onResolve: (action) => {
@@ -2346,12 +2352,12 @@ export default function EditorShell({
       }
 
       openAppDialog({
-        title: '文件已被修改',
-        message: `文档 "${event.title}" 已被外部程序修改。`,
-        detail: '是否重新加载最新内容？注意：重新加载将丢弃当前未保存的修改。',
+        title: translate('fileModified'),
+        message: translate('fileModifiedMessage', { title: event.title }),
+        detail: translate('fileModifiedDetail'),
         buttons: [
-          { value: 'reload', label: '重新加载', variant: 'primary' },
-          { value: 'dismiss', label: '忽略' },
+          { value: 'reload', label: translate('reload'), variant: 'primary' },
+          { value: 'dismiss', label: translate('ignore') },
         ],
         cancelValue: 'dismiss',
         onResolve: (action) => {
@@ -2393,13 +2399,13 @@ export default function EditorShell({
 
       closePromptHandlingRef.current = true;
       openAppDialog({
-        title: '未保存的修改',
-        message: '当前文档有未保存的修改。',
-        detail: '关闭窗口前，是否先保存当前文档？',
+        title: translate('unsavedChanges'),
+        message: translate('unsavedMessage'),
+        detail: translate('unsavedDetail'),
         buttons: [
-          { value: 'save', label: '保存并关闭', variant: 'primary' },
-          { value: 'discard', label: '不保存' },
-          { value: 'cancel', label: '取消' },
+          { value: 'save', label: translate('saveAndClose'), variant: 'primary' },
+          { value: 'discard', label: translate('discard') },
+          { value: 'cancel', label: translate('cancel') },
         ],
         cancelValue: 'cancel',
         onResolve: (action) => {

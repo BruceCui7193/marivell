@@ -10,6 +10,7 @@ import type {
 import { type GlassEffect, type ThemePalette, isGlassEffect, isThemePalette } from './theme';
 import AppDialog, { type AppDialogOptions } from './components/AppDialog';
 import SettingsDialog from './components/SettingsDialog';
+import { translate, useAppLanguage } from './i18n';
 import { applyLiquidGlassConfig, setLiquidGlassEnabled } from './effects/liquid-glass';
 import {
   DEFAULT_FROSTED_GLASS,
@@ -64,7 +65,7 @@ function areStatsEqual(left: DocumentStats, right: DocumentStats): boolean {
 function createUntitledDocument(): EditorDocumentState {
   return {
     path: null,
-    title: '\u672a\u547d\u540d.md',
+    title: translate('untitled'),
     markdown: '',
     savedMarkdown: '',
     dirty: false,
@@ -108,7 +109,7 @@ export default function App() {
   const [currentFolder, setCurrentFolder] = useState<OpenedFolder | null>(null);
   const [discardConfirm, setDiscardConfirm] = useState<AppDialogOptions | null>(null);
   const discardConfirmRef = useRef<AppDialogOptions | null>(null);
-  const [, setMessage] = useState('\u5c31\u7eea');
+  const [, setMessage] = useState(translate('ready'));
   const [themePalette, setThemePalette] = useState<ThemePalette>(() => {
     const persisted = window.localStorage.getItem('markdown-editor-theme-palette');
     return isThemePalette(persisted) ? persisted : 'natural';
@@ -119,12 +120,16 @@ export default function App() {
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [customColors, setCustomColors] = useState<CustomColorSettings>(loadCustomColors);
+  const [customColorsEnabled, setCustomColorsEnabled] = useState(
+    () => window.localStorage.getItem('markdown-editor-custom-colors') !== null,
+  );
   const [frostedGlass, setFrostedGlass] = useState<FrostedGlassSettings>(loadFrostedGlass);
   const [liquidGlass, setLiquidGlass] = useState<LiquidGlassSettings>(loadLiquidGlass);
   const [glassCustomization, setGlassCustomization] = useState<GlassCustomizationSettings>(
     loadGlassCustomization,
   );
   const documentRef = useRef(editorDocument);
+  useAppLanguage();
 
   const resolvedTheme = useMemo(() => resolveTheme(theme), [theme]);
 
@@ -170,6 +175,9 @@ export default function App() {
 
   useEffect(() => {
     saveCustomColors(customColors);
+    if (!customColorsEnabled) {
+      return;
+    }
     const style = document.documentElement.style;
     style.setProperty('--ui-accent', customColors.accent);
     style.setProperty('--ui-bg', customColors.background);
@@ -181,7 +189,7 @@ export default function App() {
       '--ui-accent-soft',
       `color-mix(in srgb, ${customColors.accent} 14%, transparent)`,
     );
-  }, [customColors]);
+  }, [customColors, customColorsEnabled]);
 
   useEffect(() => {
     saveFrostedGlass(frostedGlass);
@@ -241,7 +249,7 @@ export default function App() {
       setCurrentFolder(folder);
     } catch {
       setCurrentFolder(null);
-      setMessage('\u8bfb\u53d6\u6587\u4ef6\u5939\u5931\u8d25');
+      setMessage(translate('readingFolderFailed'));
     }
   }, []);
 
@@ -259,7 +267,7 @@ export default function App() {
         dirty: false,
         lastSavedAt: Date.now(),
       }));
-      setMessage(`\u5df2\u6253\u5f00 ${openedDocument.title}`);
+      setMessage(translate('openedDocument', { title: openedDocument.title }));
     };
 
     // External reloads must not sit in a transition — delayed paint makes it
@@ -283,7 +291,7 @@ export default function App() {
         dirty: false,
         lastSavedAt: Date.now(),
       }));
-      setMessage(`\u5df2\u4fdd\u5b58\u5230 ${savedDocument.title}`);
+      setMessage(translate('savedTo', { title: savedDocument.title }));
     });
     void refreshFolderForDocument(savedDocument.path);
   }, [refreshFolderForDocument]);
@@ -295,12 +303,12 @@ export default function App() {
 
     return new Promise<boolean>((resolve) => {
       const dialog: AppDialogOptions = {
-        title: '\u672a\u4fdd\u5b58\u7684\u4fee\u6539',
-        message: '\u5f53\u524d\u6587\u6863\u6709\u672a\u4fdd\u5b58\u7684\u4fee\u6539\u3002',
-        detail: '\u786e\u5b9a\u4e22\u5f03\u5e76\u7ee7\u7eed\u5417\uff1f',
+        title: translate('unsavedChanges'),
+        message: translate('unsavedMessage'),
+        detail: translate('discardPrompt'),
         buttons: [
-          { value: 'discard', label: '\u653e\u5f03\u4fee\u6539', variant: 'danger' },
-          { value: 'cancel', label: '\u53d6\u6d88' },
+          { value: 'discard', label: translate('discardChanges'), variant: 'danger' },
+          { value: 'cancel', label: translate('cancel') },
         ],
         cancelValue: 'cancel',
         onResolve: (value) => resolve(value === 'discard'),
@@ -320,7 +328,7 @@ export default function App() {
   const openDocument = useCallback(async (): Promise<void> => {
     const opened = await window.markdownEditor.openDocumentDialogInNewWindow();
     if (opened) {
-      setMessage('\u5df2\u5728\u65b0\u7a97\u53e3\u6253\u5f00\u6587\u4ef6');
+      setMessage(translate('openedNewWindowFile'));
     }
   }, []);
 
@@ -343,10 +351,10 @@ export default function App() {
     try {
       const opened = await window.markdownEditor.openFolderDialogInNewWindow();
       if (opened) {
-        setMessage('\u5df2\u5728\u65b0\u7a97\u53e3\u6253\u5f00\u6587\u4ef6\u5939');
+        setMessage(translate('openedNewWindowFolder'));
       }
     } catch {
-      setMessage('\u6253\u5f00\u6587\u4ef6\u5939\u5931\u8d25');
+      setMessage(translate('openFolderFailed'));
     }
   }, []);
 
@@ -377,7 +385,7 @@ export default function App() {
       : await window.markdownEditor.saveDocument(payload);
 
     if (!result) {
-      setMessage('\u5df2\u53d6\u6d88\u4fdd\u5b58');
+      setMessage(translate('saveCancelled'));
       return false;
     }
 
@@ -387,7 +395,7 @@ export default function App() {
 
   const createNewDocument = useCallback(async (): Promise<void> => {
     await window.markdownEditor.newWindow();
-    setMessage('\u5df2\u6253\u5f00\u65b0\u7a97\u53e3');
+    setMessage(translate('newWindowOpened'));
   }, []);
 
   const handleMenuAction = useCallback(async (action: MenuAction): Promise<void> => {
@@ -487,7 +495,7 @@ export default function App() {
     });
 
     if (!result) {
-      setMessage('\u5df2\u53d6\u6d88\u4fdd\u5b58');
+      setMessage(translate('saveCancelled'));
       return null;
     }
 
@@ -521,7 +529,7 @@ export default function App() {
     });
     const offFolderOpened = window.markdownEditor.onFolderOpened((openedFolder) => {
       setCurrentFolder(openedFolder);
-      setMessage(`\u5df2\u6253\u5f00\u6587\u4ef6\u5939\uff1a${openedFolder.path}`);
+      setMessage(translate('folderOpened', { path: openedFolder.path }));
     });
     const offExportStatus = window.markdownEditor.onExportStatus((status) => {
       setExportStatus(status.active ? status : null);
@@ -539,12 +547,12 @@ export default function App() {
   }, [applyOpenedDocument, confirmDiscardChanges, handleMenuAction]);
 
   if (!editorShellEnabled) {
-    return <div className="app-booting">{'\u6b63\u5728\u52a0\u8f7d\u7f16\u8f91\u5668\u2026'}</div>;
+    return <div className="app-booting">{translate('loadingEditor')}</div>;
   }
 
   return (
     <>
-      <Suspense fallback={<div className="app-booting">{'\u6b63\u5728\u52a0\u8f7d\u7f16\u8f91\u5668\u2026'}</div>}>
+      <Suspense fallback={<div className="app-booting">{translate('loadingEditor')}</div>}>
         <EditorShell
           document={editorDocument}
           folder={currentFolder}
@@ -575,7 +583,10 @@ export default function App() {
           glassEffect={glassEffect}
           liquidGlass={liquidGlass}
           onClose={() => setSettingsOpen(false)}
-          onSetCustomColors={setCustomColors}
+          onSetCustomColors={(colors) => {
+            setCustomColorsEnabled(true);
+            setCustomColors(colors);
+          }}
           onSetFrostedGlass={setFrostedGlass}
           onSetGlassCustomization={setGlassCustomization}
           onSetGlassEffect={setGlassEffect}

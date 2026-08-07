@@ -7,6 +7,7 @@ import type { PandocExportFormat, ThemeMode } from '@shared/contracts';
 import { GLASS_EFFECT_OPTIONS, THEME_PALETTE_OPTIONS, type GlassEffect, type ThemePalette } from '../theme';
 import { CODE_LANGUAGE_OPTIONS } from '../editor/code-languages';
 import Icon from './icons';
+import { translate, useAppLanguage } from '../i18n';
 
 interface ToolbarProps {
   editor: Editor | null;
@@ -52,15 +53,15 @@ type ToolbarLayoutMode = 'full' | 'dense' | 'compact';
 type ToolbarGroupId = 'document' | 'text-style' | 'structure' | 'insert' | 'view';
 
 const PANDOC_EXPORT_OPTIONS: Array<{ id: PandocExportFormat; label: string }> = [
-  { id: 'docx', label: 'Word 文档 (DOCX)' },
-  { id: 'html', label: 'HTML 网页' },
-  { id: 'odt', label: 'OpenDocument (ODT)' },
-  { id: 'epub', label: 'EPUB 电子书' },
-  { id: 'latex', label: 'LaTeX 源文件' },
-  { id: 'rtf', label: 'RTF 富文本' },
-  { id: 'pptx', label: 'PowerPoint (PPTX)' },
-  { id: 'plain', label: '纯文本' },
-  { id: 'gfm', label: 'GitHub Flavored Markdown' },
+  { id: 'docx', label: 'docx' },
+  { id: 'html', label: 'htmlPage' },
+  { id: 'odt', label: 'odt' },
+  { id: 'epub', label: 'epub' },
+  { id: 'latex', label: 'latexSource' },
+  { id: 'rtf', label: 'rtf' },
+  { id: 'pptx', label: 'pptx' },
+  { id: 'plain', label: 'plainText' },
+  { id: 'gfm', label: 'gfm' },
 ];
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
@@ -244,78 +245,83 @@ function Toolbar({
   const [, setEditorRevision] = useState(0);
   const toolbarRef = useRef<HTMLElement | null>(null);
   const linkInputRef = useRef<HTMLInputElement | null>(null);
+  const appLanguage = useAppLanguage();
   const labels = {
-    hideToolbar: '隐藏工具栏',
-    hideSidebar: '隐藏侧栏',
-    showSidebar: '显示侧栏',
-    newWindow: '新建窗口',
-    openFile: '打开文件',
-    openFolder: '打开文件夹',
-    save: '保存',
-    saveAs: '另存为',
-    findReplace: '查找与替换',
-    heading1: '一级标题',
-    heading2: '二级标题',
-    bold: '加粗',
-    italic: '斜体',
-    underline: '下划线',
-    strike: '删除线',
-    link: '链接',
-    linkApply: '应用链接',
-    linkRemove: '移除链接',
-    linkPlaceholder: '输入链接地址',
-    quote: '引用',
-    bullet: '无序列表',
-    ordered: '有序列表',
-    task: '任务列表',
-    table: '插入表格',
-    code: '代码块',
-    math: '插入公式',
-    mathInline: '行内公式 ($)',
-    mathBlock: '行间公式 ($$)',
-    mermaid: '插入 Mermaid 图表',
-    image: '插入图片',
-    footnote: '插入脚注',
-    sourceOn: '关闭源码模式',
-    sourceOff: '打开源码模式',
-    themePanel: '主题与配色',
-    showToolbar: '显示工具栏',
-    appearanceMode: '外观模式',
-    paletteScheme: '配色方案',
-    glassEffect: '透明效果',
-    glassFrosted: '毛玻璃',
-    glassLiquid: '液态玻璃',
-    glassOff: '关闭透明',
-    auto: '自动',
-    light: '浅色',
-    dark: '深色',
-    document: '文档',
-    textStyle: '文本',
-    structure: '结构',
-    insert: '插入',
-    view: '视图',
-    fileMenu: '文件',
-    editMenu: '编辑',
-    viewMenu: '视图',
-    exportPdf: '导出 PDF…',
-    exportImage: '导出长图…',
-    pandocExport: '通过 Pandoc 导出',
-    settings: '设置…',
-    quit: '退出',
-    undo: '撤销',
-    redo: '重做',
-    cut: '剪切',
-    copy: '复制',
-    paste: '粘贴',
-    selectAll: '全选',
-    reload: '重新加载',
-    toggleTheme: '切换主题',
-    zoomIn: '放大',
-    zoomOut: '缩小',
-    zoomReset: '重置缩放',
+    hideToolbar: translate('hideToolbar'),
+    showToolbar: translate('showToolbar'),
+    hideSidebar: translate('hideSidebar'),
+    showSidebar: translate('showSidebar'),
+    newWindow: translate('newWindow'),
+    openFile: translate('openFile'),
+    openFolder: translate('openFolder'),
+    save: translate('save'),
+    saveAs: translate('saveAs'),
+    findReplace: translate('findReplace'),
+    heading1: translate('heading1'),
+    heading2: translate('heading2'),
+    bold: translate('bold'),
+    italic: translate('italic'),
+    underline: translate('underline'),
+    strike: translate('strike'),
+    link: translate('link'),
+    linkApply: translate('linkApply'),
+    linkRemove: translate('linkRemove'),
+    linkPlaceholder: translate('linkPlaceholder'),
+    quote: translate('quote'),
+    bullet: translate('bullet'),
+    ordered: translate('ordered'),
+    task: translate('task'),
+    table: translate('table'),
+    code: translate('code'),
+    math: translate('math'),
+    mathInline: translate('mathInline'),
+    mathBlock: translate('mathBlock'),
+    mermaid: translate('mermaid'),
+    image: translate('image'),
+    footnote: translate('footnote'),
+    sourceOn: translate('sourceOff'),
+    sourceOff: translate('sourceOn'),
+    themePanel: translate('themePanel'),
+    appearanceMode: translate('appearanceMode'),
+    paletteScheme: translate('paletteScheme'),
+    glassEffect: translate('glassEffect'),
+    glassFrosted: translate('glassFrosted'),
+    glassLiquid: translate('glassLiquid'),
+    glassOff: translate('glassOff'),
+    auto: translate('auto'),
+    light: translate('light'),
+    dark: translate('dark'),
+    document: translate('document'),
+    textStyle: translate('textStyle'),
+    structure: translate('structure'),
+    insert: translate('insert'),
+    view: translate('view'),
+    fileMenu: translate('fileMenu'),
+    editMenu: translate('editMenu'),
+    viewMenu: translate('viewMenu'),
+    exportPdf: translate('exportPdf'),
+    exportImage: translate('exportImage'),
+    pandocExport: translate('pandocExport'),
+    settings: translate('settings'),
+    quit: translate('quit'),
+    undo: translate('undo'),
+    redo: translate('redo'),
+    cut: translate('cut'),
+    copy: translate('copy'),
+    paste: translate('paste'),
+    selectAll: translate('selectAll'),
+    reload: translate('reload'),
+    toggleTheme: translate('toggleTheme'),
+    zoomIn: translate('zoomIn'),
+    zoomOut: translate('zoomOut'),
+    zoomReset: translate('zoomReset'),
   };
   const themeLabel =
-    theme === 'system' ? '主题：自动' : theme === 'light' ? '主题：浅色' : '主题：深色';
+    theme === 'system'
+      ? `${translate('theme')}: ${translate('auto')}`
+      : theme === 'light'
+        ? `${translate('theme')}: ${translate('light')}`
+        : `${translate('theme')}: ${translate('dark')}`;
   const currentPalette = THEME_PALETTE_OPTIONS.find((option) => option.id === themePalette);
   const editingControlsHidden = sourceMode;
   const isLinkActive = editor?.isActive('link') ?? false;
@@ -577,7 +583,7 @@ function Toolbar({
         .focus()
         .insertContent({
           type: 'text',
-          text: '链接',
+          text: translate('linkText'),
           marks: [
             {
               type: 'link',
@@ -713,49 +719,49 @@ function Toolbar({
           hidden={editingControlsHidden}
           icon="rowAddBefore"
           onClick={() => runCompactAction(() => editor?.chain().focus().addRowBefore().run())}
-          title="在上方插入行"
+          title={translate('insertRowAbove')}
         />
         <ToolbarButton
           disabled={!editor}
           hidden={editingControlsHidden}
           icon="rowAddAfter"
           onClick={() => runCompactAction(() => editor?.chain().focus().addRowAfter().run())}
-          title="在下方插入行"
+          title={translate('insertRowBelow')}
         />
         <ToolbarButton
           disabled={!editor}
           hidden={editingControlsHidden}
           icon="rowDelete"
           onClick={() => runCompactAction(() => editor?.chain().focus().deleteRow().run())}
-          title="删除当前行"
+          title={translate('deleteRow')}
         />
         <ToolbarButton
           disabled={!editor}
           hidden={editingControlsHidden}
           icon="columnAddBefore"
           onClick={() => runCompactAction(() => editor?.chain().focus().addColumnBefore().run())}
-          title="在左侧插入列"
+          title={translate('insertColumnLeft')}
         />
         <ToolbarButton
           disabled={!editor}
           hidden={editingControlsHidden}
           icon="columnAddAfter"
           onClick={() => runCompactAction(() => editor?.chain().focus().addColumnAfter().run())}
-          title="在右侧插入列"
+          title={translate('insertColumnRight')}
         />
         <ToolbarButton
           disabled={!editor}
           hidden={editingControlsHidden}
           icon="columnDelete"
           onClick={() => runCompactAction(() => editor?.chain().focus().deleteColumn().run())}
-          title="删除当前列"
+          title={translate('deleteColumn')}
         />
         <ToolbarButton
           disabled={!editor}
           hidden={editingControlsHidden}
           icon="tableDelete"
           onClick={() => runCompactAction(() => editor?.chain().focus().deleteTable().run())}
-          title="删除表格"
+          title={translate('deleteTable')}
         />
       </>
     );
@@ -847,7 +853,11 @@ function Toolbar({
             <div className="toolbar-menu__separator" role="separator" />
             <div className="toolbar-menu__section-label">{labels.pandocExport}</div>
             {PANDOC_EXPORT_OPTIONS.map((option) =>
-              item(`pandoc-${option.id}`, option.label, () => onExportPandoc(option.id)),
+              item(
+                `pandoc-${option.id}`,
+                translate(option.label),
+                () => onExportPandoc(option.id),
+              ),
             )}
             <div className="toolbar-menu__separator" role="separator" />
             {item('settings', labels.settings, onOpenSettings)}
@@ -1143,7 +1153,7 @@ function Toolbar({
           />
           {isCodeBlockActive ? (
             <div className={clsx('toolbar-language-control', editingControlsHidden && 'is-source-hidden')}>
-              <span className="toolbar-language-control__prefix">语言</span>
+              <span className="toolbar-language-control__prefix">{translate('language')}</span>
               <input
                 className="toolbar-language-control__input"
                 disabled={!editor}
@@ -1156,9 +1166,9 @@ function Toolbar({
                     updateCodeBlockLanguage(codeLanguageDraft);
                   }
                 }}
-                placeholder="例如：ts / python / mermaid"
+                placeholder={translate('codeLanguagePlaceholder')}
                 spellCheck={false}
-                title="输入或选择代码块语言"
+                title={translate('chooseCodeLanguage')}
                 type="text"
                 value={codeLanguageDraft}
               />
@@ -1477,11 +1487,13 @@ function Toolbar({
                     onSetGlassEffect(option.id);
                     setThemePanelOpen(false);
                   }}
-                  title={option.description}
+                  title={
+                    appLanguage === 'en' ? option.descriptionEn : option.description
+                  }
                   type="button"
                 >
                   <span className={clsx('theme-glass-button__preview', `is-${option.id}`)} />
-                  <span>{option.label}</span>
+                  <span>{appLanguage === 'en' ? option.labelEn : option.label}</span>
                 </button>
               ))}
             </div>
@@ -1501,8 +1513,12 @@ function Toolbar({
                   type="button"
                 >
                   <span className="theme-palette-button__swatch" style={{ background: option.swatch }} />
-                  <span className="theme-palette-button__label">{option.label}</span>
-                  <span className="theme-palette-button__description">{option.description}</span>
+                  <span className="theme-palette-button__label">
+                    {appLanguage === 'en' ? option.labelEn : option.label}
+                  </span>
+                  <span className="theme-palette-button__description">
+                    {appLanguage === 'en' ? option.descriptionEn : option.description}
+                  </span>
                 </button>
               ))}
             </div>

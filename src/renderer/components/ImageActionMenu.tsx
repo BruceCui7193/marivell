@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { translate, useAppLanguage } from '../i18n';
 
 interface ImageActionMenuProps {
   x: number;
@@ -22,6 +23,7 @@ export default function ImageActionMenu({
   onCopyToOther,
   onClose,
 }: ImageActionMenuProps) {
+  useAppLanguage();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState({ x, y });
   const [origin, setOrigin] = useState('top left');
@@ -67,7 +69,7 @@ export default function ImageActionMenu({
 
   return createPortal(
     <div ref={rootRef} className="image-action-menu" role="menu" style={{ left: pos.x, top: pos.y, transformOrigin: origin }}>
-      <div className="image-action-menu__title">图片操作</div>
+      <div className="image-action-menu__title">{translate('imageActions')}</div>
       <button
         className={`image-action-menu__item${currentPathAvailable ? '' : ' is-pending-save'}`}
         onClick={onCopyToCurrent}
@@ -75,8 +77,10 @@ export default function ImageActionMenu({
         role="menuitem"
         type="button"
       >
-        <span>复制到当前路径</span>
-        {currentPathAvailable ? null : <span className="image-action-menu__hint">需先保存文档</span>}
+        <span>{translate('copyToCurrent')}</span>
+        {currentPathAvailable ? null : (
+          <span className="image-action-menu__hint">{translate('needSaveFirst')}</span>
+        )}
       </button>
       <button
         className="image-action-menu__item"
@@ -86,8 +90,10 @@ export default function ImageActionMenu({
         role="menuitem"
         type="button"
       >
-        <span>保留原路径</span>
-        {originalPathAvailable ? null : <span className="image-action-menu__hint">剪贴板无路径</span>}
+        <span>{translate('keepOriginal')}</span>
+        {originalPathAvailable ? null : (
+          <span className="image-action-menu__hint">{translate('noClipboardPath')}</span>
+        )}
       </button>
       <button
         className="image-action-menu__item"
@@ -96,7 +102,7 @@ export default function ImageActionMenu({
         role="menuitem"
         type="button"
       >
-        <span>复制到其它位置…</span>
+        <span>{translate('copyToOther')}</span>
       </button>
     </div>,
     document.body,

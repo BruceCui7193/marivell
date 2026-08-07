@@ -2,6 +2,7 @@ import type { Editor } from '@tiptap/react';
 import type { ContextMenuEntry } from '../components/ContextMenu';
 import { sep } from '../components/ContextMenu';
 import { applyLineIndent } from '../components/SourceEditor';
+import { translate } from '../i18n';
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
 const mod = isMac ? '⌘' : 'Ctrl+';
@@ -115,7 +116,7 @@ export function buildSourceContextMenu(options: {
   const items: ContextMenuEntry[] = [
     {
       id: 'cut',
-      label: '剪切',
+      label: translate('cut'),
       icon: 'cut',
       shortcut: `${mod}X`,
       disabled: !hasSelection,
@@ -126,7 +127,7 @@ export function buildSourceContextMenu(options: {
     },
     {
       id: 'copy',
-      label: '复制',
+      label: translate('copy'),
       icon: 'copy',
       shortcut: `${mod}C`,
       disabled: !hasSelection,
@@ -137,7 +138,7 @@ export function buildSourceContextMenu(options: {
     },
     {
       id: 'paste',
-      label: '粘贴',
+      label: translate('paste'),
       icon: 'paste',
       shortcut: `${mod}V`,
       onSelect: () => {
@@ -148,7 +149,7 @@ export function buildSourceContextMenu(options: {
     },
     {
       id: 'select-all',
-      label: '全选',
+      label: translate('selectAll'),
       icon: 'selectAll',
       shortcut: `${mod}A`,
       onSelect: () => {
@@ -159,27 +160,27 @@ export function buildSourceContextMenu(options: {
     sep('s1'),
     {
       id: 'indent',
-      label: '增加缩进',
+      label: translate('indent'),
       shortcut: `${mod}]`,
       onSelect: () => applyLineIndent(textarea, true),
     },
     {
       id: 'outdent',
-      label: '减少缩进',
+      label: translate('outdent'),
       shortcut: `${mod}[`,
       onSelect: () => applyLineIndent(textarea, false),
     },
     sep('s2'),
     {
       id: 'find',
-      label: '查找',
+      label: translate('find'),
       icon: 'search',
       shortcut: `${mod}F`,
       onSelect: onFind,
     },
     {
       id: 'replace',
-      label: '替换',
+      label: translate('replace'),
       icon: 'search',
       shortcut: `${mod}H`,
       onSelect: onFindReplace,
@@ -189,7 +190,7 @@ export function buildSourceContextMenu(options: {
   if (onGoToLine) {
     items.push({
       id: 'goto-line',
-      label: '转到行…',
+      label: `${translate('goToLine')}…`,
       shortcut: `${mod}G`,
       onSelect: onGoToLine,
     });
@@ -199,7 +200,7 @@ export function buildSourceContextMenu(options: {
     sep('s3'),
     {
       id: 'visual',
-      label: '切换到可视化',
+      label: translate('switchVisual'),
       icon: 'source',
       onSelect: onToggleVisual,
     },
@@ -228,7 +229,7 @@ export function buildVisualContextMenu(options: {
   const items: ContextMenuEntry[] = [
     {
       id: 'cut',
-      label: '剪切',
+      label: translate('cut'),
       icon: 'cut',
       shortcut: `${mod}X`,
       disabled: empty,
@@ -238,7 +239,7 @@ export function buildVisualContextMenu(options: {
     },
     {
       id: 'copy',
-      label: '复制',
+      label: translate('copy'),
       icon: 'copy',
       shortcut: `${mod}C`,
       disabled: empty,
@@ -248,7 +249,7 @@ export function buildVisualContextMenu(options: {
     },
     {
       id: 'paste',
-      label: '粘贴',
+      label: translate('paste'),
       icon: 'paste',
       shortcut: `${mod}V`,
       onSelect: () => {
@@ -261,7 +262,7 @@ export function buildVisualContextMenu(options: {
     },
     {
       id: 'select-all',
-      label: '全选',
+      label: translate('selectAll'),
       icon: 'selectAll',
       shortcut: `${mod}A`,
       onSelect: () => {
@@ -271,14 +272,14 @@ export function buildVisualContextMenu(options: {
     sep('s1'),
     {
       id: 'find',
-      label: '查找',
+      label: translate('find'),
       icon: 'search',
       shortcut: `${mod}F`,
       onSelect: onFind,
     },
     {
       id: 'replace',
-      label: '替换',
+      label: translate('replace'),
       icon: 'search',
       shortcut: `${mod}H`,
       onSelect: onFindReplace,
@@ -288,7 +289,7 @@ export function buildVisualContextMenu(options: {
   if (onGoToLine) {
     items.push({
       id: 'goto-line',
-      label: '转到行…',
+      label: `${translate('goToLine')}…`,
       shortcut: `${mod}G`,
       onSelect: onGoToLine,
     });
@@ -298,7 +299,7 @@ export function buildVisualContextMenu(options: {
     sep('s2'),
     {
       id: 'source',
-      label: '切换到源码',
+      label: translate('switchSource'),
       icon: 'source',
       onSelect: onToggleSource,
     },
