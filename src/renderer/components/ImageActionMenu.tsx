@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 interface ImageActionMenuProps {
   x: number;
@@ -64,7 +65,7 @@ export default function ImageActionMenu({
     };
   }, [onClose]);
 
-  return (
+  return createPortal(
     <div ref={rootRef} className="image-action-menu" role="menu" style={{ left: pos.x, top: pos.y, transformOrigin: origin }}>
       <div className="image-action-menu__title">图片操作</div>
       <button
@@ -97,6 +98,7 @@ export default function ImageActionMenu({
       >
         <span>复制到其它位置…</span>
       </button>
-    </div>
+    </div>,
+    document.body,
   );
 }

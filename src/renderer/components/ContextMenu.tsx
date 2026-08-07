@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import clsx from 'clsx';
 import Icon from './icons';
 import type { ComponentProps } from 'react';
@@ -109,7 +110,7 @@ export default function ContextMenu({ menu, onClose }: ContextMenuProps) {
     return null;
   }
 
-  return (
+  return createPortal(
     <div
       ref={rootRef}
       className="context-menu"
@@ -151,7 +152,8 @@ export default function ContextMenu({ menu, onClose }: ContextMenuProps) {
           </button>
         );
       })}
-    </div>
+    </div>,
+    document.body,
   );
 }
 

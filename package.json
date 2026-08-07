@@ -13,7 +13,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "test": "npm run test:unit && npm run test:fixtures",
-    "test:unit": "tsx scripts/tests/pure-logic.test.ts",
+    "test:unit": "tsx scripts/tests/pure-logic.test.ts && tsx scripts/tests/editor-mode-switch.test.ts",
     "test:fixtures": "tsx scripts/tests/markdown-fixtures.test.ts",
     "build": "electron-vite build && electron-builder --config electron-builder.config.mjs",
     "build:linux": "electron-vite build && electron-builder --linux --config electron-builder.config.mjs --publish never",
@@ -60,6 +60,7 @@
     "electron": "^41.3.0",
     "electron-builder": "^26.0.12",
     "electron-vite": "^3.1.0",
+    "jsdom": "^29.1.1",
     "tsx": "^4.23.1",
     "typescript": "^5.7.2",
     "vite": "^6.0.3"

@@ -36,6 +36,13 @@ import {
 } from '../editor/context-menu-actions';
 import { parseMarkdown, serializeMarkdown } from '../editor/markdown';
 import {
+  SELECTION_END_MARKER,
+  SELECTION_START_MARKER,
+  extractSelectionMarkersFromMarkdown,
+  insertSelectionMarkersIntoMarkdown,
+  restoreSelectionMarkersFromEditorState,
+} from '../editor/selection-markers';
+import {
   findSourceSearchMatches,
   findVisualSearchMatches,
   replaceAllSourceSearchMatches,
@@ -232,41 +239,6 @@ function computeScrollRatio(element: { scrollTop: number; scrollHeight: number; 
   return maxScrollTop > 0 ? element.scrollTop / maxScrollTop : 0;
 }
 
-function insertSelectionMarkersIntoMarkdown(markdown: string, start: number, end: number): string {
-  const selectionStart = Math.max(0, Math.min(start, markdown.length));
-  const selectionEnd = Math.max(selectionStart, Math.min(end, markdown.length));
-
-  return `${markdown.slice(0, selectionStart)}${SELECTION_START_MARKER}${markdown.slice(
-    selectionStart,
-    selectionEnd,
-  )}${SELECTION_END_MARKER}${markdown.slice(selectionEnd)}`;
-}
-
-function extractSelectionMarkersFromMarkdown(markdown: string): {
-  markdown: string;
-  selection: SourceSearchMatch;
-} {
-  const startIndex = markdown.indexOf(SELECTION_START_MARKER);
-  const endIndex = markdown.indexOf(SELECTION_END_MARKER);
-  const withoutStart = markdown.replace(SELECTION_START_MARKER, '');
-  const normalizedEndIndex =
-    endIndex === -1
-      ? startIndex === -1
-        ? 0
-        : startIndex
-      : endIndex - (startIndex !== -1 && startIndex < endIndex ? SELECTION_START_MARKER.length : 0);
-  const cleanMarkdown = withoutStart.replace(SELECTION_END_MARKER, '');
-  const selectionStart = startIndex === -1 ? Math.min(normalizedEndIndex, cleanMarkdown.length) : startIndex;
-  const selectionEnd = Math.max(selectionStart, Math.min(normalizedEndIndex, cleanMarkdown.length));
-
-  return {
-    markdown: cleanMarkdown,
-    selection: {
-      start: selectionStart,
-      end: selectionEnd,
-    },
-  };
-}
 
 function clampSourceSelection(selection: SourceSearchMatch, markdown: string): SourceSearchMatch {
   const start = Math.max(0, Math.min(selection.start, markdown.length));
@@ -286,8 +258,6 @@ function createMarkdownWorker(): Worker {
 
 const VISUAL_META_SYNC_DELAY_MS = 260;
 const VISUAL_DOCUMENT_SYNC_TIMEOUT_MS = 1400;
-const SELECTION_START_MARKER = 'MDEDITORSELECTIONSTARTTOKEN';
-const SELECTION_END_MARKER = 'MDEDITORSELECTIONENDTOKEN';
 const SEARCH_QUERY_PREFILL_MAX_CHARS = 240;
 const SEARCH_QUERY_PREFILL_MAX_NEWLINES = 2;
 
@@ -766,142 +736,6 @@ export default function EditorShell({
     [],
   );
 
-  const restoreVisualSelectionFromMarkedContent = useCallback((targetEditor: TiptapEditor) => {
-    const { state, view } = targetEditor;
-    const removalEntries: Array<{
-      from: number;
-      to: number;
-      text: string;
-      startPos?: number;
-      endPos?: number;
-      mathPos?: number;
-      mathStartOffset?: number;
-      mathEndOffset?: number;
-    }> = [];
-
-    state.doc.descendants((node, pos) => {
-      // Markers always live in text nodes (including text inside inlineMath).
-      if (!node.isText || !node.text || !node.text.includes('MDEDITORSELECTION')) {
-        return true;
-      }
-
-      const startIndex = node.text.indexOf(SELECTION_START_MARKER);
-      const endIndex = node.text.indexOf(SELECTION_END_MARKER);
-      const cleaned = node.text
-        .replace(SELECTION_START_MARKER, '')
-        .replace(SELECTION_END_MARKER, '');
-
-      // After removing markers, cursor offsets within this text node shrink by
-      // the marker lengths that sit before them.
-      let startPos: number | undefined;
-      let endPos: number | undefined;
-      if (startIndex !== -1) {
-        startPos = pos + startIndex;
-      }
-      if (endIndex !== -1) {
-        const adjustment =
-          startIndex !== -1 && startIndex < endIndex ? SELECTION_START_MARKER.length : 0;
-        endPos = pos + endIndex - adjustment;
-      }
-
-      const $pos = state.doc.resolve(pos);
-      let mathPos: number | undefined;
-      for (let depth = $pos.depth; depth > 0; depth -= 1) {
-        if ($pos.node(depth).type.name === 'inlineMath') {
-          mathPos = $pos.before(depth);
-          break;
-        }
-      }
-
-      removalEntries.push({
-        from: pos,
-        to: pos + node.text.length,
-        text: cleaned,
-        startPos,
-        endPos,
-        mathPos,
-        mathStartOffset:
-          mathPos !== undefined && startIndex !== -1 ? startIndex : undefined,
-        mathEndOffset:
-          mathPos !== undefined && endIndex !== -1
-            ? endIndex -
-              (startIndex !== -1 && startIndex < endIndex ? SELECTION_START_MARKER.length : 0)
-            : undefined,
-      });
-      return true;
-    });
-
-    if (!removalEntries.length) {
-      return false;
-    }
-
-    // Apply from the end of the document so earlier absolute positions stay valid.
-    const orderedEntries = [...removalEntries].sort((left, right) => right.from - left.from);
-
-    let tr = state.tr;
-    let startPos: number | null = null;
-    let endPos: number | null = null;
-    let mathSelection: { pos: number; start: number; end: number } | null = null;
-
-    for (const entry of orderedEntries) {
-      if (entry.startPos !== undefined) {
-        startPos = entry.startPos;
-      }
-      if (entry.endPos !== undefined) {
-        endPos = entry.endPos;
-      }
-      if (entry.mathPos !== undefined && (entry.mathStartOffset !== undefined || entry.mathEndOffset !== undefined)) {
-        mathSelection = {
-          pos: entry.mathPos,
-          start: entry.mathStartOffset ?? entry.mathEndOffset ?? 0,
-          end: entry.mathEndOffset ?? entry.mathStartOffset ?? 0,
-        };
-      }
-
-      tr = tr.insertText(entry.text, entry.from, entry.to);
-    }
-
-    if (startPos !== null || endPos !== null) {
-      try {
-        // Positions before the first (lowest) replacement are unchanged because
-        // we applied replacements from high → low. Positions inside a replaced
-        // node were computed after marker removal and still point at the caret.
-        const safeStart = Math.max(1, Math.min(startPos ?? endPos ?? 1, tr.doc.content.size));
-        const safeEnd = Math.max(safeStart, Math.min(endPos ?? startPos ?? 1, tr.doc.content.size));
-        tr = tr.setSelection(TextSelection.create(tr.doc, safeStart, safeEnd));
-      } catch {
-        // Keep the content fix even if selection restore fails.
-      }
-      view.dispatch(tr);
-      view.focus();
-      return true;
-    }
-
-    if (mathSelection) {
-      try {
-        tr = tr.setSelection(NodeSelection.create(tr.doc, mathSelection.pos));
-        view.dispatch(tr);
-        view.focus();
-        window.dispatchEvent(
-          new CustomEvent('markdown-editor:focus-math-search-match', {
-            detail: {
-              pos: mathSelection.pos,
-              start: mathSelection.start,
-              end: mathSelection.end,
-            },
-          }),
-        );
-        return true;
-      } catch {
-        view.dispatch(tr);
-        return true;
-      }
-    }
-
-    // Markers removed but no caret positions recovered — still commit the cleanup.
-    view.dispatch(tr);
-    return true;
-  }, []);
 
   const parseMarkdownInWorker = useCallback((markdown: string) => {
     if (!markdownWorkerRef.current) {
@@ -1697,10 +1531,10 @@ export default function EditorShell({
         }
 
         pendingVisualSelectionRestoreRef.current = false;
-        restoreVisualSelectionFromMarkedContent(editor);
+        restoreSelectionMarkersFromEditorState(editor.state, editor.view);
       });
     });
-  }, [editor, restoreVisualSelectionFromMarkedContent, sourceMode]);
+  }, [editor, sourceMode]);
 
   useEffect(() => {
     if (startupCaretPlacedRef.current || loadingExternalDocument) {
@@ -2204,7 +2038,6 @@ export default function EditorShell({
     onDocumentChange,
     onDocumentMetaChange,
     queueSourcePreview,
-    restoreVisualSelectionFromMarkedContent,
   ]);
 
   const toggleSourceModeWithTransition = useCallback(() => {

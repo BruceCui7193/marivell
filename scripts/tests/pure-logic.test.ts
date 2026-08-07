@@ -3,6 +3,7 @@
  * Run: npx tsx scripts/tests/pure-logic.test.ts
  */
 import { parseMarkdown, serializeMarkdown, serializeMarkdownFragment } from '../../src/renderer/editor/markdown.ts';
+import { cleanSelectionMarkersFromJsonContent } from '../../src/renderer/editor/selection-markers';
 import { highlightMarkdownSource, offsetToLineCol } from '../../src/renderer/editor/markdown-highlight.ts';
 import {
   findSourceSearchMatches,
@@ -518,6 +519,84 @@ section('table clipboard matrix helpers');
   ]);
   assertEqual('2x2 all four cells', twoByTwo, 'A\tB\nC\tD');
   assert('2x2 not first-only', twoByTwo !== 'A' && !/^A\s*$/.test(twoByTwo));
+}
+
+section('selection marker cleanup');
+
+{
+  const noMarkers = (value: unknown) => !JSON.stringify(value).includes('MDEDITORSELECTION');
+
+  const markedImage = `![Dora MDEDITORSELECTIONSTARTTOKEN MDEDITORSELECTIONENDTOKEN](../images/dora.png "Dora")`;
+  const cleanedImageJson = cleanSelectionMarkersFromJsonContent(parseMarkdown(markedImage));
+  const cleanedImageText = JSON.stringify(cleanedImageJson);
+  assert(
+    'image attrs selection markers removed',
+    noMarkers(cleanedImageJson) && cleanedImageText.includes('"alt":"Dora"'),
+  );
+  const cleanedImageMarkdown = serializeMarkdown(cleanedImageJson);
+  assert(
+    'cleaned image markdown is stable',
+    noMarkers(cleanedImageMarkdown) &&
+      cleanedImageMarkdown.includes('![Dora](../images/dora.png'),
+  );
+
+  const markedLink = `[text](MDEDITORSELECTIONSTARTTOKENhttps://example.comMDEDITORSELECTIONENDTOKEN "MDEDITORSELECTIONSTARTTOKENTitleMDEDITORSELECTIONENDTOKEN")`;
+  const cleanedLinkJson = cleanSelectionMarkersFromJsonContent(parseMarkdown(markedLink));
+  const cleanedLinkText = JSON.stringify(cleanedLinkJson);
+  assert(
+    'link href/title selection markers removed',
+    noMarkers(cleanedLinkJson) &&
+      cleanedLinkText.includes('"href":"https://example.com"') &&
+      cleanedLinkText.includes('"title":"Title"'),
+  );
+
+  const markedHtml = `<div class="MDEDITORSELECTIONSTARTTOKENcardMDEDITORSELECTIONENDTOKEN">x</div>`;
+  const cleanedHtmlJson = cleanSelectionMarkersFromJsonContent(parseMarkdown(markedHtml));
+  assert(
+    'html block attribute markers removed',
+    noMarkers(cleanedHtmlJson) && JSON.stringify(cleanedHtmlJson).includes('class=\\"card\\"'),
+  );
+
+  const markedCode = '```js\nconst x = MDEDITORSELECTIONSTARTTOKEN1MDEDITORSELECTIONENDTOKEN;\n```\n';
+  const cleanedCodeJson = cleanSelectionMarkersFromJsonContent(parseMarkdown(markedCode));
+  assert(
+    'code block text markers removed',
+    noMarkers(cleanedCodeJson) && JSON.stringify(cleanedCodeJson).includes('const x = 1;'),
+  );
+
+  const markedMath = '$MDEDITORSELECTIONSTARTTOKENx^2MDEDITORSELECTIONENDTOKEN$';
+  const cleanedMathJson = cleanSelectionMarkersFromJsonContent(parseMarkdown(markedMath));
+  assert(
+    'math markers removed',
+    noMarkers(cleanedMathJson) && JSON.stringify(cleanedMathJson).includes('x^2'),
+  );
+
+  const imageMarkdown = '![Dora](../images/dora.png "Dora")';
+  let allOffsetsClean = true;
+  let firstBadOffset = '';
+  for (let start = 0; start <= imageMarkdown.length; start += 1) {
+    for (let end = start; end <= imageMarkdown.length; end += 1) {
+      const marked = `${imageMarkdown.slice(0, start)}MDEDITORSELECTIONSTARTTOKEN${imageMarkdown.slice(
+        start,
+        end,
+      )}MDEDITORSELECTIONENDTOKEN${imageMarkdown.slice(end)}`;
+      const cleaned = cleanSelectionMarkersFromJsonContent(parseMarkdown(marked));
+      const cleanedMarkdown = serializeMarkdown(cleaned);
+      if (
+        !noMarkers(cleaned) ||
+        !noMarkers(cleanedMarkdown) ||
+        serializeMarkdown(parseMarkdown(cleanedMarkdown)) !== cleanedMarkdown
+      ) {
+        allOffsetsClean = false;
+        firstBadOffset = `${start}:${end} → ${cleanedMarkdown}`;
+        break;
+      }
+    }
+    if (!allOffsetsClean) {
+      break;
+    }
+  }
+  assert('all image selection offsets clean after source/preview switch', allOffsetsClean, firstBadOffset);
 }
 
 // ---------------------------------------------------------------------------

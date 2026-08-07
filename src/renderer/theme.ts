@@ -1,5 +1,5 @@
 export type ThemePalette = 'natural' | 'forest' | 'ocean' | 'sepia' | 'graphite' | 'nord' | 'sakura' | 'lavender' | 'cyberpunk';
-export type GlassEffect = 'frosted' | 'liquid' | 'off';
+export type GlassEffect = 'frosted' | 'off';
 
 export interface ThemePaletteOption {
   id: ThemePalette;
@@ -79,12 +79,7 @@ export const GLASS_EFFECT_OPTIONS: GlassEffectOption[] = [
   {
     id: 'frosted',
     label: '毛玻璃',
-    description: '轻量模糊，功耗均衡',
-  },
-  {
-    id: 'liquid',
-    label: '液态玻璃',
-    description: '折射高光，更通透',
+    description: '轻量模糊，带弹性动画',
   },
   {
     id: 'off',

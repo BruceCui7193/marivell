@@ -1,10 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseMarkdown, serializeMarkdown } from '../../src/renderer/editor/markdown.ts';
+import { highlightMarkdownSource } from '../../src/renderer/editor/markdown-highlight.ts';
+import { markdownToExportHtmlFragment } from '../../src/main/export/markdown-to-html.ts';
 
 const fixturesDir = fileURLToPath(
   new URL('../../tests/fixtures/markdown/', import.meta.url),
+);
+const imagesDir = fileURLToPath(
+  new URL('../../tests/fixtures/images/', import.meta.url),
 );
 
 let passed = 0;
@@ -123,6 +128,26 @@ for (const file of files) {
     `${file}: non-empty input stays non-empty`,
     source.trim().length === 0 || markdown.trim().length > 0,
   );
+  const previewAgain = parseMarkdown(markdown);
+  const sourceAfterPreviewAgain = serializeMarkdown(previewAgain);
+  assertEqual(
+    `${file}: source/preview mode switch is stable`,
+    sourceAfterPreviewAgain,
+    markdown,
+  );
+  if (sourceTokenCount > 0) {
+    const previewTokenCount = (sourceAfterPreviewAgain.match(/MARKDOWN_EDITOR/g) ?? []).length;
+    assertEqual(
+      `${file}: source/preview mode switch preserves literal tokens`,
+      previewTokenCount,
+      sourceTokenCount,
+    );
+  } else {
+    assert(
+      `${file}: source/preview mode switch keeps no tokens`,
+      !sourceAfterPreviewAgain.includes('MARKDOWN_EDITOR'),
+    );
+  }
 }
 
 // Focused invariants for the tricky classes that previously leaked tokens.
@@ -168,6 +193,45 @@ for (const file of files) {
   );
 }
 
+
+// Image fixture: opening + source/preview switching.
+{
+  const imagePath = path.join(imagesDir, 'dora.png');
+  const imageBytes = fs.readFileSync(imagePath);
+  assert('image fixture dora.png exists', imageBytes.length > 0);
+  assert(
+    'image fixture is a valid image file',
+    imageBytes[0] === 0xff && imageBytes[1] === 0xd8 && imageBytes[2] === 0xff,
+  );
+
+  const imageMarkdown = fs.readFileSync(path.join(fixturesDir, 'images.md'), 'utf8');
+  const imageJson = parseMarkdown(imageMarkdown);
+  const imageJsonText = JSON.stringify(imageJson);
+  assert('image fixture parses to image node', imageJsonText.includes('"type":"image"'));
+  assert(
+    'image fixture keeps relative source',
+    imageJsonText.includes('"src":"../images/dora.png"'),
+  );
+
+  const imageMarkdownOut = serializeMarkdown(imageJson);
+  assert(
+    'image fixture source mode keeps markdown',
+    imageMarkdownOut.includes('![Dora](../images/dora.png'),
+  );
+
+  const sourceHighlight = highlightMarkdownSource(imageMarkdown);
+  assert('source mode highlights image syntax', sourceHighlight.includes('md-token--image'));
+
+  const previewHtml = markdownToExportHtmlFragment({
+    markdown: imageMarkdown,
+    baseDir: fixturesDir,
+  });
+  const expectedImageUrl = pathToFileURL(path.join(imagesDir, 'dora.png')).toString();
+  assert(
+    'preview mode resolves image src to fixture',
+    previewHtml.includes(expectedImageUrl) && previewHtml.includes('alt="Dora"'),
+  );
+}
 console.log(`\n================================================`);
 console.log(`Results: ${passed} passed, ${failed} failed`);
 if (failed > 0) {
