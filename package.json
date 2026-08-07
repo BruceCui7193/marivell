@@ -1,6 +1,6 @@
 {
   "name": "markdown-editor-pro",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "description": "A Markdown editor built with Electron, React, TypeScript, and Vite.",
   "main": "./out/main/index.js",
   "author": {

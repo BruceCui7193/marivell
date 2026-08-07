@@ -303,6 +303,10 @@ export const EXPORT_PAGE_CSS = `
       print-color-adjust: exact;
     }
 
+    .katex-display {
+      overflow: hidden;
+    }
+
     .export-document {
       width: auto;
       max-width: none;

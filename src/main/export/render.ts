@@ -192,9 +192,33 @@ export async function createExportRenderWindow(
       });
       await mermaidWait;
 
+      // Hidden export windows can report fonts as ready before KaTeX fonts are
+      // actually usable. Force-load every declared font face, then measure.
+      const loadedFonts = Promise.all(
+        Array.from(document.fonts).map((font) => font.load().catch(() => undefined)),
+      );
+      await Promise.all([document.fonts.ready, loadedFonts]);
+
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      // Extra paint for SVG layout.
+      // Extra paint for font/metrics and SVG layout.
       await new Promise((resolve) => setTimeout(resolve, 80));
+
+      // Keep display math inside the printable page instead of rendering a
+      // horizontal scrollbar in PDF/image export.
+      const fitDisplayMath = () => {
+        const displays = Array.from(document.querySelectorAll('.katex-display'));
+        for (const display of displays) {
+          const katexElement = display.querySelector(':scope > .katex') ?? display;
+          const available = display.clientWidth;
+          const naturalWidth = katexElement.scrollWidth;
+          if (available > 0 && naturalWidth > available + 1) {
+            katexElement.style.zoom = String(Math.min(available / naturalWidth, 1));
+          }
+        }
+      };
+      fitDisplayMath();
+
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     })()
   `);
 
