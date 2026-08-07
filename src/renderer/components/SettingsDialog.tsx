@@ -55,7 +55,8 @@ function ColorField({ label, value, onChange }: ColorFieldProps) {
   }, [parsed]);
 
   const updateRgb = (channel: 'r' | 'g' | 'b', next: number) => {
-    const updated = { ...rgb, [channel]: next };
+    const safe = Number.isFinite(next) ? next : 0;
+    const updated = { ...rgb, [channel]: safe };
     setRgb(updated);
     onChange(rgbToHex(updated.r, updated.g, updated.b));
   };
