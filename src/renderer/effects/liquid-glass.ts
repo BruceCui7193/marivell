@@ -54,6 +54,7 @@ interface SurfaceRecord {
   layer: HTMLDivElement | null;
   filterId: string;
   filterMarkup: string;
+  settleTimer: number | null;
 }
 
 interface MapAssets {
@@ -273,18 +274,6 @@ function isSurfaceVisible(element: HTMLElement): boolean {
   return rect.width >= 12 && rect.height >= 12;
 }
 
-function getEffectiveZIndex(element: HTMLElement): number {
-  let current: HTMLElement | null = element;
-  while (current) {
-    const value = Number.parseFloat(getComputedStyle(current).zIndex);
-    if (Number.isFinite(value)) {
-      return value;
-    }
-    current = current.parentElement;
-  }
-  return 0;
-}
-
 function ensureSvg(): void {
   if (state.svg && state.defs) {
     return;
@@ -385,7 +374,12 @@ function renderDefs(): void {
 
 function updateSurface(element: HTMLElement): void {
   const record = state.entries.get(element);
-  if (!record || !isSurfaceVisible(element)) {
+  if (!record) {
+    return;
+  }
+  if (!isSurfaceVisible(element)) {
+    record.layer?.remove();
+    record.layer = null;
     return;
   }
 
@@ -409,19 +403,18 @@ function updateSurface(element: HTMLElement): void {
     layer = document.createElement('div');
     layer.className = 'liquid-glass-layer';
     layer.style.pointerEvents = 'none';
-    document.body.appendChild(layer);
+    element.appendChild(layer);
     record.layer = layer;
   }
   const filter = `url("#${record.filterId}")`;
   const surfaceStyle = getComputedStyle(element);
-  const surfaceZ = getEffectiveZIndex(element);
-  layer.style.position = 'fixed';
-  layer.style.left = `${rect.left}px`;
-  layer.style.top = `${rect.top}px`;
-  layer.style.width = `${rect.width}px`;
-  layer.style.height = `${rect.height}px`;
+  layer.style.position = 'absolute';
+  layer.style.left = '0';
+  layer.style.top = '0';
+  layer.style.width = '100%';
+  layer.style.height = '100%';
   layer.style.borderRadius = surfaceStyle.borderRadius;
-  layer.style.zIndex = String(surfaceZ >= 2 ? surfaceZ - 1 : 0);
+  layer.style.zIndex = '-1';
   layer.style.backgroundImage = `url("${assets.specular}")`;
   layer.style.backgroundRepeat = 'no-repeat';
   layer.style.backgroundSize = '100% 100%';
@@ -429,6 +422,13 @@ function updateSurface(element: HTMLElement): void {
   layer.style.opacity = '1';
   layer.style.backdropFilter = filter;
   layer.style.setProperty('-webkit-backdrop-filter', filter);
+}
+
+function clearSettleTimer(record: SurfaceRecord): void {
+  if (record.settleTimer !== null) {
+    window.clearTimeout(record.settleTimer);
+    record.settleTimer = null;
+  }
 }
 
 function flushPending(): void {
@@ -453,8 +453,15 @@ function schedule(element: HTMLElement): void {
 
 function registerSurface(element: HTMLElement): void {
   if (state.entries.has(element)) {
+    const existing = state.entries.get(element);
+    if (existing) {
+      clearSettleTimer(existing);
+      existing.settleTimer = window.setTimeout(() => {
+        existing.settleTimer = null;
+        schedule(existing.element);
+      }, 420);
+    }
     schedule(element);
-    window.setTimeout(() => schedule(element), 420);
     return;
   }
   if (!isSurfaceVisible(element)) {
@@ -466,12 +473,16 @@ function registerSurface(element: HTMLElement): void {
     layer: null,
     filterId: `liquid-glass-${state.nextFilterId += 1}`,
     filterMarkup: '',
+    settleTimer: null,
   };
   state.entries.set(element, record);
   element.dataset.liquidGlass = 'true';
   state.resizeObserver?.observe(element);
   schedule(element);
-  window.setTimeout(() => schedule(element), 420);
+  record.settleTimer = window.setTimeout(() => {
+    record.settleTimer = null;
+    schedule(record.element);
+  }, 420);
 }
 
 function unregisterSurface(element: HTMLElement): void {
@@ -479,6 +490,7 @@ function unregisterSurface(element: HTMLElement): void {
   if (!record) {
     return;
   }
+  clearSettleTimer(record);
   record.layer?.remove();
   delete element.dataset.liquidGlass;
   state.entries.delete(element);

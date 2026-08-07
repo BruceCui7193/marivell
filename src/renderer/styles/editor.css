@@ -3158,6 +3158,18 @@
   display: none;
 }
 
+:root[data-glass-effect='liquid'] .liquid-glass-layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  mix-blend-mode: screen;
+}
+
 :root[data-glass-effect='liquid'] .toolbar__group {
   border-color: color-mix(in srgb, var(--ui-border) 70%, transparent);
   background: color-mix(in srgb, var(--ui-bg-strong) 16%, transparent);
