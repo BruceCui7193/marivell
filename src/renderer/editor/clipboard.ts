@@ -12,9 +12,9 @@ import { serializeMarkdownFragment } from './markdown';
 const PLAIN_TEXT_STRUCTURAL_PARENTS = new Set(['tableCell', 'tableHeader']);
 
 /**
- * Nodes whose *full* selection should serialize with Markdown wrappers
- * (`$…$`, fenced code, etc.), while a *partial* selection inside them
- * should stay raw (LaTeX body, code body).
+ * Nodes where a real whole-node selection should serialize with Markdown
+ * wrappers (`$…$`, fenced code, etc.), while any text selection inside them
+ * stays raw (LaTeX body, code body).
  */
 const WRAPPER_CONTENT_PARENTS = new Set(['inlineMath', 'codeBlock']);
 
@@ -27,7 +27,7 @@ function parentTextblockDepth($pos: ResolvedPos): number | null {
   return null;
 }
 
-/** True when the selection covers an entire node (NodeSelection or full content span). */
+/** True when the selection is a real NodeSelection (the whole node is selected). */
 export function isWholeNodeSelection(
   selection: {
     from: number;
@@ -39,40 +39,16 @@ export function isWholeNodeSelection(
   },
   nodeName?: string,
 ): boolean {
-  if (selection.empty) {
+  if (!(selection instanceof NodeSelection)) {
     return false;
   }
-
-  if (selection instanceof NodeSelection) {
-    const node = selection.node;
-    return nodeName ? node.type.name === nodeName : true;
-  }
-
-  const { $from, $to } = selection;
-  if ($from.parent !== $to.parent) {
-    return false;
-  }
-
-  const parent = $from.parent;
-  if (nodeName && parent.type.name !== nodeName) {
-    return false;
-  }
-
-  // Full content of a wrapper parent (e.g. all LaTeX inside inlineMath).
-  if (
-    WRAPPER_CONTENT_PARENTS.has(parent.type.name) &&
-    $from.parentOffset === 0 &&
-    $to.parentOffset === parent.content.size
-  ) {
-    return true;
-  }
-
-  return false;
+  return nodeName ? selection.node.type.name === nodeName : true;
 }
 
 /**
- * True when the caret/selection is strictly *inside* a wrapper node without
- * covering the whole node (edit-mode partial copy of LaTeX / code).
+ * True when the caret/selection is inside a wrapper node, even when every
+ * character inside that node is selected. Only a real NodeSelection counts as
+ * "whole node copy"; text selections inside math/code stay raw.
  */
 export function isPartialInsideWrapperParent(selection: {
   empty: boolean;
@@ -96,10 +72,7 @@ export function isPartialInsideWrapperParent(selection: {
     return false;
   }
 
-  // Not the full content → partial interior selection.
-  return !(
-    $from.parentOffset === 0 && $to.parentOffset === parent.content.size
-  );
+  return true;
 }
 
 function escapeHtml(value: string): string {
@@ -112,6 +85,14 @@ function escapeHtml(value: string): string {
 
 function escapeMarkdownTableCell(value: string): string {
   return value.replace(/\|/g, '\\|').replace(/\n/g, ' ').trim();
+}
+
+function containsNodeType(content: JSONContent[], typeName: string): boolean {
+  return content.some(
+    (node) =>
+      node.type === typeName ||
+      (Array.isArray(node.content) && containsNodeType(node.content, typeName)),
+  );
 }
 
 /** Normalize cell text for spreadsheet paste (Excel/Word). */
@@ -254,11 +235,11 @@ export function cellSelectionToMatrix(selection: CellSelection): {
 
 /**
  * True when the selection lives entirely inside one "plain text" parent
- * (table cell, partial code/math, or a single paragraph/heading).
+ * (table cell, text inside code/math, or a single paragraph/heading).
  *
- * Whole formula / whole code-block selections return false so the clipboard
- * gets Markdown wrappers (`$…$`, fences). Partial interior selections stay
- * raw (LaTeX body, code body only).
+ * Whole-node selections return false so the clipboard gets Markdown wrappers
+ * (`$…$`, fences). Text selections inside math/code stay raw, even when they
+ * cover the full inner content.
  */
 export function selectionPrefersPlainText(view: EditorView): boolean {
   const { selection } = view.state;
@@ -278,14 +259,6 @@ export function selectionPrefersPlainText(view: EditorView): boolean {
 
   if (isPartialInsideWrapperParent(selection)) {
     return true;
-  }
-
-  // Full content of a wrapper parent → Markdown with wrappers.
-  if (isWholeNodeSelection(selection)) {
-    const parentName = selection.$from.parent.type.name;
-    if (WRAPPER_CONTENT_PARENTS.has(parentName)) {
-      return false;
-    }
   }
 
   const { $from, $to } = selection;
@@ -375,7 +348,11 @@ export function buildClipboardPayload(view: EditorView): {
     }
   }
 
-  if (selectionPrefersPlainText(view)) {
+  // Mixed paragraph selections that include math need Markdown delimiters;
+  // plain text would silently drop `$…$` and break the formula when pasted.
+  const mathNeedsMarkdown =
+    containsNodeType(content, 'inlineMath') && !isPartialInsideWrapperParent(selection);
+  if (selectionPrefersPlainText(view) && !mathNeedsMarkdown) {
     const plain = plainBetween || extractLeafPlainText(content) || markdown;
     return { plain, html: null, markdown: null };
   }

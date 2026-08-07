@@ -71,6 +71,16 @@ npm install
 npm run dev
 ```
 
+## 测试
+
+```bash
+npm test
+```
+
+`npm test` 会依次运行单元测试和 Markdown 夹具测试。夹具位于 `tests/fixtures/markdown/`，覆盖基础语法、数学公式、缩进/围栏代码块、原始 HTML、货币与转义美元、字面 token 文本、论文式 LaTeX 代码块等容易出问题的输入。
+
+GitHub Actions 的 Release workflow 也会先运行 `npm test`；测试全部通过后才会构建并发布 `.deb`、`.AppImage` 和 `.exe`。
+
 ## 构建应用
 
 ### Windows

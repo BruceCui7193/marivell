@@ -2423,12 +2423,20 @@
 .source-editor__highlight {
   position: absolute;
   inset: 0;
-  z-index: 0;
+  z-index: 2;
   pointer-events: none;
   user-select: none;
   overflow: hidden;
   color: var(--ui-text);
   background: transparent;
+}
+
+.source-editor__highlight-content {
+  display: inline-block;
+  min-width: 100%;
+  vertical-align: top;
+  transform-origin: 0 0;
+  will-change: transform;
 }
 
 .source-editor__input {
@@ -2456,14 +2464,15 @@
 }
 
 .source-editor__input::selection {
-  /* Opaque-enough mix so syntax colors do not muddy through the selection. */
-  background: color-mix(in srgb, var(--ui-accent) 38%, var(--ui-editor-bg));
+  /* Keep the highlighted text above the native selection background so
+     selected source text stays readable instead of becoming an opaque block. */
+  background: color-mix(in srgb, var(--ui-accent) 24%, transparent);
   color: transparent;
   -webkit-text-fill-color: transparent;
 }
 
 .source-editor__input::-moz-selection {
-  background: color-mix(in srgb, var(--ui-accent) 38%, var(--ui-editor-bg));
+  background: color-mix(in srgb, var(--ui-accent) 24%, transparent);
   color: transparent;
 }
 

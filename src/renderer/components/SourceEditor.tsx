@@ -82,6 +82,7 @@ const SourceEditor = forwardRef<HTMLTextAreaElement, SourceEditorProps>(function
 ) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const highlightRef = useRef<HTMLPreElement | null>(null);
+  const highlightContentRef = useRef<HTMLSpanElement | null>(null);
   const gutterRef = useRef<HTMLDivElement | null>(null);
   const [highlightHtml, setHighlightHtml] = useState(() => highlightMarkdownSource(value));
   const highlightTimerRef = useRef<number | null>(null);
@@ -122,9 +123,10 @@ const SourceEditor = forwardRef<HTMLTextAreaElement, SourceEditorProps>(function
   const syncScroll = useCallback(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
-    if (highlightRef.current) {
-      highlightRef.current.scrollTop = textarea.scrollTop;
-      highlightRef.current.scrollLeft = textarea.scrollLeft;
+    // Move only the highlighted text layer; the textarea remains the sole
+    // scroll container, so selection and text cannot drift out of sync.
+    if (highlightContentRef.current) {
+      highlightContentRef.current.style.transform = `translate3d(${-textarea.scrollLeft}px, ${-textarea.scrollTop}px, 0)`;
     }
     if (gutterRef.current) {
       gutterRef.current.scrollTop = textarea.scrollTop;
@@ -206,8 +208,13 @@ const SourceEditor = forwardRef<HTMLTextAreaElement, SourceEditorProps>(function
           aria-hidden="true"
           className="source-editor__highlight"
           ref={highlightRef}
-          dangerouslySetInnerHTML={{ __html: highlightHtml || '<br />' }}
-        />
+        >
+          <span
+            className="source-editor__highlight-content"
+            ref={highlightContentRef}
+            dangerouslySetInnerHTML={{ __html: highlightHtml || '<br />' }}
+          />
+        </pre>
         <textarea
           ref={setTextareaNode}
           className="source-editor__input"

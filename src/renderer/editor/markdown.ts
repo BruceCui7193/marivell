@@ -20,41 +20,164 @@ interface MathPlaceholder {
   value: string;
   openDelim: string;
   closeDelim: string;
+  raw?: string;
 }
 
 function normalizeMathDelimiters(markdown: string): {
   markdown: string;
   placeholders: Map<string, MathPlaceholder>;
 } {
-  const placeholders: string[] = [];
   const mathPlaceholders = new Map<string, MathPlaceholder>();
+  const codePlaceholders: string[] = [];
 
-  const protect = (pattern: RegExp, input: string): string =>
+  let nonce = Math.random().toString(36).slice(2, 10);
+  let tokenPrefix = `\uE000MDMATH_${nonce}_`;
+  while (markdown.includes(tokenPrefix) || markdown.includes('\uE001')) {
+    nonce = Math.random().toString(36).slice(2, 10);
+    tokenPrefix = `\uE000MDMATH_${nonce}_`;
+  }
+
+  let codeNonce = Math.random().toString(36).slice(2, 10);
+  let codeTokenPrefix = `\uE000MDCODE_${codeNonce}_`;
+  while (markdown.includes(codeTokenPrefix) || markdown.includes('\uE002')) {
+    codeNonce = Math.random().toString(36).slice(2, 10);
+    codeTokenPrefix = `\uE000MDCODE_${codeNonce}_`;
+  }
+
+  const protectCode = (pattern: RegExp, input: string): string =>
     input.replace(pattern, (match) => {
-      const token = `@@MARKDOWN_EDITOR_TOKEN_${placeholders.length}@@`;
-      placeholders.push(match);
+      const token = `${codeTokenPrefix}${codePlaceholders.length}\uE002`;
+      codePlaceholders.push(match);
       return token;
     });
 
-  const createMathToken = (kind: 'inline' | 'block', value: string, openDelim: string, closeDelim: string): string => {
-    const token = `@@MARKDOWN_EDITOR_MATH_${mathPlaceholders.size}@@`;
-    mathPlaceholders.set(token, { kind, value, openDelim, closeDelim });
-    return kind === 'block' ? `\n${token}\n` : token;
+  const protectFencedCodeBlocks = (input: string, fenceChar: '`' | '~'): string => {
+    const lines = input.split('\n');
+    const openingPattern = fenceChar === '`' ? /^( {0,3})(`{3,})/ : /^( {0,3})(~{3,})/;
+    const closingPattern =
+      fenceChar === '`' ? /^( {0,3})(`{3,})\s*$/ : /^( {0,3})(~{3,})\s*$/;
+    const result: string[] = [];
+    let index = 0;
+
+    while (index < lines.length) {
+      const line = lines[index] ?? '';
+      const opening = line.match(openingPattern);
+      if (!opening) {
+        result.push(line);
+        index += 1;
+        continue;
+      }
+
+      const fenceLength = opening[2]!.length;
+      const start = index;
+      let end = index + 1;
+      let closed = false;
+      while (end < lines.length) {
+        const closing = (lines[end] ?? '').match(closingPattern);
+        if (closing && closing[2]!.length >= fenceLength) {
+          closed = true;
+          end += 1;
+          break;
+        }
+        end += 1;
+      }
+
+      if (!closed) {
+        result.push(line);
+        index += 1;
+        continue;
+      }
+
+      const block = lines.slice(start, end).join('\n');
+      const token = `${codeTokenPrefix}${codePlaceholders.length}\uE002`;
+      codePlaceholders.push(block);
+      result.push(token);
+      index = end;
+    }
+
+    return result.join('\n');
+  };
+
+  const protectIndentedCodeBlocks = (input: string): string => {
+    const lines = input.split('\n');
+    const isIndentedCodeLine = (line: string) => /^(?: {4}|\t)/.test(line);
+    let index = 0;
+
+    while (index < lines.length) {
+      const previous = index === 0 ? '' : lines[index - 1] ?? '';
+      if (isIndentedCodeLine(lines[index] ?? '') && previous.trim() === '') {
+        const start = index;
+        let end = index;
+        let sawCode = false;
+
+        while (end < lines.length) {
+          const line = lines[end] ?? '';
+          if (line.trim() === '') {
+            end += 1;
+            continue;
+          }
+          if (!isIndentedCodeLine(line)) {
+            break;
+          }
+          sawCode = true;
+          end += 1;
+        }
+
+        if (sawCode) {
+          const blockEnd = end - 1;
+          const block = lines.slice(start, blockEnd + 1).join('\n');
+          const token = `${codeTokenPrefix}${codePlaceholders.length}\uE002`;
+          codePlaceholders.push(block);
+          lines.splice(start, blockEnd - start + 1, token);
+          index = start + 1;
+          continue;
+        }
+      }
+
+      index += 1;
+    }
+
+    return lines.join('\n');
+  };
+
+  const createMathToken = (
+    kind: 'inline' | 'block',
+    value: string,
+    openDelim: string,
+    closeDelim: string,
+    rawSource?: string,
+  ): string => {
+    const token = `${tokenPrefix}${mathPlaceholders.size}\uE001`;
+    mathPlaceholders.set(token, { kind, value, openDelim, closeDelim, raw: rawSource });
+    return token;
   };
 
   let normalized = markdown;
-  normalized = protect(/```[\s\S]*?```/g, normalized);
-  normalized = protect(/~~~[\s\S]*?~~~/g, normalized);
-  normalized = protect(/`[^`\n]+`/g, normalized);
+  normalized = protectFencedCodeBlocks(normalized, '`');
+  normalized = protectFencedCodeBlocks(normalized, '~');
+  normalized = protectCode(/`[^`\n]+`/g, normalized);
+  normalized = protectIndentedCodeBlocks(normalized);
   normalized = normalizeBlockMathPairs(normalized, '\\[', '\\]', createMathToken, '\\[', '\\]');
   normalized = normalizeBlockMathPairs(normalized, '$$', '$$', createMathToken, '$$', '$$');
   normalized = normalizeInlineMathPairs(normalized, '\\(', '\\)', createMathToken, '\\(', '\\)');
   normalized = normalizeInlineMathPairs(normalized, '$', '$', createMathToken, '$', '$');
 
+  let restored = normalized;
+  let restorePasses = 0;
+  while (restored.includes(codeTokenPrefix)) {
+    for (let index = 0; index < codePlaceholders.length; index += 1) {
+      restored = restored
+        .split(`${codeTokenPrefix}${index}\uE002`)
+        .join(codePlaceholders[index] ?? '');
+    }
+    restorePasses += 1;
+    if (restorePasses > 100) {
+      break;
+    }
+  }
+
   return {
-    markdown: normalized.replace(/@@MARKDOWN_EDITOR_TOKEN_(\d+)@@/g, (_match, index) => {
-      return placeholders[Number(index)] ?? '';
-    }),
+    markdown: restored,
     placeholders: mathPlaceholders,
   };
 }
@@ -63,7 +186,13 @@ function normalizeBlockMathPairs(
   markdown: string,
   open: string,
   close: string,
-  createMathToken: (kind: 'inline' | 'block', value: string, openDelim: string, closeDelim: string) => string,
+  createMathToken: (
+    kind: 'inline' | 'block',
+    value: string,
+    openDelim: string,
+    closeDelim: string,
+    rawSource?: string,
+  ) => string,
   openDelim: string,
   closeDelim: string,
 ): string {
@@ -85,7 +214,13 @@ function normalizeBlockMathPairs(
     }
 
     const expression = markdown.slice(cursor + open.length, closeIndex).trim();
-    result += createMathToken('block', expression, openDelim, closeDelim);
+    result += createMathToken(
+      'block',
+      expression,
+      openDelim,
+      closeDelim,
+      markdown.slice(cursor, closeIndex + close.length),
+    );
     cursor = closeIndex + close.length;
   }
 
@@ -121,7 +256,13 @@ function normalizeInlineMathPairs(
   markdown: string,
   open: string,
   close: string,
-  createMathToken: (kind: 'inline' | 'block', value: string, openDelim: string, closeDelim: string) => string,
+  createMathToken: (
+    kind: 'inline' | 'block',
+    value: string,
+    openDelim: string,
+    closeDelim: string,
+    rawSource?: string,
+  ) => string,
   openDelim: string,
   closeDelim: string,
 ): string {
@@ -183,7 +324,13 @@ function normalizeInlineMathPairs(
       continue;
     }
 
-    result += createMathToken('inline', expression, openDelim, closeDelim);
+    result += createMathToken(
+      'inline',
+      expression,
+      openDelim,
+      closeDelim,
+      markdown.slice(cursor, closeIndex + close.length),
+    );
     cursor = closeIndex + close.length;
   }
 
@@ -212,25 +359,33 @@ function splitTextWithMathPlaceholders(
   text: string,
   placeholders: Map<string, MathPlaceholder>,
 ): JSONContent[] {
-  const tokenPattern = /@@MARKDOWN_EDITOR_MATH_\d+@@/g;
+  const tokens = [...placeholders.keys()].sort((a, b) => b.length - a.length);
   const parts: JSONContent[] = [];
   let lastIndex = 0;
 
-  for (const match of text.matchAll(tokenPattern)) {
-    const token = match[0];
-    const start = match.index ?? 0;
-    if (start > lastIndex) {
+  while (lastIndex < text.length) {
+    let nextIndex = -1;
+    let nextToken = '';
+    for (const token of tokens) {
+      const index = text.indexOf(token, lastIndex);
+      if (index !== -1 && (nextIndex === -1 || index < nextIndex)) {
+        nextIndex = index;
+        nextToken = token;
+      }
+    }
+    if (nextIndex === -1) {
+      break;
+    }
+
+    if (nextIndex > lastIndex) {
       parts.push({
         type: 'text',
-        text: text.slice(lastIndex, start),
+        text: text.slice(lastIndex, nextIndex),
       });
     }
 
-    const placeholder = placeholders.get(token);
+    const placeholder = placeholders.get(nextToken);
     if (placeholder) {
-      // Both inline and block placeholders become inlineMath nodes. Block math
-      // uses display="yes". Never leave raw @@MARKDOWN_EDITOR_MATH_*@@ tokens
-      // in the document — that was a major mode-switch corruption source.
       parts.push({
         type: 'inlineMath',
         attrs: {
@@ -240,14 +395,9 @@ function splitTextWithMathPlaceholders(
         },
         content: placeholder.value ? [{ type: 'text', text: placeholder.value }] : undefined,
       });
-    } else {
-      parts.push({
-        type: 'text',
-        text: token,
-      });
     }
 
-    lastIndex = start + token.length;
+    lastIndex = nextIndex + nextToken.length;
   }
 
   if (lastIndex < text.length) {
@@ -273,14 +423,67 @@ function getBlockMathPlaceholder(node: MarkdownNode, placeholders: Map<string, M
   // Use regex to extract the math token, so surrounding text
   // (e.g. selection markers) doesn't break the lookup.
   const text = String(children[0].value ?? '').trim();
-  const match = text.match(/@@MARKDOWN_EDITOR_MATH_\d+@@/);
-  if (!match) {
+  const token = [...placeholders.keys()].find((candidate) => text.includes(candidate));
+  if (!token) {
     return null;
   }
 
-  const token = match[0];
   const placeholder = placeholders.get(token);
   return placeholder?.kind === 'block' ? placeholder : null;
+}
+
+function restoreLeakedMathText(value: string, placeholders: Map<string, MathPlaceholder>): string {
+  let restored = value;
+  for (const [token, placeholder] of placeholders) {
+    restored = restored.split(token).join(
+      placeholder.raw ??
+        `${placeholder.openDelim}${placeholder.value}${placeholder.closeDelim}`,
+    );
+  }
+  return restored;
+}
+
+function restoreLeakedMathTokens(
+  content: JSONContent[],
+  placeholders: Map<string, MathPlaceholder>,
+): JSONContent[] {
+  return content.map((node) => {
+    let next = node;
+
+    if (node.type === 'text' && typeof node.text === 'string') {
+      const restored = restoreLeakedMathText(node.text, placeholders);
+      if (restored !== node.text) {
+        next = { ...next, text: restored };
+      }
+    }
+
+    if (node.attrs && typeof node.attrs === 'object') {
+      const attrs: Record<string, unknown> = { ...node.attrs };
+      let changed = false;
+      for (const key of ['html', 'code', 'value', 'latex']) {
+        const value = attrs[key];
+        if (typeof value === 'string') {
+          const restored = restoreLeakedMathText(value, placeholders);
+          if (restored !== value) {
+            attrs[key] = restored;
+            changed = true;
+          }
+        }
+      }
+      if (changed) {
+        next = { ...next, attrs };
+      }
+    }
+
+    if (Array.isArray(next.content)) {
+      next = {
+        ...next,
+        content: restoreLeakedMathTokens(next.content, placeholders),
+      };
+    }
+
+    return next;
+  });
 }
 
 function collectDefinitions(root: MarkdownNode): DefinitionContext {
@@ -629,7 +832,7 @@ function getMathValue(node: JSONContent): string {
   }
   // Strip any leftover normalizer placeholder tokens that may have leaked
   // into the text content (can happen with malformed math delimiters).
-  return value.replace(/@@MARKDOWN_EDITOR_MATH_\d+@@/g, '');
+  return value.replace(/\uE000MDMATH_[a-z0-9]+_\d+\uE001/g, '');
 }
 
 function inlineToMarkdown(node: JSONContent): MarkdownNode[] {
@@ -840,11 +1043,12 @@ export function parseMarkdown(markdown: string): JSONContent {
   const tree = parser.parse(normalized.markdown) as MarkdownNode;
   const context = collectDefinitions(tree);
   const content = flowChildrenToTiptap(tree.children ?? [], context, normalized.placeholders);
+  const restoredContent = restoreLeakedMathTokens(content, normalized.placeholders);
 
   const doc = {
     type: 'doc',
-    content: content.length
-      ? content
+    content: restoredContent.length
+      ? restoredContent
       : [
           {
             type: 'paragraph',
@@ -987,7 +1191,13 @@ function stringifyBlockNode(node: MarkdownNode): string {
         .join('\n');
     }
     case 'code':
-      return `\`\`\`${node.lang ?? ''}\n${String(node.value ?? '')}\n\`\`\``;
+      {
+        const value = String(node.value ?? '');
+        const runs = value.match(/`+/g) ?? [];
+        const fenceLength = Math.max(3, ...runs.map((run) => run.length)) + 1;
+        const fence = '`'.repeat(fenceLength);
+        return `${fence}${node.lang ?? ''}\n${value}\n${fence}`;
+      }
     case 'math': {
       const val = String(node.value ?? '');
       const open = String((node as any).openDelim || '$$');

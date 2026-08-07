@@ -17,6 +17,8 @@ import { calculateDocumentStats } from '../../src/renderer/editor/utils/helpers.
 import { extractOutline } from '../../src/renderer/utils/document.ts';
 import { markdownToExportHtmlFragment } from '../../src/main/export/markdown-to-html.ts';
 import {
+  isPartialInsideWrapperParent,
+  isWholeNodeSelection,
   serializeSliceForClipboard,
   tableMatrixToHtml,
   tableMatrixToMarkdown,
@@ -100,6 +102,37 @@ a+b
 
   const mathOut = serializeMarkdown(parseMarkdown('See $E=mc^2$ here\n'));
   assert('real math survives', mathOut.includes('E=mc^2') || mathOut.includes('$E=mc^2$'));
+
+  const indentedCodeMath = serializeMarkdown(
+    parseMarkdown('Before\n\n    $x^2 + y^2 = z^2$\n\nAfter\n'),
+  );
+  assert(
+    'indented code math stays raw',
+    !indentedCodeMath.includes('MARKDOWN_EDITOR') && indentedCodeMath.includes('$x^2 + y^2 = z^2$'),
+  );
+
+  const indentedCodeNested = serializeMarkdown(
+    parseMarkdown('Before\n\n    `$a$` and $b$\n\nAfter\n'),
+  );
+  assert(
+    'indented code nested markers stay raw',
+    !indentedCodeNested.includes('MARKDOWN_EDITOR') &&
+      indentedCodeNested.includes('`$a$` and $b$'),
+  );
+
+  const htmlWithMath = serializeMarkdown(parseMarkdown('<div>\n$a+b$\n</div>\n'));
+  assert(
+    'html math stays raw',
+    !htmlWithMath.includes('MARKDOWN_EDITOR') && htmlWithMath.includes('$a+b$'),
+  );
+
+  const literalToken = serializeMarkdown(
+    parseMarkdown('literal @@MARKDOWN_EDITOR_MATH_0@@ text\n'),
+  );
+  assert(
+    'literal token-like text is preserved',
+    literalToken.includes('@@MARKDOWN_EDITOR_MATH_0@@'),
+  );
 
   const empty = serializeMarkdown(parseMarkdown(''));
   assert('empty document serializes', typeof empty === 'string');
@@ -293,6 +326,48 @@ graph LR
 section('clipboard slice serializer');
 
 {
+  const codeParent = { type: { name: 'codeBlock' }, content: { size: 12 } };
+  const codeTextSelection = {
+    empty: false,
+    $from: {
+      parent: codeParent,
+      parentOffset: 0,
+    },
+    $to: {
+      parent: codeParent,
+      parentOffset: 12,
+    },
+  } as Parameters<typeof isPartialInsideWrapperParent>[0];
+  assert(
+    'full inner code text selection stays raw',
+    isPartialInsideWrapperParent(codeTextSelection),
+  );
+  assert(
+    'full inner code text selection is not a whole-node selection',
+    !isWholeNodeSelection(codeTextSelection),
+  );
+
+  const mathParent = { type: { name: 'inlineMath' }, content: { size: 6 } };
+  const mathTextSelection = {
+    empty: false,
+    $from: {
+      parent: mathParent,
+      parentOffset: 0,
+    },
+    $to: {
+      parent: mathParent,
+      parentOffset: 6,
+    },
+  } as Parameters<typeof isPartialInsideWrapperParent>[0];
+  assert(
+    'full inner math text selection stays raw',
+    isPartialInsideWrapperParent(mathTextSelection),
+  );
+  assert(
+    'full inner math text selection is not a whole-node selection',
+    !isWholeNodeSelection(mathTextSelection),
+  );
+
   const openSlice = {
     content: {
       toJSON: () => [{ type: 'paragraph', content: [{ type: 'text', text: 'cell' }] }],
