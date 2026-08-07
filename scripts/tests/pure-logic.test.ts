@@ -200,11 +200,19 @@ section('liquid glass configuration');
   );
   assert(
     'liquid glass uses stronger blur than the upstream default',
-    LIQUID_GLASS_CONFIG.blurAmount >= 1.5,
+    LIQUID_GLASS_CONFIG.blurAmount >= 5,
   );
   assert(
     'liquid glass uses thicker glass than the upstream default',
-    LIQUID_GLASS_CONFIG.glassThickness >= 100,
+    LIQUID_GLASS_CONFIG.glassThickness >= 150,
+  );
+  assert(
+    'liquid glass keeps enough map resolution for larger surfaces',
+    LIQUID_GLASS_CONFIG.maxMapSize >= 512,
+  );
+  assert(
+    'liquid glass edge highlights are strong enough to distinguish from frosted glass',
+    LIQUID_GLASS_CONFIG.specularOpacity >= 0.6,
   );
   const requiredSurfaces = [
     '.toolbar',

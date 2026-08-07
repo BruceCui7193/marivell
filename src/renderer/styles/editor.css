@@ -3130,15 +3130,20 @@
 }
 
 
-/* Liquid glass uses native backdrop blur plus a per-surface specular overlay. */
+/* Liquid glass renders through a real layer so portal menus use the same pipeline. */
 :root[data-glass-effect='liquid'] [data-liquid-glass] {
   border-color: var(--glass-border);
   background-color: transparent;
   background-image: none;
-  -webkit-backdrop-filter: blur(var(--liquid-glass-blur, 14px)) saturate(170%) brightness(1.04);
-  backdrop-filter: blur(var(--liquid-glass-blur, 14px)) saturate(170%) brightness(1.04);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
   isolation: isolate;
   box-shadow: var(--liquid-glass-outer-shadow, var(--glass-shadow));
+}
+
+:root[data-glass-effect='liquid'] [data-liquid-glass] > :not(.liquid-glass-layer) {
+  position: relative;
+  z-index: 1;
 }
 
 :root[data-glass-effect='liquid'] [data-liquid-glass]::before {
@@ -3155,17 +3160,7 @@
 }
 
 :root[data-glass-effect='liquid'] [data-liquid-glass]::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  border-radius: inherit;
-  background-image: var(--liquid-glass-specular, none);
-  background-repeat: no-repeat;
-  background-size: 100% 100%;
-  mix-blend-mode: screen;
-  pointer-events: none;
-  opacity: var(--liquid-glass-specular-opacity, 0.35);
+  display: none;
 }
 
 :root[data-glass-effect='liquid'] .toolbar__group {
@@ -3177,7 +3172,7 @@
 :root[data-glass-effect='liquid'] .sidebar,
 :root[data-glass-effect='liquid'] .status-bar {
   position: relative;
-  z-index: 0;
+  z-index: 1;
 }
 
 :root[data-glass-effect='liquid'] .toolbar__group:hover {
