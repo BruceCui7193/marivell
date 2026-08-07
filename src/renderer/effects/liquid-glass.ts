@@ -273,6 +273,18 @@ function isSurfaceVisible(element: HTMLElement): boolean {
   return rect.width >= 12 && rect.height >= 12;
 }
 
+function getEffectiveZIndex(element: HTMLElement): number {
+  let current: HTMLElement | null = element;
+  while (current) {
+    const value = Number.parseFloat(getComputedStyle(current).zIndex);
+    if (Number.isFinite(value)) {
+      return value;
+    }
+    current = current.parentElement;
+  }
+  return 0;
+}
+
 function ensureSvg(): void {
   if (state.svg && state.defs) {
     return;
@@ -402,7 +414,7 @@ function updateSurface(element: HTMLElement): void {
   }
   const filter = `url("#${record.filterId}")`;
   const surfaceStyle = getComputedStyle(element);
-  const surfaceZ = Number.parseFloat(surfaceStyle.zIndex) || 0;
+  const surfaceZ = getEffectiveZIndex(element);
   layer.style.position = 'fixed';
   layer.style.left = `${rect.left}px`;
   layer.style.top = `${rect.top}px`;
