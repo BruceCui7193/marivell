@@ -13,7 +13,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "test": "npm run test:unit && npm run test:fixtures",
-    "test:unit": "tsx scripts/tests/pure-logic.test.ts && tsx scripts/tests/editor-mode-switch.test.ts && tsx scripts/tests/editor-history.test.ts && tsx scripts/tests/mode-edit.test.ts && tsx scripts/tests/math-clipboard.test.ts && tsx scripts/tests/workflow-stress.test.ts && tsx scripts/tests/workflow-deep.test.ts && tsx scripts/tests/linux-mime.test.ts",
+    "test:unit": "tsx scripts/tests/pure-logic.test.ts && tsx scripts/tests/editor-mode-switch.test.ts && tsx scripts/tests/editor-history.test.ts && tsx scripts/tests/mode-edit.test.ts && tsx scripts/tests/math-clipboard.test.ts && tsx scripts/tests/workflow-stress.test.ts && tsx scripts/tests/workflow-deep.test.ts && tsx scripts/tests/logic-edge.test.ts && tsx scripts/tests/linux-mime.test.ts",
     "test:fixtures": "tsx scripts/tests/markdown-fixtures.test.ts",
     "build": "electron-vite build && electron-builder --config electron-builder.config.mjs",
     "build:linux": "electron-vite build && electron-builder --linux --config electron-builder.config.mjs --publish never",
