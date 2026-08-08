@@ -227,8 +227,8 @@ export const MathInline = Node.create({
         (value = '') =>
         ({ state, tr, dispatch }) => {
           const mathNode = state.schema.nodes.inlineMath?.create(
-            { display: 'yes', openDelim: '$', closeDelim: '$' },
-            value ? state.schema.text(value) : state.schema.text('\n')
+            { display: 'yes', openDelim: '$$', closeDelim: '$$' },
+            value ? state.schema.text(value) : undefined
           );
           if (!mathNode) {
             return false;
@@ -357,8 +357,7 @@ export const MathInline = Node.create({
 
         return this.editor.commands.command(({ tr, dispatch }) => {
           const node = state.schema.nodes.inlineMath?.create(
-            { display: 'yes', openDelim: '$', closeDelim: '$' },
-            state.schema.text('\n')
+            { display: 'yes', openDelim: '$$', closeDelim: '$$' }
           );
           if (!node) {
             return false;
@@ -411,8 +410,8 @@ export const MathInline = Node.create({
           const value = String(match[1] ?? '').trim();
 
           const mathNode = this.editor.state.schema.nodes.inlineMath?.create(
-            { display: 'yes', openDelim: '$', closeDelim: '$' },
-            value ? this.editor.state.schema.text(value) : this.editor.state.schema.text('\n')
+            { display: 'yes', openDelim: '$$', closeDelim: '$$' },
+            value ? this.editor.state.schema.text(value) : undefined
           );
           if (!mathNode) return;
 

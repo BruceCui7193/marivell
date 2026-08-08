@@ -211,6 +211,13 @@ function insertContentDirect(editor: any, content: JSONContent[]): boolean {
   ) {
     // e.g. pasting a heading into a paragraph: still open so text merges when possible.
     slice = new Slice(fragment, 1, 1);
+  } else if (
+    fragment.childCount === 1 &&
+    fragment.firstChild?.type.name === 'inlineMath'
+  ) {
+    // Whole math nodes must not be opened; that would strip $ / $$ wrappers
+    // and paste only the raw LaTeX body as plain text.
+    slice = new Slice(fragment, 0, 0);
   } else {
     // Multi-block (or block-level) paste: open edges as far as the structure allows.
     slice = Slice.maxOpen(fragment, true);

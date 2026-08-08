@@ -53,9 +53,9 @@ export const TypingShortcuts = Extension.create({
 
             const node = mathType.create({
               display: 'yes',
-              openDelim: trimmed === '\\[' ? '\\[' : '$',
-              closeDelim: trimmed === '\\[' ? '\\]' : '$',
-            }, state.schema.text('\n'));
+              openDelim: trimmed === '\\[' ? '\\[' : '$$',
+              closeDelim: trimmed === '\\[' ? '\\]' : '$$',
+            });
 
             if (dispatch) {
               tr = tr.replaceWith(from, to, node);
