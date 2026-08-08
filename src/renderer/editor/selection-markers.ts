@@ -2,6 +2,58 @@ import type { JSONContent } from '@tiptap/core';
 import { NodeSelection, TextSelection, type EditorState } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
 import type { Mark as ProseMirrorMark, Node as ProseMirrorNode, Schema } from '@tiptap/pm/model';
+import { unified } from 'unified';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import remarkParse from 'remark-parse';
+
+const sourceParser = unified()
+  .use(remarkParse)
+  .use(remarkGfm)
+  .use(remarkMath, { singleDollarTextMath: true });
+
+type SourceNode = Record<string, any>;
+
+function findNearestTextOffset(markdown: string, requested: number): number {
+  let best = requested;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  const visit = (node: SourceNode): void => {
+    if (
+      typeof node.value === 'string' &&
+      !Array.isArray(node.children) &&
+      node.position?.start?.offset != null &&
+      node.position?.end?.offset != null
+    ) {
+      let start = node.position.start.offset;
+      let end = node.position.end.offset;
+      if (end - start !== node.value.length) {
+        const valueIndex = markdown.indexOf(node.value);
+        if (valueIndex >= 0) {
+          start = valueIndex;
+          end = valueIndex + node.value.length;
+        }
+      }
+      if (end > start) {
+        const clamped = Math.min(end, Math.max(start, requested));
+        const distance = Math.abs(clamped - requested);
+        if (distance < bestDistance || (distance === bestDistance && clamped < best)) {
+          best = clamped;
+          bestDistance = distance;
+        }
+      }
+    }
+
+    if (Array.isArray(node.children)) {
+      for (const child of node.children) {
+        visit(child);
+      }
+    }
+  };
+
+  visit(sourceParser.parse(markdown) as SourceNode);
+  return best;
+}
 
 export const SELECTION_START_MARKER = 'MDEDITORSELECTIONSTARTTOKEN';
 export const SELECTION_END_MARKER = 'MDEDITORSELECTIONENDTOKEN';
@@ -65,30 +117,36 @@ export function insertSelectionMarkersIntoMarkdown(
   start: number,
   end: number,
 ): string {
-  const selectionStart = Math.max(0, Math.min(start, markdown.length));
-  const selectionEnd = Math.max(selectionStart, Math.min(end, markdown.length));
+  const clampedStart = Math.max(0, Math.min(start, markdown.length));
+  const clampedEnd = Math.max(clampedStart, Math.min(end, markdown.length));
 
-  // Blockquote lines keep the trailing newline attached to their text node
-  // when markers are placed after it, so an end-of-document caret inside a
-  // blockquote leaks back as an extra empty quoted line. Other trailing block
-  // structures (fences, paragraphs, lists) must keep the old behavior.
-  const trailingLineBreak =
-    markdown.endsWith('\r\n') ? 2 : markdown.endsWith('\n') ? 1 : 0;
-  const previousLine = trailingLineBreak > 0
-    ? markdown.slice(0, markdown.length - trailingLineBreak).split(/\r?\n/).pop()?.trimStart() ?? ''
-    : '';
-  const blockquoteEnd = trailingLineBreak > 0 && /^>/.test(previousLine);
-  const startOffset =
-    selectionStart === markdown.length && blockquoteEnd ? trailingLineBreak : 0;
-  const endOffset =
-    selectionEnd === markdown.length && blockquoteEnd ? trailingLineBreak : 0;
-  const actualStart = selectionStart - startOffset;
-  const actualEnd = selectionEnd - endOffset;
+  // Selection markers must live inside parsed text nodes, not inside Markdown
+  // syntax. Placing them before a list marker, inside a fence, or after a table
+  // row makes the parser absorb them into different structure and can leak
+  // extra rows/columns/quotes back out on mode switch.
+  const selectionStart = findNearestTextOffset(markdown, clampedStart);
+  const selectionEnd = Math.max(
+    selectionStart,
+    findNearestTextOffset(markdown, clampedEnd),
+  );
 
-  return `${markdown.slice(0, actualStart)}${SELECTION_START_MARKER}${markdown.slice(
-    actualStart,
-    actualEnd,
-  )}${SELECTION_END_MARKER}${markdown.slice(actualEnd)}`;
+  // Caret/range at document end after a block whose closing syntax has no text
+  // node (for example a code fence) still needs a separate paragraph line so
+  // the marker cannot be swallowed by the previous block.
+  if (
+    selectionEnd === markdown.length &&
+    (markdown.endsWith('\r\n') || markdown.endsWith('\n'))
+  ) {
+    return `${markdown}\n${SELECTION_START_MARKER}${markdown.slice(
+      selectionStart,
+      selectionEnd,
+    )}${SELECTION_END_MARKER}`;
+  }
+
+  return `${markdown.slice(0, selectionStart)}${SELECTION_START_MARKER}${markdown.slice(
+    selectionStart,
+    selectionEnd,
+  )}${SELECTION_END_MARKER}${markdown.slice(selectionEnd)}`;
 }
 
 export function extractSelectionMarkersFromMarkdown(markdown: string): {
