@@ -1794,6 +1794,22 @@
   gap: 10px;
 }
 
+.editor-surface ul[data-type='taskList'] li > label {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  margin-top: 0.2em;
+}
+
+.editor-surface ul[data-type='taskList'] li > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.editor-surface ul[data-type='taskList'] li > div p {
+  margin: 0;
+}
+
 .editor-surface pre {
   border-radius: 20px;
   background: var(--ui-code);
@@ -2324,44 +2340,55 @@
   font-size: 13px;
 }
 
-.mermaid-node,
-.footnote-definition-node {
+.mermaid-node {
   border: 1px solid var(--ui-border);
   border-radius: 20px;
   background: var(--ui-bg-strong);
   overflow: hidden;
 }
 
-:root[data-theme='dark'] .mermaid-node,
-:root[data-theme='dark'] .footnote-definition-node {
-  background: var(--ui-bg-strong);
+.editor-surface .footnote-definition-node {
+  margin: 0.45rem 0;
+}
+
+.footnote-definition-node {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+  font-size: 0.95rem;
 }
 
 .footnote-definition-node__meta {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 4px;
-  padding: 12px 18px;
-  border-bottom: 1px solid var(--ui-border);
-  font-size: 12px;
-  color: var(--ui-text-soft);
+  display: inline-flex;
+  align-items: baseline;
+  flex: 0 0 auto;
+  gap: 2px;
+  padding: 0;
+  border-bottom: none;
+  font-size: 13px;
+  color: var(--ui-accent);
+  white-space: nowrap;
 }
 
 .footnote-definition-node__label-prefix {
   font-family: "Cascadia Code", "JetBrains Mono", monospace;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
 }
 
 .footnote-definition-node__label-input {
-  min-width: 36px;
-  max-width: 120px;
+  min-width: 24px;
+  max-width: 100px;
   border: none;
   background: transparent;
-  color: var(--ui-text);
+  color: var(--ui-accent);
   font-family: "Cascadia Code", "JetBrains Mono", monospace;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   padding: 0;
   outline: none;
@@ -2373,9 +2400,18 @@
   overflow: hidden;
 }
 
-.mermaid-node__preview,
-.footnote-definition-node__content {
+.mermaid-node__preview {
   padding: 18px;
+}
+
+.footnote-definition-node__content {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+}
+
+.footnote-definition-node__content p {
+  margin: 0;
 }
 
 .mermaid-node__editor {

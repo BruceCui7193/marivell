@@ -38,7 +38,7 @@ export default function FootnoteDefinitionView({ node, updateAttributes }: NodeV
           type="text"
           value={labelDraft}
         />
-        <span className="footnote-definition-node__label-prefix">]</span>
+        <span className="footnote-definition-node__label-prefix">]:</span>
       </div>
       <NodeViewContent className="footnote-definition-node__content" />
     </NodeViewWrapper>
