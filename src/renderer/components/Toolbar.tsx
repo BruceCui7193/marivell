@@ -42,7 +42,7 @@ interface ToolbarButtonProps {
   icon: ComponentProps<typeof Icon>['name'];
   active?: boolean;
   hidden?: boolean;
-  onClick: () => void;
+  onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
   disabled?: boolean;
   panelTrigger?: boolean;
   shortcut?: string;
@@ -237,6 +237,9 @@ function Toolbar({
   const [compactGroupOpen, setCompactGroupOpen] = useState<ToolbarGroupId | null>(null);
   const [menuOpen, setMenuOpen] = useState<'document' | 'edit' | 'view' | null>(null);
   const [menuRect, setMenuRect] = useState<{ left: number; top: number } | null>(null);
+  const [formulaMenuRect, setFormulaMenuRect] = useState<{ left: number; top: number; transformOrigin: string } | null>(null);
+  const [themePanelRect, setThemePanelRect] = useState<{ left: number; top: number; transformOrigin: string } | null>(null);
+  const [linkMenuRect, setLinkMenuRect] = useState<{ left: number; top: number; transformOrigin: string } | null>(null);
   const [formulaMenuOpen, setFormulaMenuOpen] = useState(false);
   const [linkMenuOpen, setLinkMenuOpen] = useState(false);
   const [linkDraft, setLinkDraft] = useState('https://');
@@ -340,6 +343,31 @@ function Toolbar({
     setFormulaMenuOpen(false);
     setLinkMenuOpen(false);
   }, []);
+
+  const getFloatingPanelRect = (
+    rect: DOMRect,
+    width: number,
+    estimatedHeight: number,
+    alignRight = false,
+  ): { left: number; top: number; transformOrigin: string } => {
+    const left = Math.max(
+      8,
+      Math.min(
+        alignRight ? rect.right - width : rect.left,
+        window.innerWidth - width - 8,
+      ),
+    );
+    const belowTop = rect.bottom + 8;
+    const top =
+      belowTop + estimatedHeight > window.innerHeight - 8
+        ? Math.max(8, rect.top - estimatedHeight - 8)
+        : belowTop;
+    return {
+      left,
+      top,
+      transformOrigin: `${top < rect.top ? 'bottom' : 'top'} left`,
+    };
+  };
 
   useEffect(() => {
     if (!editor) {
@@ -566,7 +594,7 @@ function Toolbar({
     editor.chain().focus().insertMathBlock(value).run();
   };
 
-  const openLinkMenu = () => {
+  const openLinkMenu = (event: React.MouseEvent<HTMLButtonElement>) => {
     if (!editor || editingControlsHidden) {
       return;
     }
@@ -576,6 +604,7 @@ function Toolbar({
     const shouldOpen = !linkMenuOpen;
     closeAllPanels(true);
     if (shouldOpen) {
+      setLinkMenuRect(getFloatingPanelRect(event.currentTarget.getBoundingClientRect(), 220, 150));
       setLinkMenuOpen(true);
     }
   };
@@ -904,11 +933,23 @@ function Toolbar({
     );
   };
 
-  const renderThemePanel = () => (
-    <div
-      aria-hidden={!themePanelOpen}
-      className={themePanelOpen ? 'theme-panel is-open' : 'theme-panel is-closed'}
-    >
+  const renderThemePanel = () => {
+    if (!themePanelRect) {
+      return null;
+    }
+
+    return createPortal(
+      <div
+        aria-hidden={!themePanelOpen}
+        className={themePanelOpen ? 'theme-panel is-open is-portaled' : 'theme-panel is-closed is-portaled'}
+        style={{
+          position: 'fixed',
+          left: themePanelRect.left,
+          top: themePanelRect.top,
+          right: 'auto',
+          transformOrigin: themePanelRect.transformOrigin,
+        }}
+      >
       <div className="theme-panel__section">
         <div className="theme-panel__title">{labels.appearanceMode}</div>
         <div className="theme-panel__modes">
@@ -998,8 +1039,10 @@ function Toolbar({
           ))}
         </div>
       </div>
-    </div>
-  );
+      </div>,
+      document.body,
+    );
+  };
 
   const renderMenuTrigger = (menu: 'document' | 'edit' | 'view', label: string) => (
     <div className="toolbar-menu-anchor">
@@ -1158,42 +1201,53 @@ function Toolbar({
             >
               <Icon className="toolbar-button__icon" name="link" />
             </button>
-            <div
-              aria-hidden={!linkMenuOpen}
-              className={linkMenuOpen ? 'toolbar-submenu is-open' : 'toolbar-submenu is-closed'}
-            >
-              <input
-                ref={linkInputRef}
-                className="toolbar-submenu__input"
-                onChange={(event) => setLinkDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    applyLink();
-                  }
+            {linkMenuRect ? createPortal(
+              <div
+                aria-hidden={!linkMenuOpen}
+                className={linkMenuOpen ? 'toolbar-submenu is-open is-portaled' : 'toolbar-submenu is-closed is-portaled'}
+                style={{
+                  position: 'fixed',
+                  left: linkMenuRect.left,
+                  top: linkMenuRect.top,
+                  right: 'auto',
+                  width: 220,
+                  transformOrigin: linkMenuRect.transformOrigin,
                 }}
-                placeholder={labels.linkPlaceholder}
-                spellCheck={false}
-                type="text"
-                value={linkDraft}
-              />
-              <button
-                className="toolbar-submenu__item"
-                onClick={applyLink}
-                onMouseDown={(event) => event.preventDefault()}
-                type="button"
               >
-                {labels.linkApply}
-              </button>
-              <button
-                className="toolbar-submenu__item"
-                onClick={removeLink}
-                onMouseDown={(event) => event.preventDefault()}
-                type="button"
-              >
-                {labels.linkRemove}
-              </button>
-            </div>
+                <input
+                  ref={linkInputRef}
+                  className="toolbar-submenu__input"
+                  onChange={(event) => setLinkDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      applyLink();
+                    }
+                  }}
+                  placeholder={labels.linkPlaceholder}
+                  spellCheck={false}
+                  type="text"
+                  value={linkDraft}
+                />
+                <button
+                  className="toolbar-submenu__item"
+                  onClick={applyLink}
+                  onMouseDown={(event) => event.preventDefault()}
+                  type="button"
+                >
+                  {labels.linkApply}
+                </button>
+                <button
+                  className="toolbar-submenu__item"
+                  onClick={removeLink}
+                  onMouseDown={(event) => event.preventDefault()}
+                  type="button"
+                >
+                  {labels.linkRemove}
+                </button>
+              </div>,
+              document.body,
+            ) : null}
           </div>
           {renderMenuTrigger('edit', labels.editMenu)}
         </>
@@ -1313,10 +1367,11 @@ function Toolbar({
               data-panel-trigger
               data-tooltip={labels.math}
               disabled={!editor}
-              onClick={() => {
+              onClick={(event) => {
                 const shouldOpen = !formulaMenuOpen;
                 closeAllPanels(true);
                 if (shouldOpen) {
+                  setFormulaMenuRect(getFloatingPanelRect(event.currentTarget.getBoundingClientRect(), 170, 120));
                   setFormulaMenuOpen(true);
                 }
               }}
@@ -1326,33 +1381,43 @@ function Toolbar({
             >
               <Icon className="toolbar-button__icon" name="math" />
             </button>
-            <div
-              aria-hidden={!formulaMenuOpen}
-              className={formulaMenuOpen ? 'toolbar-submenu is-open' : 'toolbar-submenu is-closed'}
-            >
-              <button
-                className="toolbar-submenu__item"
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => {
-                  runCompactAction(insertInlineMath);
-                  setFormulaMenuOpen(false);
+            {formulaMenuRect ? createPortal(
+              <div
+                aria-hidden={!formulaMenuOpen}
+                className={formulaMenuOpen ? 'toolbar-submenu is-open is-portaled' : 'toolbar-submenu is-closed is-portaled'}
+                style={{
+                  position: 'fixed',
+                  left: formulaMenuRect.left,
+                  top: formulaMenuRect.top,
+                  right: 'auto',
+                  transformOrigin: formulaMenuRect.transformOrigin,
                 }}
-                type="button"
               >
-                {labels.mathInline}
-              </button>
-              <button
-                className="toolbar-submenu__item"
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => {
-                  runCompactAction(insertBlockMath);
-                  setFormulaMenuOpen(false);
-                }}
-                type="button"
-              >
-                {labels.mathBlock}
-              </button>
-            </div>
+                <button
+                  className="toolbar-submenu__item"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    runCompactAction(insertInlineMath);
+                    setFormulaMenuOpen(false);
+                  }}
+                  type="button"
+                >
+                  {labels.mathInline}
+                </button>
+                <button
+                  className="toolbar-submenu__item"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    runCompactAction(insertBlockMath);
+                    setFormulaMenuOpen(false);
+                  }}
+                  type="button"
+                >
+                  {labels.mathBlock}
+                </button>
+              </div>,
+              document.body,
+            ) : null}
           </div>
           <ToolbarButton
             disabled={!editor}
@@ -1407,10 +1472,11 @@ function Toolbar({
           <ToolbarButton
             active={themePanelOpen || theme !== 'system'}
             icon="appearance"
-            onClick={() => {
+            onClick={(event) => {
               const shouldOpen = !themePanelOpen;
               closeAllPanels(true);
               if (shouldOpen) {
+                setThemePanelRect(getFloatingPanelRect(event.currentTarget.getBoundingClientRect(), 280, 520, layoutMode !== 'compact'));
                 setThemePanelOpen(true);
               }
             }}
