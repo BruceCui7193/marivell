@@ -332,10 +332,14 @@ function getLayerPlacement(element: HTMLElement): LayerPlacement | null {
     host.classList.contains('app-dialog-overlay') ||
     host.classList.contains('settings-dialog-overlay')
   ) {
+    const overlayHost = host.parentElement;
+    if (!overlayHost) {
+      return null;
+    }
     return {
-      host,
-      before: surface,
-      zIndex: String(Math.max(0, surfaceZ - 1)),
+      host: overlayHost,
+      before: host,
+      zIndex: String(Math.max(0, getNumericZIndex(host) - 1)),
     };
   }
   return {
