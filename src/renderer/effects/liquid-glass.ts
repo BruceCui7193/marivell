@@ -667,10 +667,18 @@ function mutationNeedsReconcile(records: MutationRecord[]): boolean {
   return false;
 }
 
+function scheduleAllSurfaces(): void {
+  for (const element of state.entries.keys()) {
+    schedule(element);
+  }
+}
+
 function startObservers(): void {
   if (state.mutationObserver || !document.body) {
     return;
   }
+
+  window.addEventListener('resize', scheduleAllSurfaces);
 
   state.mutationObserver = new MutationObserver((records) => {
     if (mutationNeedsReconcile(records)) {
@@ -697,6 +705,7 @@ function startObservers(): void {
 }
 
 function stopObservers(): void {
+  window.removeEventListener('resize', scheduleAllSurfaces);
   state.mutationObserver?.disconnect();
   state.mutationObserver = null;
   state.resizeObserver?.disconnect();

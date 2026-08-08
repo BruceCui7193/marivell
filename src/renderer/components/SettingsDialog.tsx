@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import clsx from 'clsx';
 import type { AppInfo, FileAssociationStatus, ThemeMode, UpdateCheckResult } from '@shared/contracts';
@@ -131,8 +131,13 @@ function NumberSlider({
   suffix?: string;
   onChange: (value: number) => void;
 }) {
+  const progress = max === min ? 0 : ((value - min) / (max - min)) * 100;
+
   return (
-    <label className="settings-slider">
+    <label
+      className="settings-slider"
+      style={{ '--settings-slider-progress': `${Math.max(0, Math.min(100, progress))}%` } as CSSProperties}
+    >
       <span className="settings-slider__label">{label}</span>
       <input
         max={max}

@@ -23,6 +23,7 @@ import { Editor } from '@tiptap/core';
 import { NodeSelection, TextSelection } from '@tiptap/pm/state';
 import { createEditorExtensions } from '../../src/renderer/editor/create-editor-extensions';
 import { parseMarkdown, serializeMarkdown } from '../../src/renderer/editor/markdown';
+import { buildSourceContextMenu, buildVisualContextMenu } from '../../src/renderer/editor/context-menu-actions';
 import {
   SELECTION_END_MARKER,
   SELECTION_START_MARKER,
@@ -223,6 +224,43 @@ function runMathInsertionFocusTests(): void {
 }
 
 runMathInsertionFocusTests();
+
+function runGoToLineMenuTests(): void {
+  const editor = makeEditor();
+  try {
+    const visualMenu = buildVisualContextMenu({
+      editor,
+      onFind: () => {},
+      onFindReplace: () => {},
+      onInsertImage: () => {},
+      onToggleSource: () => {},
+    });
+    assert(
+      'visual context menu hides go-to-line',
+      !visualMenu.some((item) => item.id === 'goto-line'),
+      JSON.stringify(visualMenu.map((item) => item.id)),
+    );
+  } finally {
+    editor.destroy();
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = 'a\nb\nc\n';
+  const sourceMenu = buildSourceContextMenu({
+    textarea,
+    onFind: () => {},
+    onFindReplace: () => {},
+    onGoToLine: () => {},
+    onToggleVisual: () => {},
+  });
+  assert(
+    'source context menu keeps go-to-line',
+    sourceMenu.some((item) => item.id === 'goto-line'),
+    JSON.stringify(sourceMenu.map((item) => item.id)),
+  );
+}
+
+runGoToLineMenuTests();
 
 console.log(`\n================================================`);
 console.log(`Results: ${passed} passed, ${failed} failed`);

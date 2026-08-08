@@ -217,11 +217,10 @@ export function buildVisualContextMenu(options: {
   editor: Editor;
   onFind: () => void;
   onFindReplace: () => void;
-  onGoToLine?: () => void;
   onInsertImage: () => void;
   onToggleSource: () => void;
 }): ContextMenuEntry[] {
-  const { editor, onFind, onFindReplace, onGoToLine, onToggleSource } = options;
+  const { editor, onFind, onFindReplace, onToggleSource } = options;
   const { empty } = editor.state.selection;
   // onInsertImage kept in signature for call-site stability; not shown in menu.
   void options.onInsertImage;
@@ -285,15 +284,6 @@ export function buildVisualContextMenu(options: {
       onSelect: onFindReplace,
     },
   ];
-
-  if (onGoToLine) {
-    items.push({
-      id: 'goto-line',
-      label: `${translate('goToLine')}…`,
-      shortcut: `${mod}G`,
-      onSelect: onGoToLine,
-    });
-  }
 
   items.push(
     sep('s2'),

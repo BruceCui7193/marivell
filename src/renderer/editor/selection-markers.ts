@@ -230,7 +230,7 @@ export function restoreSelectionMarkersFromEditorState(
   }
 
   blockEntries.sort((left, right) => right.from - left.from);
-  let tr = state.tr;
+  let tr = state.tr.setMeta('addToHistory', false);
   for (const entry of blockEntries) {
     const from = tr.mapping.map(entry.from);
     const to = tr.mapping.map(entry.to);

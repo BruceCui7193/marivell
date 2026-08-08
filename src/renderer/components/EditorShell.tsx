@@ -37,6 +37,7 @@ import {
   buildVisualContextMenu,
 } from '../editor/context-menu-actions';
 import { parseMarkdown, serializeMarkdown } from '../editor/markdown';
+import { replaceEditorContent } from '../editor/replace-editor-content';
 import {
   SELECTION_END_MARKER,
   SELECTION_START_MARKER,
@@ -1155,10 +1156,12 @@ export default function EditorShell({
       return;
     }
 
-    const transaction = editor.state.tr.setNodeMarkup(targetPos, undefined, {
-      ...targetNode.attrs,
-      src: newSrc,
-    });
+    const transaction = editor.state.tr
+      .setNodeMarkup(targetPos, undefined, {
+        ...targetNode.attrs,
+        src: newSrc,
+      })
+      .setMeta('addToHistory', false);
     editor.view.dispatch(transaction.scrollIntoView());
   }, [editor]);
 
@@ -1386,7 +1389,7 @@ export default function EditorShell({
       externalUpdateRef.current = true;
       armSkipNextDocChange();
       visualDocEditedRef.current = false;
-      editor.commands.setContent(content, false);
+      replaceEditorContent(editor, content);
       externalUpdateRef.current = false;
 
       // Keep the file's original markdown as canonical so a load+mode-switch
@@ -1411,7 +1414,7 @@ export default function EditorShell({
       externalUpdateRef.current = true;
       armSkipNextDocChange();
       visualDocEditedRef.current = false;
-      editor.commands.setContent(createEmptyDocument(), false);
+      replaceEditorContent(editor, createEmptyDocument());
       externalUpdateRef.current = false;
       visualMarkdownRef.current = '';
       visualStatsRef.current = emptyStats;
@@ -1976,6 +1979,8 @@ export default function EditorShell({
           pendingSourceSelectionRef.current = selection;
           sourceSelectionRef.current = selection;
           setSourceDraft(markdown);
+          const stats = computeSourceStats(markdown);
+          setLiveStats((currentStats) => (areStatsEqual(currentStats, stats) ? currentStats : stats));
           queueSourcePreview(markdown, selection);
           return true;
         }
@@ -1987,6 +1992,8 @@ export default function EditorShell({
         };
         sourceSelectionRef.current = pendingSourceSelectionRef.current;
         setSourceDraft(fallbackMarkdown);
+        const stats = computeSourceStats(fallbackMarkdown);
+        setLiveStats((currentStats) => (areStatsEqual(currentStats, stats) ? currentStats : stats));
         return true;
       }
 
@@ -2019,7 +2026,7 @@ export default function EditorShell({
         externalUpdateRef.current = true;
         armSkipNextDocChange();
         visualDocEditedRef.current = false;
-        editor.commands.setContent(markedContent, false);
+        replaceEditorContent(editor, markedContent);
         externalUpdateRef.current = false;
 
         pendingVisualSelectionRestoreRef.current = true;
@@ -2089,6 +2096,9 @@ export default function EditorShell({
   }, []);
 
   const handleGoToLine = useCallback(() => {
+    if (!sourceModeRef.current) {
+      return;
+    }
     gotoLineDefaultRef.current = sourceModeRef.current ? String(sourceCursor.line || 1) : '1';
     setGotoLineOpen(true);
   }, [sourceCursor.line]);
@@ -2096,31 +2106,6 @@ export default function EditorShell({
   const jumpToLineNumber = useCallback((raw: string) => {
     const targetLine = Math.max(1, Number.parseInt(raw, 10) || 1);
     if (!sourceModeRef.current) {
-      if (!editor) {
-        return;
-      }
-      let line = 1;
-      let found = 1;
-      editor.state.doc.descendants((node, pos) => {
-        if (line > targetLine) {
-          return false;
-        }
-        if (node.isTextblock) {
-          if (line === targetLine) {
-            found = pos + 1;
-            return false;
-          }
-          line += 1;
-        }
-        return true;
-      });
-      try {
-        const selection = TextSelection.create(editor.state.doc, found);
-        editor.view.dispatch(editor.state.tr.setSelection(selection).scrollIntoView());
-        editor.view.focus();
-      } catch {
-        // ignore
-      }
       return;
     }
 
@@ -2136,7 +2121,7 @@ export default function EditorShell({
       current += 1;
     }
     jumpSourceToOffset(Math.max(0, markdown.length));
-  }, [editor, jumpSourceToOffset]);
+  }, [jumpSourceToOffset]);
 
   const submitGoToLine = useCallback((line: number) => {
     setGotoLineOpen(false);
@@ -2685,13 +2670,12 @@ export default function EditorShell({
           editor,
           onFind: () => openSearchPanel(false),
           onFindReplace: () => openSearchPanel(true),
-          onGoToLine: handleGoToLine,
           onInsertImage: handleInsertImage,
           onToggleSource: () => toggleSourceModeWithTransition(),
         }),
       });
     },
-    [editor, handleGoToLine, handleInsertImage, openSearchPanel, toggleSourceModeWithTransition],
+    [editor, handleInsertImage, openSearchPanel, toggleSourceModeWithTransition],
   );
 
   const handleToggleSidebar = useCallback(() => {
@@ -2912,7 +2896,7 @@ export default function EditorShell({
             const imageNode = editor.state.doc.nodeAt(imagePos);
             if (imageNode) {
               let after = imagePos + imageNode.nodeSize;
-              let transaction = editor.state.tr;
+              let transaction = editor.state.tr.setMeta('addToHistory', false);
               let insertedParagraph = false;
               if (after >= editor.state.doc.content.size) {
                 const paragraph = editor.state.schema.nodes.paragraph?.create();
