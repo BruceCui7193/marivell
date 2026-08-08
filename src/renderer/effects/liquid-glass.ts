@@ -443,6 +443,45 @@ function renderDefs(): void {
     .join('');
 }
 
+function getLayoutPosition(element: HTMLElement): { left: number; top: number } {
+  const offsetParent = element.offsetParent as HTMLElement | null;
+  if (!offsetParent) {
+    return { left: element.offsetLeft, top: element.offsetTop };
+  }
+  const parentRect = offsetParent.getBoundingClientRect();
+  return {
+    left: element.offsetLeft + parentRect.left,
+    top: element.offsetTop + parentRect.top,
+  };
+}
+
+function syncSurfaceAnimation(element: HTMLElement, layer: HTMLElement): void {
+  const animations = element.getAnimations({ subtree: false });
+  for (const animation of animations) {
+    if (animation.playState === 'idle' || animation.playState === 'finished') {
+      continue;
+    }
+    const effect = animation.effect;
+    if (!(effect instanceof KeyframeEffect)) {
+      continue;
+    }
+
+    const layerAnimation = layer.animate(effect.getKeyframes(), {
+      delay: effect.getTiming().delay,
+      duration: effect.getTiming().duration,
+      easing: effect.getTiming().easing,
+      endDelay: effect.getTiming().endDelay,
+      iterationStart: effect.getTiming().iterationStart,
+      iterations: effect.getTiming().iterations,
+      direction: effect.getTiming().direction,
+      fill: effect.getTiming().fill,
+    });
+    if (animation.startTime !== null) {
+      layerAnimation.startTime = animation.startTime;
+    }
+  }
+}
+
 function updateSurface(element: HTMLElement): void {
   const record = state.entries.get(element);
   if (!record) {
@@ -456,8 +495,10 @@ function updateSurface(element: HTMLElement): void {
   }
 
   const rect = element.getBoundingClientRect();
-  const width = Math.round(rect.width);
-  const height = Math.round(rect.height);
+  const surfaceStyle = getComputedStyle(element);
+  const layoutPosition = getLayoutPosition(element);
+  const width = element.offsetWidth || Math.round(rect.width);
+  const height = element.offsetHeight || Math.round(rect.height);
   const radius = Math.max(4, getSurfaceRadius(element));
   const bezelWidth = Math.min(LIQUID_GLASS_CONFIG.bezelWidth, radius - 1, Math.min(width, height) / 2 - 1);
   if (width < 12 || height < 12 || bezelWidth <= 0) {
@@ -480,19 +521,21 @@ function updateSurface(element: HTMLElement): void {
     layer = document.createElement('div');
     layer.className = 'liquid-glass-layer';
     layer.style.pointerEvents = 'none';
+    layer.style.transformOrigin = surfaceStyle.transformOrigin;
     record.layer = layer;
+    syncSurfaceAnimation(element, layer);
   }
   if (layer.parentElement !== placement.host) {
     placement.host.insertBefore(layer, placement.before);
   }
   const filter = `url("#${record.filterId}")`;
-  const surfaceStyle = getComputedStyle(element);
   layer.style.position = 'fixed';
-  layer.style.left = `${rect.left}px`;
-  layer.style.top = `${rect.top}px`;
-  layer.style.width = `${rect.width}px`;
-  layer.style.height = `${rect.height}px`;
+  layer.style.left = `${layoutPosition.left}px`;
+  layer.style.top = `${layoutPosition.top}px`;
+  layer.style.width = `${width}px`;
+  layer.style.height = `${height}px`;
   layer.style.borderRadius = surfaceStyle.borderRadius;
+  layer.style.transformOrigin = surfaceStyle.transformOrigin;
   layer.style.zIndex = placement.zIndex;
   layer.style.backgroundImage = `url("${assets.specular}")`;
   layer.style.backgroundRepeat = 'no-repeat';
