@@ -835,6 +835,8 @@ function applyTextMarks(text: string, marks: NonNullable<JSONContent['marks']> =
       current = { type: 'emphasis', children: [current] };
     } else if (mark.type === 'strike') {
       current = { type: 'delete', children: [current] };
+    } else if (mark.type === 'underline') {
+      current = { type: 'underline', children: [current] };
     } else if (mark.type === 'link') {
       current = {
         type: 'link',
@@ -1063,17 +1065,81 @@ function flowToMarkdown(node: JSONContent): MarkdownNode[] {
   }
 }
 
+const UNDERLINE_DELIMITER_RE = /\+\+([^+]+)\+\+/g;
+
+function splitUnderlineText(text: string, marks: NonNullable<JSONContent['marks']> = []): JSONContent[] {
+  const parts: JSONContent[] = [];
+  let lastIndex = 0;
+  UNDERLINE_DELIMITER_RE.lastIndex = 0;
+
+  for (const match of text.matchAll(UNDERLINE_DELIMITER_RE)) {
+    const index = match.index ?? 0;
+    if (index > lastIndex) {
+      parts.push({ type: 'text', text: text.slice(lastIndex, index), marks });
+    }
+
+    const existingMarks = marks.filter((mark) => mark.type !== 'underline');
+    parts.push({
+      type: 'text',
+      text: match[1] ?? '',
+      marks: [...existingMarks, { type: 'underline' }],
+    });
+    lastIndex = index + match[0].length;
+  }
+
+  if (lastIndex < text.length) {
+    parts.push({ type: 'text', text: text.slice(lastIndex), marks });
+  }
+
+  return parts;
+}
+
+function restoreUnderlineMarks(
+  content: JSONContent[],
+  parentRaw: boolean | null = null,
+): JSONContent[] {
+  const RAW_TEXT_NODES = new Set(['codeBlock', 'htmlBlock', 'inlineMath', 'mermaidBlock', 'image']);
+
+  return content.flatMap((node): JSONContent[] => {
+    if (!node || typeof node !== 'object') {
+      return [node];
+    }
+
+    const raw = parentRaw === true || RAW_TEXT_NODES.has(node.type ?? '');
+
+    if (node.type === 'text' && !raw) {
+      const marks = node.marks ?? [];
+      if (!marks.some((mark) => mark.type === 'code') && typeof node.text === 'string') {
+        return splitUnderlineText(node.text, marks);
+      }
+      return [node];
+    }
+
+    if (Array.isArray(node.content)) {
+      return [
+        {
+          ...node,
+          content: restoreUnderlineMarks(node.content, raw),
+        },
+      ];
+    }
+
+    return [node];
+  });
+}
+
 export function parseMarkdown(markdown: string): JSONContent {
   const normalized = normalizeMathDelimiters(markdown);
   const tree = parser.parse(normalized.markdown) as MarkdownNode;
   const context = collectDefinitions(tree);
   const content = flowChildrenToTiptap(tree.children ?? [], context, normalized.placeholders);
   const restoredContent = restoreLeakedMathTokens(content, normalized.placeholders);
+  const underlinedContent = restoreUnderlineMarks(restoredContent);
 
   const doc = {
     type: 'doc',
-    content: restoredContent.length
-      ? restoredContent
+    content: underlinedContent.length
+      ? underlinedContent
       : [
           {
             type: 'paragraph',
@@ -1161,6 +1227,8 @@ function stringifyInlineNode(node: MarkdownNode): string {
       return `\`${String(node.value ?? '')}\``;
     case 'delete':
       return `~~${stringifyInlineNodes(node.children)}~~`;
+    case 'underline':
+      return `++${stringifyInlineNodes(node.children)}++`;
     case 'link':
       return `[${escapeMarkdownLinkText(stringifyInlineNodes(node.children))}](${escapeMarkdownLinkUrl(String(node.url ?? ''))}${node.title ? ` "${node.title}"` : ''})`;
     case 'image':

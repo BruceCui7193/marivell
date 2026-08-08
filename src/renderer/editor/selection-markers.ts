@@ -68,10 +68,27 @@ export function insertSelectionMarkersIntoMarkdown(
   const selectionStart = Math.max(0, Math.min(start, markdown.length));
   const selectionEnd = Math.max(selectionStart, Math.min(end, markdown.length));
 
-  return `${markdown.slice(0, selectionStart)}${SELECTION_START_MARKER}${markdown.slice(
-    selectionStart,
-    selectionEnd,
-  )}${SELECTION_END_MARKER}${markdown.slice(selectionEnd)}`;
+  // Blockquote lines keep the trailing newline attached to their text node
+  // when markers are placed after it, so an end-of-document caret inside a
+  // blockquote leaks back as an extra empty quoted line. Other trailing block
+  // structures (fences, paragraphs, lists) must keep the old behavior.
+  const trailingLineBreak =
+    markdown.endsWith('\r\n') ? 2 : markdown.endsWith('\n') ? 1 : 0;
+  const previousLine = trailingLineBreak > 0
+    ? markdown.slice(0, markdown.length - trailingLineBreak).split(/\r?\n/).pop()?.trimStart() ?? ''
+    : '';
+  const blockquoteEnd = trailingLineBreak > 0 && /^>/.test(previousLine);
+  const startOffset =
+    selectionStart === markdown.length && blockquoteEnd ? trailingLineBreak : 0;
+  const endOffset =
+    selectionEnd === markdown.length && blockquoteEnd ? trailingLineBreak : 0;
+  const actualStart = selectionStart - startOffset;
+  const actualEnd = selectionEnd - endOffset;
+
+  return `${markdown.slice(0, actualStart)}${SELECTION_START_MARKER}${markdown.slice(
+    actualStart,
+    actualEnd,
+  )}${SELECTION_END_MARKER}${markdown.slice(actualEnd)}`;
 }
 
 export function extractSelectionMarkersFromMarkdown(markdown: string): {
