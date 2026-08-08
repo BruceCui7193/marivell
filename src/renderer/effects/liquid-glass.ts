@@ -681,7 +681,7 @@ function startObservers(): void {
     childList: true,
     subtree: true,
     attributes: true,
-    attributeFilter: ['class', 'aria-hidden'],
+    attributeFilter: ['class', 'aria-hidden', 'style'],
   });
 
   state.resizeObserver = new ResizeObserver((entries) => {

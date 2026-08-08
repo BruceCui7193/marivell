@@ -2543,10 +2543,25 @@ export default function EditorShell({
       ) {
         event.preventDefault();
         if (editor) {
-          // Just restore focus to the existing selection without jumping.
-          // Previously this called focusWritableDocumentEnd which jumped to
-          // the document end — jarring when clicking padding near the top.
-          editor.chain().focus().run();
+          const coords = editor.view.posAtCoords({
+            left: event.clientX,
+            top: event.clientY,
+          });
+          if (coords) {
+            const resolved = editor.state.doc.resolve(coords.pos);
+            const selection = resolved.parent.isTextblock
+              ? TextSelection.create(editor.state.doc, coords.pos)
+              : TextSelection.near(resolved);
+            editor.view.dispatch(editor.state.tr.setSelection(selection));
+            editor.commands.focus();
+          } else {
+            const frameRect = editorFrameRef.current?.getBoundingClientRect();
+            if (frameRect && event.clientY > frameRect.top + frameRect.height / 2) {
+              focusWritableDocumentEnd(editor);
+            } else {
+              editor.chain().focus('start').run();
+            }
+          }
         }
       }
     },

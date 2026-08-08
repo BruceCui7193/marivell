@@ -1,3 +1,5 @@
+import type { CustomColorSettings } from './settings';
+
 export type ThemePalette = 'natural' | 'forest' | 'ocean' | 'sepia' | 'graphite' | 'nord' | 'sakura' | 'lavender' | 'cyberpunk';
 export type GlassEffect = 'frosted' | 'liquid' | 'off';
 
@@ -8,6 +10,31 @@ export interface ThemePaletteOption {
   description: string;
   descriptionEn: string;
   swatch: string;
+}
+
+
+export function getThemePaletteColors(palette: ThemePalette): CustomColorSettings {
+  switch (palette) {
+    case 'forest':
+      return { accent: '#3f6f5f', background: '#f5f7f2', editorBackground: '#fffef9', border: '#d8e0d3', text: '#1f2b25' };
+    case 'ocean':
+      return { accent: '#4d7592', background: '#f4f7fb', editorBackground: '#fdfefe', border: '#d7e1ea', text: '#1d2b38' };
+    case 'sepia':
+      return { accent: '#9a6e45', background: '#fbf3e8', editorBackground: '#fffdf8', border: '#e4d5c1', text: '#35291e' };
+    case 'graphite':
+      return { accent: '#56606b', background: '#f5f6f7', editorBackground: '#ffffff', border: '#dadde2', text: '#252c35' };
+    case 'nord':
+      return { accent: '#5e81ac', background: '#eceff4', editorBackground: '#f5f7fa', border: '#d8dee9', text: '#2e3440' };
+    case 'sakura':
+      return { accent: '#e87a90', background: '#fff5f6', editorBackground: '#fffbfa', border: '#f3d3d9', text: '#5a3e40' };
+    case 'lavender':
+      return { accent: '#7c3aed', background: '#f6f4fa', editorBackground: '#fcfbfe', border: '#e2dbe9', text: '#2c1e38' };
+    case 'cyberpunk':
+      return { accent: '#db2777', background: '#e2e8f0', editorBackground: '#f8fafc', border: '#cbd5e1', text: '#0f172a' };
+    case 'natural':
+    default:
+      return { accent: '#4d7592', background: '#f4f7fb', editorBackground: '#fdfefe', border: '#d7e1ea', text: '#1d2b38' };
+  }
 }
 
 export const THEME_PALETTE_OPTIONS: ThemePaletteOption[] = [

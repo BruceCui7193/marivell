@@ -1,4 +1,6 @@
 :root {
+  --ui-surface-gradient: none;
+  --ui-paper-gradient: none;
   --ui-bg: #f4f7fb;
   --ui-bg-strong: #fbfdff;
   --ui-border: #d7e1ea;
@@ -321,7 +323,9 @@
   display: flex;
   height: 100%;
   flex-direction: column;
-  background: var(--ui-bg);
+  background-color: var(--ui-bg);
+  background-image: var(--ui-surface-gradient);
+  background-size: cover;
   color: var(--ui-text);
 }
 
@@ -366,7 +370,9 @@
   padding: 8px 10px;
   border: 1px solid var(--ui-border);
   border-radius: 0 0 18px 18px;
-  background: var(--ui-bg);
+  background-color: var(--ui-bg);
+  background-image: var(--ui-surface-gradient);
+  background-size: cover;
   box-shadow: var(--ui-shadow);
   min-height: 62px;
   max-height: 180px;
@@ -1493,7 +1499,9 @@
   overflow: auto;
   border: 1px solid var(--ui-border);
   border-radius: 30px;
-  background: var(--ui-editor-bg);
+  background-color: var(--ui-editor-bg);
+  background-image: var(--ui-paper-gradient);
+  background-size: cover;
   box-shadow: var(--ui-shadow);
   padding: 28px 0 40px;
 }
@@ -2380,7 +2388,9 @@
   padding: 10px 14px;
   border: 1px solid var(--ui-border);
   border-radius: 16px 16px 0 0;
-  background: var(--ui-bg);
+  background-color: var(--ui-bg);
+  background-image: var(--ui-surface-gradient);
+  background-size: cover;
   color: var(--ui-text-soft);
   font-size: 12px;
 }
@@ -2580,10 +2590,17 @@
   display: inline-block;
 }
 
+.math-node-empty-hint {
+  color: var(--ui-text-soft);
+  font-size: 0.9em;
+  font-style: italic;
+  opacity: 0.85;
+}
+
 /* Base block math style (non-editing) */
 .math-block-node {
   display: block;
-  margin: 1em 0;
+  margin: 0.45em 0;
 }
 
 .math-block-node .math-node-preview {
@@ -2594,6 +2611,20 @@
 }
 
 /* Overlay contentDOM on top of the preview when not editing, keeping natural clickable size and shape */
+.math-node-wrapper.is-editing .math-node-content:empty {
+  min-width: 1.2em;
+  min-height: 1em;
+}
+
+.math-inline-node.is-editing .math-node-content:empty {
+  min-width: 1.4em;
+  min-height: 1.2em;
+}
+
+.math-block-node.is-editing .math-node-content:empty {
+  min-height: 1.6em;
+}
+
 .math-node-wrapper:not(.is-editing) .math-node-content {
   position: absolute;
   inset: 0;
@@ -2672,12 +2703,12 @@
 .math-block-node.is-editing {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
   background: color-mix(in srgb, var(--ui-accent) 3%, transparent);
   border: 1px dashed var(--ui-accent-soft, rgba(77, 117, 146, 0.3));
   border-radius: 6px;
-  padding: 14px;
-  margin: 1.2em 0;
+  padding: 10px;
+  margin: 0.55em 0;
 }
 
 .math-block-node.is-editing .math-node-content {

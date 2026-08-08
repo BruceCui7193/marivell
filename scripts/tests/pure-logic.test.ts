@@ -33,6 +33,7 @@ import { GLASS_EFFECT_OPTIONS, isGlassEffect } from '../../src/renderer/theme.ts
 import {
   getMathCompletionCaret,
   getMathCompletionItems,
+  MATH_COMPLETIONS,
 } from '../../src/renderer/editor/math-completions.ts';
 import {
   hexToRgb,
@@ -256,6 +257,15 @@ section('math completion');
   assertEqual('math completion caret for simple command', getMathCompletionCaret('\\alpha'), 6);
   const emptyQueryItems = getMathCompletionItems('');
   assert('math completion empty query returns suggestions', emptyQueryItems.length > 0);
+  assert('math completion library is broad', MATH_COMPLETIONS.length > 150, String(MATH_COMPLETIONS.length));
+  assert(
+    'math completion matches uppercase Greek from lowercase query',
+    getMathCompletionItems('G').some((item) => item.command === 'Gamma'),
+  );
+  assert(
+    'math completion includes environments',
+    getMathCompletionItems('bm').some((item) => item.command === 'bmatrix'),
+  );
 }
 
 // ---------------------------------------------------------------------------

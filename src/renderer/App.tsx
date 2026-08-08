@@ -7,7 +7,7 @@ import type {
   SavedDocument,
   ThemeMode,
 } from '@shared/contracts';
-import { type GlassEffect, type ThemePalette, isGlassEffect, isThemePalette } from './theme';
+import { getThemePaletteColors, type GlassEffect, type ThemePalette, isGlassEffect, isThemePalette } from './theme';
 import AppDialog, { type AppDialogOptions } from './components/AppDialog';
 import SettingsDialog from './components/SettingsDialog';
 import { translate, useAppLanguage } from './i18n';
@@ -17,16 +17,21 @@ import {
   DEFAULT_GLASS_CUSTOMIZATION,
   DEFAULT_LIQUID_GLASS,
   loadCustomColors,
+  loadCustomColorsEnabled,
+  loadGradient,
+  saveGradient,
   loadFrostedGlass,
   loadGlassCustomization,
   loadLiquidGlass,
   saveCustomColors,
+  saveCustomColorsEnabled,
   saveFrostedGlass,
   saveGlassCustomization,
   saveLiquidGlass,
   type CustomColorSettings,
   type FrostedGlassSettings,
   type GlassCustomizationSettings,
+  type GradientSettings,
   type LiquidGlassSettings,
 } from './settings';
 
@@ -120,14 +125,13 @@ export default function App() {
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [customColors, setCustomColors] = useState<CustomColorSettings>(loadCustomColors);
-  const [customColorsEnabled, setCustomColorsEnabled] = useState(
-    () => window.localStorage.getItem('markdown-editor-custom-colors') !== null,
-  );
+  const [customColorsEnabled, setCustomColorsEnabled] = useState(loadCustomColorsEnabled);
   const [frostedGlass, setFrostedGlass] = useState<FrostedGlassSettings>(loadFrostedGlass);
   const [liquidGlass, setLiquidGlass] = useState<LiquidGlassSettings>(loadLiquidGlass);
   const [glassCustomization, setGlassCustomization] = useState<GlassCustomizationSettings>(
     loadGlassCustomization,
   );
+  const [gradient, setGradient] = useState<GradientSettings>(loadGradient);
   const documentRef = useRef(editorDocument);
   useAppLanguage();
 
@@ -175,10 +179,17 @@ export default function App() {
 
   useEffect(() => {
     saveCustomColors(customColors);
+    const style = document.documentElement.style;
     if (!customColorsEnabled) {
+      style.removeProperty('--ui-accent');
+      style.removeProperty('--ui-bg');
+      style.removeProperty('--ui-bg-strong');
+      style.removeProperty('--ui-border');
+      style.removeProperty('--ui-text');
+      style.removeProperty('--ui-editor-bg');
+      style.removeProperty('--ui-accent-soft');
       return;
     }
-    const style = document.documentElement.style;
     style.setProperty('--ui-accent', customColors.accent);
     style.setProperty('--ui-bg', customColors.background);
     style.setProperty('--ui-bg-strong', customColors.editorBackground);
@@ -219,6 +230,25 @@ export default function App() {
   useEffect(() => {
     saveGlassCustomization(glassCustomization);
   }, [glassCustomization]);
+
+  useEffect(() => {
+    saveGradient(gradient);
+    const style = document.documentElement.style;
+    if (!gradient.enabled) {
+      style.removeProperty('--ui-surface-gradient');
+      style.removeProperty('--ui-paper-gradient');
+      return;
+    }
+    const strength = Math.round(gradient.strength * 26);
+    style.setProperty(
+      '--ui-surface-gradient',
+      `linear-gradient(180deg, color-mix(in srgb, var(--ui-accent) ${strength}%, transparent), transparent 74%), linear-gradient(90deg, color-mix(in srgb, var(--ui-accent) ${Math.round(strength * 0.7)}%, transparent), transparent 58%)`,
+    );
+    style.setProperty(
+      '--ui-paper-gradient',
+      `linear-gradient(165deg, color-mix(in srgb, var(--ui-accent) ${Math.round(strength * 0.55)}%, transparent), transparent 44%), linear-gradient(15deg, color-mix(in srgb, var(--ui-accent) ${Math.round(strength * 0.3)}%, transparent), transparent 62%)`,
+    );
+  }, [gradient]);
 
   useEffect(() => {
     setLiquidGlassEnabled(glassEffect === 'liquid');
@@ -398,6 +428,13 @@ export default function App() {
     setMessage(translate('newWindowOpened'));
   }, []);
 
+  const handleSetThemePalette = useCallback((palette: ThemePalette) => {
+    setThemePalette(palette);
+    setCustomColorsEnabled(false);
+    saveCustomColorsEnabled(false);
+    setCustomColors(getThemePaletteColors(palette));
+  }, []);
+
   const handleMenuAction = useCallback(async (action: MenuAction): Promise<void> => {
     if (action === 'new-document') {
       await createNewDocument();
@@ -569,7 +606,7 @@ export default function App() {
           theme={theme}
           glassEffect={glassEffect}
           onSetTheme={setTheme}
-          onSetThemePalette={setThemePalette}
+          onSetThemePalette={handleSetThemePalette}
           onSetGlassEffect={setGlassEffect}
           onOpenSettings={() => setSettingsOpen(true)}
           themePalette={themePalette}
@@ -578,21 +615,29 @@ export default function App() {
       {settingsOpen ? (
         <SettingsDialog
           customColors={customColors}
+          customColorsEnabled={customColorsEnabled}
           frostedGlass={frostedGlass}
           glassCustomization={glassCustomization}
           glassEffect={glassEffect}
+          gradient={gradient}
           liquidGlass={liquidGlass}
           onClose={() => setSettingsOpen(false)}
           onSetCustomColors={(colors) => {
             setCustomColorsEnabled(true);
+            saveCustomColorsEnabled(true);
             setCustomColors(colors);
+          }}
+          onSetCustomColorsEnabled={(enabled) => {
+            setCustomColorsEnabled(enabled);
+            saveCustomColorsEnabled(enabled);
           }}
           onSetFrostedGlass={setFrostedGlass}
           onSetGlassCustomization={setGlassCustomization}
           onSetGlassEffect={setGlassEffect}
+          onSetGradient={setGradient}
           onSetLiquidGlass={setLiquidGlass}
           onSetTheme={setTheme}
-          onSetThemePalette={setThemePalette}
+          onSetThemePalette={handleSetThemePalette}
           theme={theme}
           themePalette={themePalette}
         />

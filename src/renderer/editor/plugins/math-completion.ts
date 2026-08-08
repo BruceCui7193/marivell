@@ -155,9 +155,10 @@ export const MathCompletion = Extension.create({
             const coords = view.coordsAtPos(state.to);
             const width = Math.min(280, window.innerWidth - 16);
             const left = Math.max(8, Math.min(coords.left, window.innerWidth - width - 8));
+            const estimatedHeight = Math.min(260, state.items.length * 36 + 12);
             let top = coords.bottom + 6;
-            if (top + 260 > window.innerHeight - 8) {
-              top = Math.max(8, coords.top - 260 - 6);
+            if (top + estimatedHeight > window.innerHeight - 8) {
+              top = Math.max(8, coords.top - estimatedHeight - 6);
             }
 
             popup.style.display = 'block';

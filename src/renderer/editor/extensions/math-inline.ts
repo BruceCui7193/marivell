@@ -20,6 +20,25 @@ function mathLog(...args: unknown[]): void {
   if (__mathDebug) console.log('[math]', ...args);
 }
 
+
+function findMathCaretPosition(doc: any, from: number, display: string, value: string): number | null {
+  let caret: number | null = null;
+  doc.descendants((node: any, pos: number) => {
+    if (caret !== null) return false;
+    if (node.type.name !== 'inlineMath' || node.attrs.display !== display || pos < from) {
+      return caret === null;
+    }
+    const text = node.textContent;
+    const matches = value ? text === value : text.trim() === '';
+    if (matches) {
+      caret = pos + 1 + text.length;
+      return false;
+    }
+    return true;
+  });
+  return caret;
+}
+
 export const MathInline = Node.create({
   name: 'inlineMath',
   group: 'inline',
@@ -104,14 +123,22 @@ export const MathInline = Node.create({
       dom.appendChild(previewDOM);
 
       // Cache last rendered text to skip redundant KaTeX renders.
-      let lastRenderedText = '';
+      let lastRenderedText: string | null = null;
       let destroyed = false;
 
       const doRender = (text: string) => {
         if (text === lastRenderedText) return;
         lastRenderedText = text;
+        if (!text.trim()) {
+          previewDOM.replaceChildren();
+          const hint = document.createElement('span');
+          hint.className = 'math-node-empty-hint';
+          hint.textContent = document.documentElement.lang === 'en' ? 'Empty math' : '空公式';
+          previewDOM.appendChild(hint);
+          return;
+        }
         try {
-          katex.render(text || '\\text{?}', previewDOM, {
+          katex.render(text, previewDOM, {
             displayMode: isBlock,
             throwOnError: false,
             strict: 'ignore',
@@ -173,7 +200,7 @@ export const MathInline = Node.create({
         (value = '') =>
         ({ state, tr, dispatch }) => {
           const mathNode = state.schema.nodes.inlineMath?.create(
-            { display: 'no' },
+            { display: 'no', openDelim: '$', closeDelim: '$' },
             value ? state.schema.text(value) : undefined
           );
           if (!mathNode) {
@@ -182,7 +209,7 @@ export const MathInline = Node.create({
 
           const { from, to } = state.selection;
           tr = tr.replaceWith(from, to, mathNode);
-          const caret = from + 1 + value.length;
+          const caret = findMathCaretPosition(tr.doc, from, 'no', value) ?? from + 1 + value.length;
           tr = tr.setSelection(TextSelection.create(tr.doc, caret));
 
           if (dispatch) {
@@ -196,8 +223,8 @@ export const MathInline = Node.create({
         (value = '') =>
         ({ state, tr, dispatch }) => {
           const mathNode = state.schema.nodes.inlineMath?.create(
-            { display: 'yes' },
-            value ? state.schema.text(value) : undefined
+            { display: 'yes', openDelim: '$', closeDelim: '$' },
+            value ? state.schema.text(value) : state.schema.text('\n')
           );
           if (!mathNode) {
             return false;
@@ -213,7 +240,8 @@ export const MathInline = Node.create({
 
           const paragraphPos = from + mathNode.nodeSize;
           tr = tr.insert(paragraphPos, paragraphNode);
-          tr = tr.setSelection(TextSelection.create(tr.doc, from + 1 + value.length));
+          const caret = findMathCaretPosition(tr.doc, from, 'yes', value) ?? from + 1 + value.length;
+          tr = tr.setSelection(TextSelection.create(tr.doc, caret));
 
           if (dispatch) {
             dispatch(tr.scrollIntoView());
@@ -237,7 +265,7 @@ export const MathInline = Node.create({
           const isBlock = $from.parent.attrs.display === 'yes';
           const delim = isBlock ? '$$' : '$';
 
-          if ($from.parent.textContent === '') {
+          if ($from.parent.textContent.trim() === '' && $from.parentOffset === 0) {
             return this.editor.commands.command(({ tr, dispatch }) => {
               const pos = $from.before();
               if (dispatch) {
@@ -324,13 +352,19 @@ export const MathInline = Node.create({
         const to = from + $from.parent.nodeSize;
 
         return this.editor.commands.command(({ tr, dispatch }) => {
-          const node = state.schema.nodes.inlineMath?.create({ display: 'yes' }, state.schema.text(''));
+          const node = state.schema.nodes.inlineMath?.create(
+            { display: 'yes', openDelim: '$', closeDelim: '$' },
+            state.schema.text('\n')
+          );
           if (!node) {
             return false;
           }
 
           if (dispatch) {
-            dispatch(tr.replaceWith(from, to, node).scrollIntoView());
+            tr = tr.replaceWith(from, to, node);
+            const caret = findMathCaretPosition(tr.doc, from, 'yes', '') ?? from + 1;
+            tr = tr.setSelection(TextSelection.create(tr.doc, caret));
+            dispatch(tr.scrollIntoView());
           }
 
           return true;
@@ -347,12 +381,22 @@ export const MathInline = Node.create({
           const value = String(match[1] ?? '').trim();
           if (!value) return;
 
+          const mathNode = this.editor.state.schema.nodes.inlineMath?.create(
+            { display: 'no', openDelim: '$', closeDelim: '$' },
+            value ? this.editor.state.schema.text(value) : undefined
+          );
+          if (!mathNode) return;
+
           chain()
-            .deleteRange(range)
-            .insertContent({
-              type: this.name,
-              attrs: { display: 'no' },
-              content: [{ type: 'text', text: value }],
+            .command(({ tr, dispatch }) => {
+              const { from, to } = range;
+              tr = tr.replaceWith(from, to, mathNode);
+              const caret = findMathCaretPosition(tr.doc, from, 'no', value) ?? from + 1 + value.length;
+              tr = tr.setSelection(TextSelection.create(tr.doc, caret));
+              if (dispatch) {
+                dispatch(tr.scrollIntoView());
+              }
+              return true;
             })
             .run();
         },
@@ -361,12 +405,23 @@ export const MathInline = Node.create({
         find: /^\$\$([^\n]*)\$\$$/,
         handler: ({ chain, range, match }) => {
           const value = String(match[1] ?? '').trim();
+
+          const mathNode = this.editor.state.schema.nodes.inlineMath?.create(
+            { display: 'yes', openDelim: '$', closeDelim: '$' },
+            value ? this.editor.state.schema.text(value) : this.editor.state.schema.text('\n')
+          );
+          if (!mathNode) return;
+
           chain()
-            .deleteRange(range)
-            .insertContent({
-              type: this.name,
-              attrs: { display: 'yes' },
-              content: value ? [{ type: 'text', text: value }] : undefined,
+            .command(({ tr, dispatch }) => {
+              const { from, to } = range;
+              tr = tr.replaceWith(from, to, mathNode);
+              const caret = findMathCaretPosition(tr.doc, from, 'yes', value) ?? from + 1 + value.length;
+              tr = tr.setSelection(TextSelection.create(tr.doc, caret));
+              if (dispatch) {
+                dispatch(tr.scrollIntoView());
+              }
+              return true;
             })
             .run();
         },

@@ -4,11 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { app } from 'electron';
+import { getLinuxFallbackDefault, LINUX_DESKTOP_FILE } from './linux-mime';
 import type { AppInfo, FileAssociationResult, FileAssociationStatus, UpdateCheckResult } from '@shared/contracts';
 
 const execFileAsync = promisify(execFile);
 const GITHUB_REPO = 'BruceCui7193/markdown-editor-pro';
-const LINUX_DESKTOP_FILE = 'markdown-editor-pro.desktop';
 const WINDOWS_PROG_ID = 'MarkdownEditorPro.md';
 
 export function getAppInfo(): AppInfo {
@@ -92,7 +92,7 @@ async function getLinuxMimeDefault(): Promise<string> {
   }
 }
 
-async function writeLinuxMimeDefault(enabled: boolean): Promise<void> {
+async function writeLinuxMimeDefault(enabled: boolean, desktopFile = LINUX_DESKTOP_FILE): Promise<void> {
   const configPath = path.join(os.homedir(), '.config', 'mimeapps.list');
   let content = '';
   try {
@@ -112,7 +112,7 @@ async function writeLinuxMimeDefault(enabled: boolean): Promise<void> {
     (line) => !line.startsWith('text/markdown=') && !line.startsWith('application/x-markdown='),
   );
   const newBody = enabled
-    ? [`text/markdown=${LINUX_DESKTOP_FILE}`, ...withoutMarkdown]
+    ? [`text/markdown=${desktopFile}`, ...withoutMarkdown]
     : withoutMarkdown;
   const head = sectionIndex >= 0 ? lines.slice(0, sectionIndex) : lines.slice(0, bodyEnd);
   const tail = lines.slice(bodyEnd);
@@ -168,6 +168,7 @@ async function setWindowsAssociation(enabled: boolean): Promise<void> {
   }
 }
 
+
 export async function getFileAssociationStatus(): Promise<FileAssociationStatus> {
   const platform = process.platform;
   if (platform === 'linux') {
@@ -196,6 +197,19 @@ export async function setFileAssociation(enabled: boolean): Promise<FileAssociat
       try {
         if (enabled) {
           await execFileAsync('xdg-mime', ['default', LINUX_DESKTOP_FILE, 'text/markdown']);
+        } else {
+          const currentDefault = await getLinuxMimeDefault();
+          if (currentDefault === LINUX_DESKTOP_FILE || !currentDefault) {
+            const fallback = await getLinuxFallbackDefault();
+            if (fallback) {
+              await writeLinuxMimeDefault(true, fallback);
+              try {
+                await execFileAsync('xdg-mime', ['default', fallback, 'text/markdown']);
+              } catch {
+                // The direct mimeapps.list write still records the fallback.
+              }
+            }
+          }
         }
       } catch {
         // The direct mimeapps.list write is still valid on minimal systems.

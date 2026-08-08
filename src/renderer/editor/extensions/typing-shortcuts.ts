@@ -12,6 +12,20 @@ function getCurrentParagraphText(editor: { state: { selection: { empty: boolean;
   return $from.parent.textContent;
 }
 
+
+function findMathCaretPosition(doc: any, from: number): number | null {
+  let caret: number | null = null;
+  doc.descendants((node: any, pos: number) => {
+    if (caret !== null) return false;
+    if (node.type.name === 'inlineMath' && node.attrs.display === 'yes' && pos >= from) {
+      caret = pos + 1 + node.textContent.length;
+      return false;
+    }
+    return caret === null;
+  });
+  return caret;
+}
+
 export const TypingShortcuts = Extension.create({
   name: 'typingShortcuts',
 
@@ -39,14 +53,15 @@ export const TypingShortcuts = Extension.create({
 
             const node = mathType.create({
               display: 'yes',
-              openDelim: trimmed === '\\[' ? '\\[' : '$$',
-              closeDelim: trimmed === '\\[' ? '\\]' : '$$',
-            });
+              openDelim: trimmed === '\\[' ? '\\[' : '$',
+              closeDelim: trimmed === '\\[' ? '\\]' : '$',
+            }, state.schema.text('\n'));
 
             if (dispatch) {
               tr = tr.replaceWith(from, to, node);
+              const caret = findMathCaretPosition(tr.doc, from) ?? from + 1;
               // Place caret inside the empty math node for immediate editing.
-              tr = tr.setSelection(TextSelection.create(tr.doc, from + 1));
+              tr = tr.setSelection(TextSelection.create(tr.doc, caret));
               dispatch(tr.scrollIntoView());
             }
 

@@ -7,6 +7,7 @@ import {
   DEFAULT_CUSTOM_COLORS,
   DEFAULT_FROSTED_GLASS,
   DEFAULT_GLASS_CUSTOMIZATION,
+  DEFAULT_GRADIENT,
   DEFAULT_LIQUID_GLASS,
   hexToRgb,
   isHexColor,
@@ -14,6 +15,7 @@ import {
   type CustomColorSettings,
   type FrostedGlassSettings,
   type GlassCustomizationSettings,
+  type GradientSettings,
   type LiquidGlassSettings,
 } from '../settings';
 import { setAppLanguage, translate, useAppLanguage, type AppLanguage } from '../i18n';
@@ -26,16 +28,20 @@ interface SettingsDialogProps {
   themePalette: ThemePalette;
   glassEffect: GlassEffect;
   customColors: CustomColorSettings;
+  customColorsEnabled: boolean;
   frostedGlass: FrostedGlassSettings;
   liquidGlass: LiquidGlassSettings;
   glassCustomization: GlassCustomizationSettings;
+  gradient: GradientSettings;
   onSetTheme: (theme: ThemeMode) => void;
   onSetThemePalette: (palette: ThemePalette) => void;
   onSetGlassEffect: (effect: GlassEffect) => void;
   onSetCustomColors: (colors: CustomColorSettings) => void;
+  onSetCustomColorsEnabled: (enabled: boolean) => void;
   onSetFrostedGlass: (settings: FrostedGlassSettings) => void;
   onSetLiquidGlass: (settings: LiquidGlassSettings) => void;
   onSetGlassCustomization: (settings: GlassCustomizationSettings) => void;
+  onSetGradient: (settings: GradientSettings) => void;
 }
 
 interface ColorFieldProps {
@@ -147,16 +153,20 @@ export default function SettingsDialog({
   themePalette,
   glassEffect,
   customColors,
+  customColorsEnabled,
   frostedGlass,
   liquidGlass,
   glassCustomization,
+  gradient,
   onSetTheme,
   onSetThemePalette,
   onSetGlassEffect,
   onSetCustomColors,
+  onSetCustomColorsEnabled,
   onSetFrostedGlass,
   onSetLiquidGlass,
   onSetGlassCustomization,
+  onSetGradient,
 }: SettingsDialogProps) {
   const appLanguage = useAppLanguage();
   const [tab, setTab] = useState<SettingsTab>('general');
@@ -234,9 +244,11 @@ export default function SettingsDialog({
 
   const resetAppearance = () => {
     onSetCustomColors(DEFAULT_CUSTOM_COLORS);
+    onSetCustomColorsEnabled(false);
     onSetFrostedGlass(DEFAULT_FROSTED_GLASS);
     onSetLiquidGlass(DEFAULT_LIQUID_GLASS);
     onSetGlassCustomization(DEFAULT_GLASS_CUSTOMIZATION);
+    onSetGradient(DEFAULT_GRADIENT);
   };
 
   return createPortal(
@@ -352,7 +364,40 @@ export default function SettingsDialog({
                 </section>
 
                 <section className="settings-section">
+                  <h3 className="settings-section__title">{translate('backgroundGradient')}</h3>
+                  <label className="settings-checkbox">
+                    <input
+                      checked={gradient.enabled}
+                      onChange={(event) => onSetGradient({ ...gradient, enabled: event.target.checked })}
+                      type="checkbox"
+                    />
+                    <span>{translate('enableBackgroundGradient')}</span>
+                  </label>
+                  {gradient.enabled ? (
+                    <div className="settings-sliders">
+                      <NumberSlider
+                        label={translate('gradientStrength')}
+                        max={100}
+                        min={0}
+                        onChange={(strength) => onSetGradient({ ...gradient, strength: strength / 100 })}
+                        suffix="%"
+                        value={Math.round(gradient.strength * 100)}
+                      />
+                    </div>
+                  ) : null}
+                </section>
+
+                <section className="settings-section">
                   <h3 className="settings-section__title">{translate('customColors')}</h3>
+                  <label className="settings-checkbox">
+                    <input
+                      checked={customColorsEnabled}
+                      onChange={(event) => onSetCustomColorsEnabled(event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>{translate('useCustomColors')}</span>
+                  </label>
+
                   <div className="settings-colors">
                     <ColorField
                       label={translate('accent')}

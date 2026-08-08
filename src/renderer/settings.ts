@@ -25,6 +25,11 @@ export interface GlassCustomizationSettings {
   liquidEnabled: boolean;
 }
 
+export interface GradientSettings {
+  enabled: boolean;
+  strength: number;
+}
+
 export const DEFAULT_CUSTOM_COLORS: CustomColorSettings = {
   accent: '#4d7592',
   background: '#f4f7fb',
@@ -50,6 +55,11 @@ export const DEFAULT_LIQUID_GLASS: LiquidGlassSettings = {
 export const DEFAULT_GLASS_CUSTOMIZATION: GlassCustomizationSettings = {
   frostedEnabled: false,
   liquidEnabled: false,
+};
+
+export const DEFAULT_GRADIENT: GradientSettings = {
+  enabled: true,
+  strength: 0.55,
 };
 
 function parseJson<T>(raw: string | null, fallback: T): T {
@@ -96,6 +106,17 @@ export function saveLiquidGlass(settings: LiquidGlassSettings): void {
   localStorage.setItem('markdown-editor-liquid-glass', JSON.stringify(settings));
 }
 
+export function loadGradient(): GradientSettings {
+  return parseJson(
+    localStorage.getItem('markdown-editor-gradient'),
+    DEFAULT_GRADIENT,
+  );
+}
+
+export function saveGradient(settings: GradientSettings): void {
+  localStorage.setItem('markdown-editor-gradient', JSON.stringify(settings));
+}
+
 export function loadGlassCustomization(): GlassCustomizationSettings {
   return parseJson(
     localStorage.getItem('markdown-editor-glass-customization'),
@@ -126,4 +147,15 @@ export function rgbToHex(r: number, g: number, b: number): string {
   const clamp = (value: number) => Math.max(0, Math.min(255, Math.round(value)));
   const toHex = (value: number) => clamp(value).toString(16).padStart(2, '0');
   return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+export function loadCustomColorsEnabled(): boolean {
+  return (
+    localStorage.getItem('markdown-editor-custom-colors-enabled') === '1' ||
+    localStorage.getItem('markdown-editor-custom-colors') !== null
+  );
+}
+
+export function saveCustomColorsEnabled(enabled: boolean): void {
+  localStorage.setItem('markdown-editor-custom-colors-enabled', enabled ? '1' : '0');
 }
