@@ -88,23 +88,23 @@ export function extractOutline(markdown: string): OutlineItem[] {
   return items;
 }
 
-export function formatFolderDate(timestamp: number): string {
+export function formatFolderDate(timestamp: number, language = 'zh-CN'): string {
   const now = Date.now();
   const diffDays = Math.floor((now - timestamp) / (1000 * 60 * 60 * 24));
 
   if (diffDays <= 0) {
-    return '\u4eca\u5929';
+    return language === 'en' ? 'Today' : '\u4eca\u5929';
   }
 
   if (diffDays === 1) {
-    return '\u6628\u5929';
+    return language === 'en' ? 'Yesterday' : '\u6628\u5929';
   }
 
   if (diffDays < 7) {
-    return `${diffDays} \u5929\u524d`;
+    return language === 'en' ? `${diffDays} days ago` : `${diffDays} \u5929\u524d`;
   }
 
-  return new Intl.DateTimeFormat('zh-CN', {
+  return new Intl.DateTimeFormat(language === 'en' ? 'en-US' : 'zh-CN', {
     month: 'short',
     day: 'numeric',
   }).format(timestamp);

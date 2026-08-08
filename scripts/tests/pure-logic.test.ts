@@ -15,7 +15,7 @@ import {
   looksLikeMarkdown,
 } from '../../src/renderer/editor/plugins/markdown-paste.ts';
 import { calculateDocumentStats } from '../../src/renderer/editor/utils/helpers.ts';
-import { extractOutline } from '../../src/renderer/utils/document.ts';
+import { extractOutline, formatFolderDate } from '../../src/renderer/utils/document.ts';
 import { markdownToExportHtmlFragment } from '../../src/main/export/markdown-to-html.ts';
 import {
   isPartialInsideWrapperParent,

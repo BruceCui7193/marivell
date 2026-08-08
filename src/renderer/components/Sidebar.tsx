@@ -2,7 +2,7 @@ import clsx from 'clsx';
 import type { FolderEntry } from '@shared/contracts';
 import type { OutlineItem } from '../utils/document';
 import { formatFolderDate } from '../utils/document';
-import { translate } from '../i18n';
+import { translate, useAppLanguage } from '../i18n';
 
 type SidebarTab = 'files' | 'outline';
 
@@ -31,6 +31,7 @@ export default function Sidebar({
   onOpenFile,
   onNavigateOutline,
 }: SidebarProps) {
+  const appLanguage = useAppLanguage();
   return (
     <aside className={clsx('sidebar', !visible && 'is-hidden')}>
       <div className="sidebar__tabs">
@@ -72,7 +73,7 @@ export default function Sidebar({
                 >
                   <div className="file-item__meta">
                     <span className="file-item__kind">Markdown</span>
-                    <span className="file-item__date">{formatFolderDate(entry.modifiedAt)}</span>
+                    <span className="file-item__date">{formatFolderDate(entry.modifiedAt, appLanguage)}</span>
                   </div>
                   <div className="file-item__title">{entry.title}</div>
                   <div className="file-item__path">{entry.path}</div>
