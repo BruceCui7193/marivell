@@ -331,9 +331,11 @@ function Toolbar({
   const hasLinkFloatingPanel = linkMenuOpen && !editingControlsHidden;
   const hasFormulaFloatingPanel = formulaMenuOpen && !editingControlsHidden;
 
-  const closeAllPanels = useCallback(() => {
+  const closeAllPanels = useCallback((keepCompactGroup = false) => {
     setThemePanelOpen(false);
-    setCompactGroupOpen(null);
+    if (!keepCompactGroup) {
+      setCompactGroupOpen(null);
+    }
     setMenuOpen(null);
     setMenuRect(null);
     setFormulaMenuOpen(false);
@@ -561,7 +563,7 @@ function Toolbar({
     const currentHref = String(editor.getAttributes('link').href ?? '').trim();
     setLinkDraft(currentHref || 'https://');
     const shouldOpen = !linkMenuOpen;
-    closeAllPanels();
+    closeAllPanels(true);
     if (shouldOpen) {
       setLinkMenuOpen(true);
     }
@@ -907,7 +909,7 @@ function Toolbar({
           const top = belowTop + menuHeight > window.innerHeight - 8
             ? Math.max(8, rect.top - menuHeight - 8)
             : belowTop;
-          closeAllPanels();
+          closeAllPanels(true);
           if (shouldOpen) {
             setMenuRect({ left, top });
             setMenuOpen(menu);
@@ -1205,7 +1207,7 @@ function Toolbar({
               disabled={!editor}
               onClick={() => {
                 const shouldOpen = !formulaMenuOpen;
-                closeAllPanels();
+                closeAllPanels(true);
                 if (shouldOpen) {
                   setFormulaMenuOpen(true);
                 }
@@ -1298,7 +1300,7 @@ function Toolbar({
           icon="appearance"
           onClick={() => {
             const shouldOpen = !themePanelOpen;
-            closeAllPanels();
+            closeAllPanels(true);
             if (shouldOpen) {
               setThemePanelOpen(true);
             }

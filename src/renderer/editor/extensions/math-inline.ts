@@ -1,6 +1,7 @@
 import { InputRule, Node, mergeAttributes } from '@tiptap/core';
 import { TextSelection } from '@tiptap/pm/state';
 import katex from 'katex';
+import { translate } from '../../i18n';
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
@@ -133,7 +134,7 @@ export const MathInline = Node.create({
           previewDOM.replaceChildren();
           const hint = document.createElement('span');
           hint.className = 'math-node-empty-hint';
-          hint.textContent = document.documentElement.lang === 'en' ? 'Empty math' : '空公式';
+          hint.textContent = translate('emptyMath');
           previewDOM.appendChild(hint);
           return;
         }
@@ -199,9 +200,10 @@ export const MathInline = Node.create({
       insertInlineMath:
         (value = '') =>
         ({ state, tr, dispatch }) => {
+          const initialValue = value || ' ';
           const mathNode = state.schema.nodes.inlineMath?.create(
             { display: 'no', openDelim: '$', closeDelim: '$' },
-            value ? state.schema.text(value) : undefined
+            state.schema.text(initialValue)
           );
           if (!mathNode) {
             return false;
@@ -209,7 +211,9 @@ export const MathInline = Node.create({
 
           const { from, to } = state.selection;
           tr = tr.replaceWith(from, to, mathNode);
-          const caret = findMathCaretPosition(tr.doc, from, 'no', value) ?? from + 1 + value.length;
+          const caret = value
+            ? findMathCaretPosition(tr.doc, from, 'no', value) ?? from + 1 + value.length
+            : from + 1;
           tr = tr.setSelection(TextSelection.create(tr.doc, caret));
 
           if (dispatch) {

@@ -40,6 +40,7 @@ import {
   isHexColor,
   rgbToHex,
 } from '../../src/renderer/settings.ts';
+import { setAppLanguage, translate } from '../../src/renderer/i18n.ts';
 
 let passed = 0;
 let failed = 0;
@@ -278,6 +279,10 @@ section('settings helpers');
   assert('hex color rejects short values', !isHexColor('#fff'));
   assertEqual('hex to rgb parses channels', hexToRgb('#010203'), { r: 1, g: 2, b: 3 });
   assertEqual('rgb to hex formats channels', rgbToHex(1, 2, 3), '#010203');
+  setAppLanguage('en');
+  assertEqual('empty math hint translates to English', translate('emptyMath'), 'Empty math');
+  setAppLanguage('zh-CN');
+  assertEqual('empty math hint translates to Chinese', translate('emptyMath'), '空公式');
 }
 
 // ---------------------------------------------------------------------------

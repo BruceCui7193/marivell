@@ -196,10 +196,30 @@ function runMathInsertionFocusTests(): void {
     inlineEditor.commands.setTextSelection(2);
     inlineEditor.commands.insertInlineMath();
     const inlineSelection = inlineEditor.state.selection;
+    let inlineMathText = '';
+    inlineEditor.state.doc.descendants((node) => {
+      if (node.type.name === 'inlineMath') {
+        inlineMathText = node.textContent;
+        return false;
+      }
+      return true;
+    });
     assert(
       'inline math insertion puts caret inside math node',
       inlineSelection.empty && inlineSelection.$from.parent.type.name === 'inlineMath',
       `parent=${inlineSelection.$from.parent.type.name}`,
+    );
+    assert(
+      'inline math insertion keeps a space between delimiters',
+      inlineMathText === ' ' && serializeMarkdown(inlineEditor.getJSON()).includes('$ $'),
+      `text=${JSON.stringify(inlineMathText)} md=${serializeMarkdown(inlineEditor.getJSON())}`,
+    );
+    assert(
+      'inline math insertion puts caret before the inserted space',
+      inlineSelection.empty &&
+        inlineSelection.$from.parent.type.name === 'inlineMath' &&
+        inlineSelection.$from.parentOffset === 0,
+      `offset=${inlineSelection.$from.parentOffset}`,
     );
   } finally {
     inlineEditor.destroy();

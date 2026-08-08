@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { app } from 'electron';
-import { getLinuxFallbackDefault, LINUX_DESKTOP_FILE } from './linux-mime';
+import { LINUX_DESKTOP_FILE, removeLinuxMarkdownMimeDefaults } from './linux-mime';
 import type { AppInfo, FileAssociationResult, FileAssociationStatus, UpdateCheckResult } from '@shared/contracts';
 
 const execFileAsync = promisify(execFile);
@@ -193,26 +193,15 @@ export async function setFileAssociation(enabled: boolean): Promise<FileAssociat
   const platform = process.platform;
   try {
     if (platform === 'linux') {
-      await writeLinuxMimeDefault(enabled);
-      try {
-        if (enabled) {
+      if (enabled) {
+        await writeLinuxMimeDefault(true);
+        try {
           await execFileAsync('xdg-mime', ['default', LINUX_DESKTOP_FILE, 'text/markdown']);
-        } else {
-          const currentDefault = await getLinuxMimeDefault();
-          if (currentDefault === LINUX_DESKTOP_FILE || !currentDefault) {
-            const fallback = await getLinuxFallbackDefault();
-            if (fallback) {
-              await writeLinuxMimeDefault(true, fallback);
-              try {
-                await execFileAsync('xdg-mime', ['default', fallback, 'text/markdown']);
-              } catch {
-                // The direct mimeapps.list write still records the fallback.
-              }
-            }
-          }
+        } catch {
+          // The direct mimeapps.list write is still valid on minimal systems.
         }
-      } catch {
-        // The direct mimeapps.list write is still valid on minimal systems.
+      } else {
+        await removeLinuxMarkdownMimeDefaults();
       }
       return { ok: true, supported: true, platform, message: 'ok' };
     }
