@@ -335,7 +335,7 @@ function getLayerPlacement(element: HTMLElement): LayerPlacement | null {
     return {
       host,
       before: surface,
-      zIndex: String(Math.max(1, surfaceZ || 1)),
+      zIndex: String(Math.max(0, surfaceZ - 1)),
     };
   }
   return {
