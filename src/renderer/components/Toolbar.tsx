@@ -127,7 +127,6 @@ function ToolbarButton({
       onClick={onClick}
       onMouseDown={(event) => event.preventDefault()}
       tabIndex={hidden ? -1 : 0}
-      title={displayTitle}
       type="button"
     >
       <Icon className="toolbar-button__icon" name={icon} />
