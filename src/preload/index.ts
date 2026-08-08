@@ -46,9 +46,6 @@ const api: MarkdownEditorApi = {
   getAppInfo: () => ipcRenderer.invoke('settings:app-info'),
   checkForUpdates: (includePrerelease: boolean) =>
     ipcRenderer.invoke('settings:check-updates', includePrerelease),
-  getFileAssociationStatus: () => ipcRenderer.invoke('settings:file-association-status'),
-  setFileAssociation: (enabled: boolean) =>
-    ipcRenderer.invoke('settings:file-association-set', enabled),
   setTheme: (theme: ThemeMode) => ipcRenderer.invoke('theme:set', theme),
   zoomIn: () => ipcRenderer.invoke('window:zoom-in'),
   zoomOut: () => ipcRenderer.invoke('window:zoom-out'),

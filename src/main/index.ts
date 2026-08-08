@@ -72,12 +72,7 @@ import {
   pickPandocTemplate,
   updatePandocTemplate,
 } from './export';
-import {
-  checkForUpdates,
-  getAppInfo,
-  getFileAssociationStatus,
-  setFileAssociation,
-} from './settings';
+import { checkForUpdates, getAppInfo } from './settings';
 
 const APP_NAME = 'Markdown Editor Pro';
 const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown']);
@@ -1401,10 +1396,6 @@ function registerIpcHandlers(): void {
   ipcMain.handle('settings:app-info', () => getAppInfo());
   ipcMain.handle('settings:check-updates', (_event, includePrerelease: boolean) =>
     checkForUpdates(Boolean(includePrerelease)),
-  );
-  ipcMain.handle('settings:file-association-status', () => getFileAssociationStatus());
-  ipcMain.handle('settings:file-association-set', (_event, enabled: boolean) =>
-    setFileAssociation(Boolean(enabled)),
   );
 
   ipcMain.handle('theme:set', async (_event, theme: ThemeMode) => {

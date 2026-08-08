@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import clsx from 'clsx';
-import type { AppInfo, FileAssociationStatus, ThemeMode, UpdateCheckResult } from '@shared/contracts';
+import type { AppInfo, ThemeMode, UpdateCheckResult } from '@shared/contracts';
 import { GLASS_EFFECT_OPTIONS, THEME_PALETTE_OPTIONS, type GlassEffect, type ThemePalette } from '../theme';
 import {
   DEFAULT_CUSTOM_COLORS,
@@ -20,7 +20,7 @@ import {
 } from '../settings';
 import { setAppLanguage, translate, useAppLanguage, type AppLanguage } from '../i18n';
 
-type SettingsTab = 'general' | 'appearance' | 'files' | 'about';
+type SettingsTab = 'general' | 'appearance' | 'about';
 
 interface SettingsDialogProps {
   onClose: () => void;
@@ -181,10 +181,6 @@ export default function SettingsDialog({
   const [includePrerelease, setIncludePrerelease] = useState(
     () => localStorage.getItem('markdown-editor-check-prerelease') === '1',
   );
-  const [association, setAssociation] = useState<FileAssociationStatus | null>(null);
-  const [associationBusy, setAssociationBusy] = useState(false);
-  const [associationMessage, setAssociationMessage] = useState('');
-
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -199,10 +195,6 @@ export default function SettingsDialog({
 
   useEffect(() => {
     void window.markdownEditor.getAppInfo().then(setAppInfo).catch(() => {});
-    void window.markdownEditor
-      .getFileAssociationStatus()
-      .then(setAssociation)
-      .catch(() => {});
   }, []);
 
   const checkUpdates = async () => {
@@ -220,30 +212,6 @@ export default function SettingsDialog({
       });
     } finally {
       setCheckingUpdates(false);
-    }
-  };
-
-  const toggleAssociation = async () => {
-    if (!association?.supported || associationBusy) {
-      return;
-    }
-    setAssociationBusy(true);
-    setAssociationMessage('');
-    const next = !association.associated;
-    try {
-      const result = await window.markdownEditor.setFileAssociation(next);
-      if (result.ok) {
-        setAssociation({ ...association, associated: next });
-        setAssociationMessage(
-          next ? translate('associationSuccess') : translate('associationRemoved'),
-        );
-      } else {
-        setAssociationMessage(result.error ?? translate('associationFailed'));
-      }
-    } catch (error) {
-      setAssociationMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setAssociationBusy(false);
     }
   };
 
@@ -288,13 +256,6 @@ export default function SettingsDialog({
               type="button"
             >
               {translate('appearance')}
-            </button>
-            <button
-              className={clsx('settings-dialog__tab', tab === 'files' && 'is-active')}
-              onClick={() => setTab('files')}
-              type="button"
-            >
-              {translate('fileAssociation')}
             </button>
             <button
               className={clsx('settings-dialog__tab', tab === 'about' && 'is-active')}
@@ -549,41 +510,6 @@ export default function SettingsDialog({
                   </button>
                 </section>
               </>
-            ) : null}
-
-            {tab === 'files' ? (
-              <section className="settings-section">
-                <h3 className="settings-section__title">{translate('markdownFileAssociation')}</h3>
-                <p className="settings-description">{translate('fileAssociationDescription')}</p>
-                {association ? (
-                  <div className="settings-status">
-                    {association.supported
-                      ? association.associated
-                        ? translate('currentlyAssociated')
-                        : translate('currentlyNotAssociated')
-                      : translate('unsupportedPlatform', { platform: association.platform })}
-                  </div>
-                ) : (
-                  <div className="settings-status">{translate('readingStatus')}</div>
-                )}
-                {associationMessage ? (
-                  <div className="settings-message">{associationMessage}</div>
-                ) : null}
-                {association?.supported ? (
-                  <button
-                    className="settings-button is-primary"
-                    disabled={associationBusy}
-                    onClick={() => void toggleAssociation()}
-                    type="button"
-                  >
-                    {associationBusy
-                      ? translate('processing')
-                      : association.associated
-                        ? translate('unassociate')
-                        : translate('associate')}
-                  </button>
-                ) : null}
-              </section>
             ) : null}
 
             {tab === 'about' ? (
