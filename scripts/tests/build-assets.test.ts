@@ -71,6 +71,8 @@ section('linux mime icons');
   assert('linux installer installs mime icons', script.includes('install_mime_icon 256'));
   assert('linux installer refreshes mime database', script.includes('update-mime-database'));
   assert('linux installer registers both mime icon names', script.includes('text-x-markdown'));
+  assert('linux installer writes user desktop for real sudo user', script.includes('REAL_USER="${SUDO_USER:-') && script.includes('runuser -u "${REAL_USER}"'));
+  assert('linux installer installs hicolor theme index', script.includes('HICOLOR_THEME'));
 }
 
 console.log(`\n${'='.repeat(48)}`);

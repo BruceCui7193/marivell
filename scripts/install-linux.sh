@@ -9,12 +9,20 @@ APP_DIR="/opt/${APP_NAME}"
 INSTALL_BIN="/usr/local/bin/${APP_NAME}"
 INSTALL_ICON="/usr/local/share/icons/hicolor/512x512/apps/${APP_NAME}.png"
 INSTALL_DESKTOP="/usr/local/share/applications/${APP_NAME}.desktop"
-USER_DESKTOP="${XDG_DATA_HOME:-$HOME/.local/share}/applications/${APP_NAME}.desktop"
+REAL_USER="${SUDO_USER:-${USER:-$(id -un)}}"
+if [ -n "${SUDO_USER:-}" ]; then
+    REAL_HOME="$(getent passwd "${REAL_USER}" | cut -d: -f6)"
+    USER_DATA_HOME="${REAL_HOME}/.local/share"
+else
+    USER_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+fi
+USER_DESKTOP="${USER_DATA_HOME}/applications/${APP_NAME}.desktop"
 DIST_DIR="${PROJECT_DIR}/dist/linux-unpacked"
 MIME_XML="${PROJECT_DIR}/build/file-associations/marivell.xml"
 INSTALL_MIME_DIR="/usr/local/share/mime"
 INSTALL_MIME_PACKAGE="${INSTALL_MIME_DIR}/packages/marivell.xml"
 INSTALL_MIME_ICON_DIR="/usr/local/share/icons/hicolor"
+HICOLOR_THEME="/usr/share/icons/hicolor/index.theme"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -93,7 +101,7 @@ LEGACY_BIN="/usr/local/bin/markdown-editor-pro"
 LEGACY_ICON="/usr/local/share/icons/hicolor/512x512/apps/markdown-editor-pro.png"
 LEGACY_DESKTOP="/usr/local/share/applications/markdown-editor-pro.desktop"
 LEGACY_MIME="/usr/local/share/mime/packages/markdown-editor-pro.xml"
-LEGACY_USER_DESKTOP="${XDG_DATA_HOME:-$HOME/.local/share}/applications/markdown-editor-pro.desktop"
+LEGACY_USER_DESKTOP="${USER_DATA_HOME}/applications/markdown-editor-pro.desktop"
 
 if [ -d "${APP_DIR}" ] || [ -e "${LEGACY_APP_DIR}" ] || [ -e "${LEGACY_BIN}" ] || [ -e "${LEGACY_DESKTOP}" ] || [ -e "${LEGACY_MIME}" ]; then
     echo "Removing previous installation..."
@@ -154,12 +162,14 @@ echo -e "${GREEN}✓${NC} Installed system desktop entry -> ${INSTALL_BIN}"
 
 # Step 8: Always overwrite user desktop entry (GNOME prefers ~/.local).
 mkdir -p "$(dirname "${USER_DESKTOP}")"
+chown "${REAL_USER}" "$(dirname "${USER_DESKTOP}")" 2>/dev/null || true
 if [ -f "${USER_DESKTOP}" ]; then
     echo -e "${YELLOW}!${NC} Replacing user desktop entry (was):"
     grep -n '^Exec=' "${USER_DESKTOP}" 2>/dev/null || true
 fi
 write_desktop_entry "${USER_DESKTOP}" "${INSTALL_BIN}" "${APP_NAME}"
 chmod 644 "${USER_DESKTOP}"
+chown "${REAL_USER}" "${USER_DESKTOP}" 2>/dev/null || true
 echo -e "${GREEN}✓${NC} User desktop entry now points to ${INSTALL_BIN}"
 
 # Verify launcher is a script, not a bare ELF symlink (common install mistake).
@@ -169,6 +179,10 @@ if file "${INSTALL_BIN}" | grep -qi 'ELF'; then
 fi
 
 # Step 9: Install MIME metadata and icons so .md / .markdown files keep custom icons.
+if [ -f "${HICOLOR_THEME}" ] && [ ! -f "${INSTALL_MIME_ICON_DIR}/index.theme" ]; then
+    sudo mkdir -p "${INSTALL_MIME_ICON_DIR}"
+    sudo cp "${HICOLOR_THEME}" "${INSTALL_MIME_ICON_DIR}/index.theme"
+fi
 if [ -f "${MIME_XML}" ]; then
     sudo mkdir -p "$(dirname "${INSTALL_MIME_PACKAGE}")"
     sudo cp "${MIME_XML}" "${INSTALL_MIME_PACKAGE}"
@@ -187,7 +201,13 @@ fi
 # Step 10: Update desktop / icon caches
 if command -v update-desktop-database &> /dev/null; then
     sudo update-desktop-database /usr/local/share/applications/ 2>/dev/null || true
-    update-desktop-database "$(dirname "${USER_DESKTOP}")" 2>/dev/null || true
+    if [ -n "${SUDO_USER:-}" ] && command -v runuser &> /dev/null; then
+        runuser -u "${REAL_USER}" -- update-desktop-database "$(dirname "${USER_DESKTOP}")" 2>/dev/null || true
+    elif [ -n "${SUDO_USER:-}" ] && command -v sudo &> /dev/null; then
+        sudo -u "${REAL_USER}" update-desktop-database "$(dirname "${USER_DESKTOP}")" 2>/dev/null || true
+    else
+        update-desktop-database "$(dirname "${USER_DESKTOP}")" 2>/dev/null || true
+    fi
 fi
 if command -v gtk-update-icon-cache &> /dev/null; then
     sudo gtk-update-icon-cache -f /usr/local/share/icons/hicolor 2>/dev/null || true
