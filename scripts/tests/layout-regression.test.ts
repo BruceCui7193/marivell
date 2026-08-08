@@ -162,6 +162,14 @@ async function main() {
       'dialog overlay does not isolate backdrop with will-change opacity',
       !/\.app-dialog-overlay\s*\{[^}]*will-change:\s*opacity/.test(css),
     );
+    assert(
+      'dialog overlay keeps backdrop sampling during entrance animation',
+      !/\.app-dialog-overlay\s*\{[^}]*animation:\s*overlayIn/.test(css),
+    );
+    assert(
+      'settings overlay keeps backdrop sampling during entrance animation',
+      !/\.settings-dialog-overlay\s*\{[^}]*animation:\s*overlayIn/.test(css),
+    );
   }
 
   console.log(`\n${'='.repeat(48)}`);

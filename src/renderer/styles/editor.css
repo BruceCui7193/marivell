@@ -3381,16 +3381,6 @@
   justify-content: center;
   padding: 24px;
   background: transparent;
-  animation: overlayIn var(--motion-duration-rich) var(--motion-ease-menu);
-}
-
-@keyframes overlayIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
 }
 
 .app-dialog {
@@ -3513,7 +3503,6 @@
   justify-content: center;
   padding: 24px;
   background: transparent;
-  animation: overlayIn var(--motion-duration-rich) var(--motion-ease-menu);
 }
 
 .settings-dialog {
