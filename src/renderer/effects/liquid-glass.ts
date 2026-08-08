@@ -305,9 +305,6 @@ function getNumericZIndex(element: HTMLElement): number {
 }
 
 function getTopLiquidSurface(element: HTMLElement): HTMLElement {
-  if (element.matches(LIQUID_GLASS_SURFACE_SELECTOR)) {
-    return element;
-  }
   let current = element.parentElement;
   while (current && current !== document.body) {
     if (current.matches(LIQUID_GLASS_SURFACE_SELECTOR)) {
