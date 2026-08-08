@@ -1,164 +1,143 @@
+<div align="center">
+
 # Marivell
 
-Marivell 是一个面向桌面场景的所见即所得（WYSIWYG）Markdown 编辑器，使用 Electron、React、TypeScript、Vite 和 Tiptap 构建。
+**A calm, local-first Markdown workspace with live math, diagrams, and glass UI.**
 
-项目目标不是简单实现 Markdown 渲染，而是提供一套更接近成熟桌面编辑器的使用体验，包括实时编辑、数学公式、Mermaid、文件夹浏览、多窗口、主题切换、导出能力和跨平台桌面集成。
+[![Release](https://img.shields.io/github/v/release/BruceCui7193/marivell?style=for-the-badge)](https://github.com/BruceCui7193/marivell/releases)
+[![License](https://img.shields.io/github/license/BruceCui7193/marivell?style=for-the-badge)](LICENSE)
+[![Build](https://img.shields.io/github/actions/workflow/status/BruceCui7193/marivell/release.yml?style=for-the-badge)](https://github.com/BruceCui7193/marivell/actions)
 
-## 主要功能
+</div>
 
-- 所见即所得编辑，不使用传统分栏预览
-- 支持常用 Markdown 语法：标题、列表、任务列表、引用、表格、代码块、图片、链接、脚注等
-- 支持数学公式：`$...$`、`$$...$$`、`\(...\)`、`\[...\]`，编辑时含 LaTeX 语法高亮
-- 支持 Mermaid 图表渲染与单击编辑
-- 支持粘贴 Markdown 文本自动转换为富文本
-- 支持 Ctrl+F 搜索，全部匹配高亮（装饰层）+ 当前匹配深色高亮，导航不抢占焦点
-- 支持源码模式
-- 支持图片拖拽、粘贴和本地资源落盘
-- 支持打开文件夹，并在侧栏查看当前目录中的 Markdown 文件
-- 支持文档大纲侧栏
-- 支持外部文件变更检测（提示重新加载或另存）
-- 支持浅色、深色、跟随系统以及 9 套配色方案（自然/森林/海湾/暖纸/石墨/北极光/春樱/薰衣草/赛博朋克）
-- 支持多窗口
-- 支持未保存修改保护
-- 支持记住上次窗口大小、位置和最大化状态
-- 支持高质量导出 PDF（独立 Markdown 渲染管线，KaTeX 公式 / Mermaid 图表 / 任务列表完整保留）
-- 支持导出 2× 高清长图（Chrome DevTools 全页截图）
-- 支持通过 Pandoc 导出 Word (DOCX)、HTML、EPUB、LaTeX、ODT、RTF、PPTX 等格式（需安装 [Pandoc](https://pandoc.org)）
-- 支持 Pandoc 自定义模板：DOCX/ODT/PPTX 参考文档（`--reference-doc`）、HTML/LaTeX 模板（`--template`）、EPUB 样式表（`--css`）；可设置默认模板或在导出时临时选择
-- 支持 Windows/Linux 文件关联，可将 `.md` / `.markdown` 文件默认关联到本应用
+![Marivell workspace](docs/screenshots/hero-light.png)
 
-## 技术栈
+Marivell is a WYSIWYG Markdown editor for people who want the fluid feel of a document editor and the full control of Markdown. It is built with Electron, React, TypeScript, Tiptap, KaTeX, and Mermaid, and keeps your files local-first by default.
 
-- Electron
-- electron-vite
-- React
-- TypeScript
-- Tiptap / ProseMirror
-- unified / remark-parse / remark-gfm / remark-math
-- KaTeX
-- Mermaid
-- lowlight
-- pngjs
+## The Editor
 
-## 目录结构
+![Dark source mode](docs/screenshots/source-dark.png)
 
-```text
-src/
-  main/        Electron 主进程与桌面集成逻辑
-  preload/     IPC 桥接层
-  renderer/    React 界面、编辑器逻辑与样式
-  shared/      主进程与渲染进程共享类型
-build/         图标等打包资源
+One maximized workspace shows task lists, KaTeX math, Mermaid diagrams, code, tables, footnotes, folder navigation, and the full toolbar. Source mode keeps raw Markdown, line numbers, and syntax highlighting one keystroke away.
+
+## Why Marivell
+
+- **WYSIWYG editing.** Edit the rendered document directly, instead of maintaining a separate preview pane.
+- **Math that reads like math.** Inline and block LaTeX are rendered with KaTeX while you work.
+- **Diagrams inside the document.** Mermaid charts stay editable and render in place.
+- **Source mode when you need it.** Raw Markdown, line numbers, and syntax highlighting are one keystroke away.
+- **Calm, configurable surfaces.** Frosted or liquid glass UI, light and dark modes, and multiple color palettes.
+- **Local-first workflow.** Open folders, browse files, paste images, detect external changes, and export without a cloud account.
+
+## Features
+
+| Area | What Marivell does |
+| --- | --- |
+| Markdown | Headings, lists, task lists, blockquotes, tables, code blocks, links, footnotes, HTML blocks |
+| Math | `$...$`, `$$...$$`, `\\(...\\)`, `\\[...\\]`, KaTeX rendering and LaTeX syntax highlighting |
+| Diagrams | Mermaid flowcharts, sequence diagrams, state diagrams, Gantt charts, and more |
+| Files | Folder sidebar, file tree, document outline, external change detection, multi-window |
+| Images | Drag-and-drop, paste, save to document folder, save to default library, keep original path |
+| Appearance | Light, dark, system theme; natural, forest, bay, warm paper, graphite, aurora, sakura, lavender, cyberpunk palettes; frosted glass, liquid glass, or solid UI |
+| Export | PDF, 2x long image, and Pandoc formats: DOCX, HTML, EPUB, LaTeX, ODT, RTF, PPTX, plain text, GFM |
+| Source mode | Raw Markdown editor with line numbers, search, go-to-line, and syntax highlighting |
+
+## Quick Start
+
+### Linux
+
+From source, build and install the latest version:
+
+```bash
+sudo npm run install:linux
 ```
 
-## 环境要求
+If a release package is preferred, install the `.deb` or AppImage from [Releases](https://github.com/BruceCui7193/marivell/releases).
 
-- Node.js 20 及以上
-- npm 10 及以上
-- Windows 10 / 11 或 Ubuntu 20.04+ (Linux)
+### Windows
 
-## 安装依赖
+Download the Windows installer from [Releases](https://github.com/BruceCui7193/marivell/releases). The installer includes an optional `.md` / `.markdown` file association, checked by default.
+
+### Open a Markdown file
+
+After installation you can open files from the terminal:
+
+```bash
+marivell document.md
+```
+
+## Development
+
+Requirements: Node.js 20+, npm 10+.
 
 ```bash
 npm install
-```
-
-如果你是从旧版本代码更新到最新版本，建议重新执行一次 `npm install`，确保新增依赖已经安装完成。
-
-## 开发运行
-
-```bash
 npm run dev
 ```
 
-## 测试
+## Test
 
 ```bash
 npm test
 ```
 
-`npm test` 会依次运行单元测试和 Markdown 夹具测试。夹具位于 `tests/fixtures/markdown/`，覆盖基础语法、数学公式、缩进/围栏代码块、原始 HTML、货币与转义美元、字面 token 文本、论文式 LaTeX 代码块等容易出问题的输入。
+The suite covers Markdown round-trips, source/visual mode switching, history, clipboard behavior, math, code blocks, images, footnotes, task lists, workflow stress cases, and packaging assets. GitHub Actions runs the same tests before building releases.
 
-GitHub Actions 的 Release workflow 也会先运行 `npm test`；测试全部通过后才会构建并发布 `.deb`、`.AppImage` 和 `.exe`。
-
-## 构建应用
-
-### Windows
+## Build
 
 ```bash
-npm run build:win
-```
-
-### Linux (Ubuntu/Debian)
-
-```bash
+# Linux packages
 npm run build:linux
-```
 
-如果只想生成目录版产物用于本地测试，可以执行：
+# Windows installer
+npm run build:win
 
-```bash
+# Local Linux unpacked build
 npm run build:linux:dir
 ```
 
-## 安装到系统 (Linux)
+## File Associations
 
-从源码构建并安装最新版，直接执行：
+`.md` and `.markdown` file association configuration lives in [electron-builder.config.mjs](electron-builder.config.mjs).
 
-```bash
-sudo npm run install:linux
+- Windows: the NSIS installer can register `.md` / `.markdown` with Marivell and uses the custom document icons.
+- Linux: the installer registers the MIME types and installs Markdown icons, so file managers show `.md` / `.markdown` files with Marivell icons and list Marivell in **Open With**.
+
+## Keyboard Shortcuts
+
+| Action | Shortcut |
+| --- | --- |
+| Save | `Ctrl+S` |
+| Search / replace | `Ctrl+F` |
+| Source mode | `Ctrl+Shift+E` |
+| Export PDF | `Ctrl+Shift+P` |
+| Export image | `Ctrl+Shift+I` |
+| Toggle theme | `Ctrl+Shift+L` |
+| Toggle sidebar | `Ctrl+\` |
+| New window | `Ctrl+N` |
+| Open file | `Ctrl+O` |
+| Bold | `Ctrl+B` |
+| Italic | `Ctrl+I` |
+
+## Project Layout
+
+```text
+src/
+  main/        Electron main process, desktop integration, export pipeline
+  preload/     IPC bridge
+  renderer/    React UI, editor, themes, clipboard, liquid glass
+  shared/      Shared contracts and types
+build/         Icons, desktop files, installer assets
+tests/         Markdown fixtures and shared test assets
+scripts/       Build, install, and test scripts
 ```
 
-它会先执行 `npm run build:linux:dir`，再执行 `scripts/install-linux.sh`，等价于：
+A ready-to-open demo document is available at [docs/demo/marivell.md](docs/demo/marivell.md).
 
-```bash
-sudo npm run build:linux:dir
-sudo bash scripts/install-linux.sh
-```
+## Tech Stack
 
-如果已经构建过 `dist/linux-unpacked`，只想重新安装当前产物，可以只执行：
+Electron, electron-vite, React, TypeScript, Tiptap/ProseMirror, KaTeX, Mermaid, lowlight, remark, pngjs, electron-builder.
 
-```bash
-sudo bash scripts/install-linux.sh
-```
+## License
 
-注意：安装脚本需要写入 `/opt` 和 `/usr/local`，所以要用 `sudo`。如果之前用 `sudo` 构建过，`out/` 和 `dist/` 可能是 root 权限，之后普通用户构建会报 `EACCES`；可以先清理再构建：
-
-```bash
-sudo rm -rf out dist
-sudo npm run install:linux
-```
-
-安装后，可以在应用菜单中找到 Marivell，也可以直接在终端运行：
-
-```bash
-marivell
-marivell document.md
-```
-
-**卸载：**
-
-```bash
-sudo rm -rf /opt/marivell \
-  /usr/local/bin/marivell \
-  /usr/local/share/icons/hicolor/512x512/apps/marivell.png \
-  /usr/local/share/applications/marivell.desktop
-sudo rm -f /usr/local/share/mime/packages/marivell.xml
-sudo find /usr/local/share/icons/hicolor -path '*/mimetypes/text-*-markdown.png' -delete
-```
-
-## 构建产物
-
-构建完成后，常见产物位于 `dist/` 目录：
-
-- `dist/win-unpacked/`：Windows 目录版应用
-- `dist/linux-unpacked/`：Linux 目录版应用
-- `dist/*.exe`：Windows 安装包
-- `dist/*.AppImage`：Linux AppImage 安装包
-- `dist/*.deb`：Linux deb 安装包
-
-## 文件关联
-
-`.md` 和 `.markdown` 文件关联配置位于 [electron-builder.config.mjs](electron-builder.config.mjs)。
-
-Windows 下通过 NSIS 安装包注册，安装时可勾选是否关联，默认勾选；关联图标使用 `build/file-associations/` 下的自定义图标。Linux 下通过 desktop entry + MIME 类型实现，`scripts/install-linux.sh` 还会安装 Markdown MIME 图标，文件管理器可直接显示 `.md` / `.markdown` 的自定义图标，并可在“打开方式”中选择 Marivell。
+MIT
