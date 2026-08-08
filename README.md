@@ -1,6 +1,6 @@
-# markdown-editor-pro
+# Marivell
 
-`markdown-editor-pro` 是一个面向桌面场景的所见即所得（WYSIWYG）Markdown 编辑器，使用 Electron、React、TypeScript、Vite 和 Tiptap 构建。
+Marivell 是一个面向桌面场景的所见即所得（WYSIWYG）Markdown 编辑器，使用 Electron、React、TypeScript、Vite 和 Tiptap 构建。
 
 项目目标不是简单实现 Markdown 渲染，而是提供一套更接近成熟桌面编辑器的使用体验，包括实时编辑、数学公式、Mermaid、文件夹浏览、多窗口、主题切换、导出能力和跨平台桌面集成。
 
@@ -129,21 +129,21 @@ sudo rm -rf out dist
 sudo npm run install:linux
 ```
 
-安装后，可以在应用菜单中找到 Markdown Editor Pro，也可以直接在终端运行：
+安装后，可以在应用菜单中找到 Marivell，也可以直接在终端运行：
 
 ```bash
-markdown-editor-pro
-markdown-editor-pro document.md
+marivell
+marivell document.md
 ```
 
 **卸载：**
 
 ```bash
-sudo rm -rf /opt/markdown-editor-pro \
-  /usr/local/bin/markdown-editor-pro \
-  /usr/local/share/icons/hicolor/512x512/apps/markdown-editor-pro.png \
-  /usr/local/share/applications/markdown-editor-pro.desktop
-sudo rm -f /usr/local/share/mime/packages/markdown-editor-pro.xml
+sudo rm -rf /opt/marivell \
+  /usr/local/bin/marivell \
+  /usr/local/share/icons/hicolor/512x512/apps/marivell.png \
+  /usr/local/share/applications/marivell.desktop
+sudo rm -f /usr/local/share/mime/packages/marivell.xml
 sudo find /usr/local/share/icons/hicolor -path '*/mimetypes/text-*-markdown.png' -delete
 ```
 
@@ -159,6 +159,6 @@ sudo find /usr/local/share/icons/hicolor -path '*/mimetypes/text-*-markdown.png'
 
 ## 文件关联
 
-`.md` 和 `.markdown` 文件关联配置位于 \[electron-builder.config.mjs]。
+`.md` 和 `.markdown` 文件关联配置位于 [electron-builder.config.mjs](electron-builder.config.mjs)。
 
-Windows 下通过 NSIS 安装包注册，安装时可勾选是否关联，默认勾选；关联图标使用 `build/file-associations/` 下的自定义图标。Linux 下通过 desktop entry + MIME 类型实现，`scripts/install-linux.sh` 还会安装 Markdown MIME 图标，文件管理器可直接显示 `.md` / `.markdown` 的自定义图标，并可在“打开方式”中选择 Markdown Editor Pro。
+Windows 下通过 NSIS 安装包注册，安装时可勾选是否关联，默认勾选；关联图标使用 `build/file-associations/` 下的自定义图标。Linux 下通过 desktop entry + MIME 类型实现，`scripts/install-linux.sh` 还会安装 Markdown MIME 图标，文件管理器可直接显示 `.md` / `.markdown` 的自定义图标，并可在“打开方式”中选择 Marivell。

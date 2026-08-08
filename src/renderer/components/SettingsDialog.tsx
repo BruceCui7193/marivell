@@ -517,7 +517,7 @@ export default function SettingsDialog({
                 <h3 className="settings-section__title">{translate('about')}</h3>
                 <div className="settings-about">
                   <div>
-                    <strong>{appInfo?.name ?? 'Markdown Editor Pro'}</strong>
+                    <strong>{appInfo?.name ?? 'Marivell'}</strong>
                   </div>
                   <div>{translate('version')} {appInfo?.version ?? '…'}</div>
                   <div>{translate('platform')} {appInfo?.platform ?? '…'}</div>

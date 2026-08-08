@@ -1,13 +1,13 @@
 [Desktop Entry]
-Name=Markdown Editor Pro
+Name=Marivell
 Comment=A professional Markdown editor
-Exec=/usr/local/bin/markdown-editor-pro %F
-TryExec=/usr/local/bin/markdown-editor-pro
-Icon=markdown-editor-pro
+Exec=/usr/local/bin/marivell %F
+TryExec=/usr/local/bin/marivell
+Icon=marivell
 Terminal=false
 Type=Application
 Categories=Office;TextEditor;Utility;
 MimeType=text/markdown;text/x-markdown;
-StartupWMClass=markdown-editor-pro
+StartupWMClass=marivell
 StartupNotify=true
 Keywords=markdown;editor;text;document;

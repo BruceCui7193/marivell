@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Install Markdown Editor Pro on Linux
+# Install Marivell on Linux
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-APP_NAME="markdown-editor-pro"
+APP_NAME="marivell"
 APP_DIR="/opt/${APP_NAME}"
 INSTALL_BIN="/usr/local/bin/${APP_NAME}"
 INSTALL_ICON="/usr/local/share/icons/hicolor/512x512/apps/${APP_NAME}.png"
 INSTALL_DESKTOP="/usr/local/share/applications/${APP_NAME}.desktop"
 USER_DESKTOP="${XDG_DATA_HOME:-$HOME/.local/share}/applications/${APP_NAME}.desktop"
 DIST_DIR="${PROJECT_DIR}/dist/linux-unpacked"
-MIME_XML="${PROJECT_DIR}/build/file-associations/markdown-editor-pro.xml"
+MIME_XML="${PROJECT_DIR}/build/file-associations/marivell.xml"
 INSTALL_MIME_DIR="/usr/local/share/mime"
-INSTALL_MIME_PACKAGE="${INSTALL_MIME_DIR}/packages/markdown-editor-pro.xml"
+INSTALL_MIME_PACKAGE="${INSTALL_MIME_DIR}/packages/marivell.xml"
 INSTALL_MIME_ICON_DIR="/usr/local/share/icons/hicolor"
 
 RED='\033[0;31m'
@@ -29,7 +29,7 @@ write_desktop_entry() {
   # Desktop files must not use shell scripts with relative paths; absolute only.
   cat > "${target}.tmp" << DESKTOP_EOF
 [Desktop Entry]
-Name=Markdown Editor Pro
+Name=Marivell
 Comment=A professional Markdown editor
 Exec=${exec_path} %F
 TryExec=${exec_path}
@@ -60,7 +60,7 @@ install_mime_icon() {
   fi
 }
 
-echo -e "${GREEN}=== Markdown Editor Pro - Linux Installer ===${NC}"
+echo -e "${GREEN}=== Marivell - Linux Installer ===${NC}"
 echo ""
 
 # Step 1: Check if build exists
@@ -88,9 +88,24 @@ if [ ! -f "${DIST_DIR}/${APP_NAME}" ]; then
 fi
 
 # Step 2: Remove old installation if exists
-if [ -d "${APP_DIR}" ]; then
+LEGACY_APP_DIR="/opt/markdown-editor-pro"
+LEGACY_BIN="/usr/local/bin/markdown-editor-pro"
+LEGACY_ICON="/usr/local/share/icons/hicolor/512x512/apps/markdown-editor-pro.png"
+LEGACY_DESKTOP="/usr/local/share/applications/markdown-editor-pro.desktop"
+LEGACY_MIME="/usr/local/share/mime/packages/markdown-editor-pro.xml"
+LEGACY_USER_DESKTOP="${XDG_DATA_HOME:-$HOME/.local/share}/applications/markdown-editor-pro.desktop"
+
+if [ -d "${APP_DIR}" ] || [ -e "${LEGACY_APP_DIR}" ] || [ -e "${LEGACY_BIN}" ] || [ -e "${LEGACY_DESKTOP}" ] || [ -e "${LEGACY_MIME}" ]; then
     echo "Removing previous installation..."
     sudo rm -rf "${APP_DIR}"
+fi
+
+# Remove files installed under the old markdown-editor-pro name.
+if [ -e "${LEGACY_APP_DIR}" ] || [ -e "${LEGACY_BIN}" ] || [ -e "${LEGACY_ICON}" ] || [ -e "${LEGACY_DESKTOP}" ] || [ -e "${LEGACY_MIME}" ] || [ -e "${LEGACY_USER_DESKTOP}" ]; then
+    echo "Removing legacy installation paths..."
+    sudo rm -rf "${LEGACY_APP_DIR}"
+    sudo rm -f "${LEGACY_BIN}" "${LEGACY_ICON}" "${LEGACY_DESKTOP}" "${LEGACY_MIME}"
+    rm -f "${LEGACY_USER_DESKTOP}"
 fi
 
 # Step 3: Copy entire app directory to /opt
@@ -183,7 +198,7 @@ echo -e "${GREEN}=== Installation complete! ===${NC}"
 echo ""
 echo "You can now:"
 echo "  • Run from terminal:  ${APP_NAME}"
-echo "  • Find it in your application menu under 'Markdown Editor Pro'"
+echo "  • Find it in your application menu under 'Marivell'"
 echo "  • Open .md files with: ${APP_NAME} <file.md>"
 echo ""
 echo -e "${YELLOW}If the menu still fails to open the app:${NC}"

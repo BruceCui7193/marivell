@@ -1,7 +1,7 @@
 export default {
-  appId: 'com.crh.markdowneditorpro',
-  productName: 'Markdown Editor Pro',
-  executableName: 'markdown-editor-pro',
+  appId: 'com.crh.marivell',
+  productName: 'Marivell',
+  executableName: 'marivell',
   directories: {
     buildResources: 'build',
   },
@@ -32,23 +32,23 @@ export default {
     fileAssociations: [
       {
         ext: 'md',
-        name: 'Markdown Document',
-        description: 'Open Markdown files with Markdown Editor Pro',
+        name: 'Marivell Markdown Document',
+        description: 'Open Markdown files with Marivell',
         mimeType: 'text/markdown',
       },
       {
         ext: 'markdown',
-        name: 'Markdown Document',
-        description: 'Open Markdown files with Markdown Editor Pro',
+        name: 'Marivell Markdown Document',
+        description: 'Open Markdown files with Marivell',
         mimeType: 'text/markdown',
       },
     ],
     desktop: {
       entry: {
-        Name: 'Markdown Editor Pro',
+        Name: 'Marivell',
         Comment: 'A professional Markdown editor',
         Categories: 'Office;TextEditor;',
-        StartupWMClass: 'markdown-editor-pro',
+        StartupWMClass: 'marivell',
       },
     },
   },

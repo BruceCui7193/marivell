@@ -460,7 +460,7 @@ function markdownToMinimalHtml(markdown: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
-  return `<pre data-markdown-editor-pro="1">${escaped}</pre>`;
+  return `<pre data-marivell="1">${escaped}</pre>`;
 }
 
 export function writeClipboardFromSelection(view: EditorView, event: ClipboardEvent): boolean {

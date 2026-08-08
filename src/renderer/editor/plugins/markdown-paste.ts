@@ -266,7 +266,7 @@ function insertPlainText(view: EditorView, text: string): boolean {
 }
 
 function isOurMarkdownHtml(html: string): boolean {
-  return /data-markdown-editor-pro\s*=\s*["']?1["']?/.test(html);
+  return /data-marivell\s*=\s*["']?1["']?/.test(html);
 }
 
 function extractMarkdownFromClipboard(event: ClipboardEvent): string {

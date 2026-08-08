@@ -1,7 +1,7 @@
 import { app } from 'electron';
 import type { AppInfo, UpdateCheckResult } from '@shared/contracts';
 
-const GITHUB_REPO = 'BruceCui7193/markdown-editor-pro';
+const GITHUB_REPO = 'BruceCui7193/marivell';
 
 export function getAppInfo(): AppInfo {
   return {
@@ -39,7 +39,7 @@ export async function checkForUpdates(
       {
         headers: {
           Accept: 'application/vnd.github+json',
-          'User-Agent': 'markdown-editor-pro',
+          'User-Agent': 'marivell',
         },
       },
     );

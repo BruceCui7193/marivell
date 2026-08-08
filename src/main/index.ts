@@ -74,7 +74,7 @@ import {
 } from './export';
 import { checkForUpdates, getAppInfo } from './settings';
 
-const APP_NAME = 'Markdown Editor Pro';
+const APP_NAME = 'Marivell';
 const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown']);
 const DIALOG_MARKDOWN_FILTERS = [
   { name: '\u004d\u0061\u0072\u006b\u0064\u006f\u0077\u006e \u6587\u6863', extensions: ['md', 'markdown'] },
@@ -884,7 +884,7 @@ async function createMainWindow(options: WindowInitOptions = {}): Promise<Browse
   }, 2500);
 
   windowInstance.webContents.on('render-process-gone', (_event, details) => {
-    console.error('[markdown-editor-pro] render process gone', details);
+    console.error('[marivell] render process gone', details);
     if (!windowInstance.isDestroyed()) {
       dialog.showErrorBox(
         APP_NAME,
@@ -962,10 +962,10 @@ async function createMainWindow(options: WindowInitOptions = {}): Promise<Browse
     try {
       await windowInstance.loadFile(path.join(__dirname, '../renderer/index.html'));
     } catch (error) {
-      console.error('[markdown-editor-pro] failed to load renderer', error);
+      console.error('[marivell] failed to load renderer', error);
       dialog.showErrorBox(
         APP_NAME,
-        `无法加载界面文件。\n\n${error instanceof Error ? error.message : String(error)}\n\n若从应用菜单启动失败，请确认桌面快捷方式指向 /opt/markdown-editor-pro 安装目录（不要指向项目里的 dist/linux-unpacked）。`,
+        `无法加载界面文件。\n\n${error instanceof Error ? error.message : String(error)}\n\n若从应用菜单启动失败，请确认桌面快捷方式指向 /opt/marivell 安装目录（不要指向项目里的 dist/linux-unpacked）。`,
       );
       throw error;
     }

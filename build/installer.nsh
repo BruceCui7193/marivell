@@ -21,9 +21,9 @@ Function showAssociationPage
   StrCmp $0 error 0 +2
   Abort
 
-  ${NSD_CreateLabel} 0 0 100% 24u "Choose whether Markdown files should be associated with Markdown Editor Pro."
+  ${NSD_CreateLabel} 0 0 100% 24u "Choose whether Markdown files should be associated with Marivell."
   Pop $0
-  ${NSD_CreateCheckbox} 0 32u 100% 12u "Associate .md / .markdown files with Markdown Editor Pro"
+  ${NSD_CreateCheckbox} 0 32u 100% 12u "Associate .md / .markdown files with Marivell"
   Pop $AssociateCheckbox
 
   ${If} $AssociateMarkdown == "1"
@@ -42,15 +42,25 @@ FunctionEnd
 Page custom showAssociationPage validateAssociationPage
 
 !macro customInstall
+  !insertmacro APP_UNASSOCIATE "md" "MarkdownEditorPro.md"
+  !insertmacro APP_UNASSOCIATE "markdown" "MarkdownEditorPro.md"
+  ReadRegStr $R0 SHELL_CONTEXT "Software\Classes\.md" ""
+  ${If} $R0 == "MarkdownEditorPro.md"
+    DeleteRegValue SHELL_CONTEXT "Software\Classes\.md" ""
+  ${EndIf}
+  ReadRegStr $R0 SHELL_CONTEXT "Software\Classes\.markdown" ""
+  ${If} $R0 == "MarkdownEditorPro.md"
+    DeleteRegValue SHELL_CONTEXT "Software\Classes\.markdown" ""
+  ${EndIf}
   ${If} $AssociateMarkdown == "1"
-    !insertmacro APP_ASSOCIATE "md" "MarkdownEditorPro.md" "Markdown Document" "$INSTDIR\resources\md.ico" "Open with Markdown Editor Pro" '"$appExe" "%1"'
-    !insertmacro APP_ASSOCIATE "markdown" "MarkdownEditorPro.md" "Markdown Document" "$INSTDIR\resources\markdown.ico" "Open with Markdown Editor Pro" '"$appExe" "%1"'
+    !insertmacro APP_ASSOCIATE "md" "Marivell.md" "Marivell Markdown Document" "$INSTDIR\resources\md.ico" "Open with Marivell" '"$appExe" "%1"'
+    !insertmacro APP_ASSOCIATE "markdown" "Marivell.md" "Marivell Markdown Document" "$INSTDIR\resources\markdown.ico" "Open with Marivell" '"$appExe" "%1"'
     !insertmacro UPDATEFILEASSOC
   ${EndIf}
 !macroend
 
 !macro unregisterFileAssociations
-  !insertmacro APP_UNASSOCIATE "md" "MarkdownEditorPro.md"
-  !insertmacro APP_UNASSOCIATE "markdown" "MarkdownEditorPro.md"
+  !insertmacro APP_UNASSOCIATE "md" "Marivell.md"
+  !insertmacro APP_UNASSOCIATE "markdown" "Marivell.md"
   !insertmacro UPDATEFILEASSOC
 !macroend

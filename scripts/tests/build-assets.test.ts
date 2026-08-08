@@ -37,21 +37,27 @@ section('file association icons');
   const config = read('electron-builder.config.mjs');
   assert('windows association config uses md icon', config.includes("build/file-associations/md.ico"));
   assert('windows association config uses markdown icon', config.includes("build/file-associations/markdown.ico"));
+  assert('electron builder uses Marivell product name', config.includes("productName: 'Marivell'"));
+  assert('electron builder uses marivell executable', config.includes("executableName: 'marivell'"));
+  assert('electron builder no longer uses legacy prog id', !config.includes('markdowneditorpro'));
   assert('windows build bundles md icon as resource', config.includes("from: 'build/file-associations/md.ico', to: 'md.ico'"));
   assert('windows build bundles markdown icon as resource', config.includes("from: 'build/file-associations/markdown.ico', to: 'markdown.ico'"));
 
   const installer = read('build/installer.nsh');
-  assert('installer keeps optional association checkbox', installer.includes('Associate .md / .markdown files with Markdown Editor Pro'));
+  assert('installer keeps optional association checkbox', installer.includes('Associate .md / .markdown files with Marivell'));
   assert('installer does not fall back to exe icon', !installer.includes('$appExe,0'));
   assert('installer registers md with custom icon', installer.includes('$INSTDIR\\resources\\md.ico'));
   assert('installer registers markdown with custom icon', installer.includes('$INSTDIR\\resources\\markdown.ico'));
-  assert('installer can remove associations when unchecked', installer.includes('APP_UNASSOCIATE "md" "MarkdownEditorPro.md"'));
+  assert('installer can remove associations when unchecked', installer.includes('APP_UNASSOCIATE "md" "Marivell.md"'));
+  assert('installer removes legacy prog id', installer.includes('APP_UNASSOCIATE "md" "MarkdownEditorPro.md"'));
+  assert('installer cleans legacy default extension value', installer.includes('DeleteRegValue SHELL_CONTEXT "Software\\Classes\\.md" ""'));
+  assert('installer no longer uses legacy product name', !installer.includes('Markdown Editor Pro'));
 }
 
 section('linux mime icons');
 
 {
-  const mime = read('build/file-associations/markdown-editor-pro.xml');
+  const mime = read('build/file-associations/marivell.xml');
   assert('mime package covers .md', mime.includes('*.md'));
   assert('mime package covers .markdown', mime.includes('*.markdown'));
   assert('mime package declares markdown icon', mime.includes('<icon name="text-markdown"/>'));
