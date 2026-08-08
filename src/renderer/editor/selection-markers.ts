@@ -162,6 +162,7 @@ export function restoreSelectionMarkersFromEditorState(
   view: EditorView,
 ): boolean {
   const schema = state.schema;
+  const sourceState = view.state;
   const blockEntries: Array<{ from: number; to: number; node: ProseMirrorNode | null }> = [];
 
   let startPos: number | null = null;
@@ -169,7 +170,7 @@ export function restoreSelectionMarkersFromEditorState(
   let mathSelection: { pos: number; start: number; end: number } | null = null;
 
   const topLevel: ProseMirrorNode[] = [];
-  state.doc.content.forEach((child) => topLevel.push(child));
+  sourceState.doc.content.forEach((child) => topLevel.push(child));
 
   let blockFrom = 0;
   for (const block of topLevel) {
@@ -191,7 +192,7 @@ export function restoreSelectionMarkersFromEditorState(
     blockEntries.push({ from: blockStart, to: blockEnd, node: replacement });
   }
 
-  state.doc.descendants((node, pos) => {
+  sourceState.doc.descendants((node, pos) => {
     if (!node.isText || !node.text || !node.text.includes('MDEDITORSELECTION')) {
       return true;
     }
@@ -206,7 +207,7 @@ export function restoreSelectionMarkersFromEditorState(
       endPos = pos + endIndex;
     }
 
-    const $pos = state.doc.resolve(pos);
+    const $pos = sourceState.doc.resolve(pos);
     for (let depth = $pos.depth; depth > 0; depth -= 1) {
       if ($pos.node(depth).type.name === 'inlineMath') {
         const inner = $pos.node(depth).textContent;
@@ -230,7 +231,7 @@ export function restoreSelectionMarkersFromEditorState(
   }
 
   blockEntries.sort((left, right) => right.from - left.from);
-  let tr = state.tr.setMeta('addToHistory', false);
+  let tr = sourceState.tr.setMeta('addToHistory', false);
   for (const entry of blockEntries) {
     const from = tr.mapping.map(entry.from);
     const to = tr.mapping.map(entry.to);
@@ -242,26 +243,25 @@ export function restoreSelectionMarkersFromEditorState(
   }
 
   if (mathSelection) {
+    const mathSelectionInfo = mathSelection as { pos: number; start: number; end: number };
+    const mathPos = tr.mapping.map(mathSelectionInfo.pos);
     try {
-      const mathSelectionInfo = mathSelection as { pos: number; start: number; end: number };
-      const mathPos = tr.mapping.map(mathSelectionInfo.pos);
       tr = tr.setSelection(NodeSelection.create(tr.doc, mathPos));
-      view.dispatch(tr);
-      view.focus();
-      window.dispatchEvent(
-        new CustomEvent('markdown-editor:focus-math-search-match', {
-          detail: {
-            pos: mathPos,
-            start: mathSelectionInfo.start,
-            end: mathSelectionInfo.end,
-          },
-        }),
-      );
-      return true;
     } catch {
-      view.dispatch(tr);
-      return true;
+      tr = tr.setSelection(TextSelection.near(tr.doc.resolve(mathPos)));
     }
+    view.dispatch(tr);
+    view.focus();
+    window.dispatchEvent(
+      new CustomEvent('markdown-editor:focus-math-search-match', {
+        detail: {
+          pos: mathPos,
+          start: mathSelectionInfo.start,
+          end: mathSelectionInfo.end,
+        },
+      }),
+    );
+    return true;
   }
 
   if (startPos !== null || endPos !== null) {

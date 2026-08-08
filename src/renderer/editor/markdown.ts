@@ -196,6 +196,22 @@ function normalizeBlockMathPairs(
   openDelim: string,
   closeDelim: string,
 ): string {
+  const isImmediatelyFollowedByBlockMath = (start: number): boolean => {
+    let index = start;
+    if (markdown.startsWith('\r\n', index)) {
+      index += 2;
+    } else if (markdown[index] === '\n') {
+      index += 1;
+    } else {
+      return false;
+    }
+
+    while (markdown[index] === ' ' || markdown[index] === '\t') {
+      index += 1;
+    }
+    return markdown.startsWith(open, index);
+  };
+
   let result = '';
   let cursor = 0;
 
@@ -214,14 +230,23 @@ function normalizeBlockMathPairs(
     }
 
     const expression = markdown.slice(cursor + open.length, closeIndex).trim();
-    result += createMathToken(
+    const token = createMathToken(
       'block',
       expression,
       openDelim,
       closeDelim,
       markdown.slice(cursor, closeIndex + close.length),
     );
-    cursor = closeIndex + close.length;
+    const nextIndex = closeIndex + close.length;
+    const separateFromNext = isImmediatelyFollowedByBlockMath(nextIndex);
+    result += separateFromNext ? `${token}\n\n` : token;
+    if (separateFromNext && markdown.startsWith('\r\n', nextIndex)) {
+      cursor = nextIndex + 2;
+    } else if (separateFromNext && markdown[nextIndex] === '\n') {
+      cursor = nextIndex + 1;
+    } else {
+      cursor = nextIndex;
+    }
   }
 
   return result;

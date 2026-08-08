@@ -924,7 +924,7 @@
   contain: paint;
   min-width: 220px;
   max-width: min(300px, calc(100vw - 16px));
-  max-height: min(420px, calc(100vh - 24px));
+  max-height: min(560px, calc(100vh - 24px));
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;

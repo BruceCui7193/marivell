@@ -697,6 +697,7 @@ export default function EditorShell({
       const nextStats = computeSourceStats(markdown);
       const dirty = markdown !== document.savedMarkdown;
       setSourceDraft(markdown);
+      sourceDraftRef.current = markdown;
       setLiveStats((current) => (areStatsEqual(current, nextStats) ? current : nextStats));
       setLiveDirty(dirty);
       onDocumentChange(markdown, nextStats);
@@ -860,6 +861,7 @@ export default function EditorShell({
     }
 
     setSourceDraft(document.markdown);
+    sourceDraftRef.current = document.markdown;
     sourceSelectionRef.current = {
       start: document.markdown.length,
       end: document.markdown.length,
@@ -1979,6 +1981,7 @@ export default function EditorShell({
           pendingSourceSelectionRef.current = selection;
           sourceSelectionRef.current = selection;
           setSourceDraft(markdown);
+          sourceDraftRef.current = markdown;
           const stats = computeSourceStats(markdown);
           setLiveStats((currentStats) => (areStatsEqual(currentStats, stats) ? currentStats : stats));
           queueSourcePreview(markdown, selection);
@@ -1992,6 +1995,7 @@ export default function EditorShell({
         };
         sourceSelectionRef.current = pendingSourceSelectionRef.current;
         setSourceDraft(fallbackMarkdown);
+        sourceDraftRef.current = fallbackMarkdown;
         const stats = computeSourceStats(fallbackMarkdown);
         setLiveStats((currentStats) => (areStatsEqual(currentStats, stats) ? currentStats : stats));
         return true;

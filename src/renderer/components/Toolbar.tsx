@@ -1013,7 +1013,7 @@ function Toolbar({
           const rect = event.currentTarget.getBoundingClientRect();
           const menuWidth = Math.min(280, window.innerWidth - 16);
           const left = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8));
-          const menuHeight = Math.min(420, window.innerHeight - 24);
+          const menuHeight = Math.min(560, window.innerHeight - 24);
           const belowTop = rect.bottom + 8;
           const top = belowTop + menuHeight > window.innerHeight - 8
             ? Math.max(8, rect.top - menuHeight - 8)

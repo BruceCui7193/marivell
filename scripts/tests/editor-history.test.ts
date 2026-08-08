@@ -14,6 +14,7 @@ g.cancelAnimationFrame = (id: number) => clearTimeout(id);
 g.File = dom.window.File;
 g.FileList = dom.window.FileList;
 g.ClipboardEvent = dom.window.ClipboardEvent;
+g.CustomEvent = dom.window.CustomEvent;
 g.DragEvent = dom.window.DragEvent;
 g.MutationObserver = dom.window.MutationObserver;
 g.DOMParser = dom.window.DOMParser;
