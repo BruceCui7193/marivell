@@ -1790,7 +1790,7 @@
 
 .editor-surface ul[data-type='taskList'] li {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 10px;
 }
 
@@ -1798,7 +1798,7 @@
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
-  margin-top: 0.2em;
+  margin: 0;
 }
 
 .editor-surface ul[data-type='taskList'] li > div {
@@ -2382,8 +2382,10 @@
 }
 
 .footnote-definition-node__label-input {
-  min-width: 24px;
-  max-width: 100px;
+  width: 2ch;
+  min-width: 2ch;
+  max-width: 8ch;
+  flex: 0 0 auto;
   border: none;
   background: transparent;
   color: var(--ui-accent);

@@ -152,7 +152,9 @@ async function main() {
       'task list uses flex row',
       /ul\[data-type='taskList'\] li\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*row|ul\[data-type='taskList'\] li\s*\{[^}]*display:\s*flex/.test(css),
     );
+    assert('task list centers checkbox with text', /ul\[data-type='taskList'\] li\s*\{[^}]*align-items:\s*center/.test(css));
     assert('task text paragraph removes block margin', /li > div p\s*\{[^}]*margin:\s*0/.test(css));
+    assert('footnote label input is compact', /\.footnote-definition-node__label-input\s*\{[^}]*width:\s*2ch/.test(css));
     assert('footnote definition uses flex row', /\.footnote-definition-node\s*\{[^}]*display:\s*flex/.test(css));
     assert('footnote definition drops card border', /\.footnote-definition-node\s*\{[^}]*border:\s*none/.test(css));
     assert('footnote content sits inline with label', /\.footnote-definition-node__content\s*\{[^}]*padding:\s*0/.test(css));
