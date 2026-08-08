@@ -16,6 +16,7 @@ export default {
     oneClick: false,
     perMachine: false,
     allowToChangeInstallationDirectory: true,
+    include: 'build/installer.nsh',
   },
   linux: {
     target: [
@@ -24,6 +25,20 @@ export default {
     ],
     category: 'Office',
     icon: 'build/icons',
+    fileAssociations: [
+      {
+        ext: 'md',
+        name: 'Markdown Document',
+        description: 'Open Markdown files with Markdown Editor Pro',
+        mimeType: 'text/markdown',
+      },
+      {
+        ext: 'markdown',
+        name: 'Markdown Document',
+        description: 'Open Markdown files with Markdown Editor Pro',
+        mimeType: 'text/markdown',
+      },
+    ],
     desktop: {
       entry: {
         Name: 'Markdown Editor Pro',
