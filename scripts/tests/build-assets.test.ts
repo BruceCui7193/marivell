@@ -73,6 +73,8 @@ section('linux mime icons');
   assert('linux installer registers both mime icon names', script.includes('text-x-markdown'));
   assert('linux installer writes user desktop for real sudo user', script.includes('REAL_USER="${SUDO_USER:-') && script.includes('runuser -u "${REAL_USER}"'));
   assert('linux installer installs hicolor theme index', script.includes('HICOLOR_THEME'));
+  assert('linux installer removes old dpkg package', script.includes('LEGACY_DPKG_PACKAGE="markdown-editor-pro"'));
+  assert('linux installer cleans old system desktop and icons', script.includes('LEGACY_SPACED_APP_DIR="/opt/Markdown Editor Pro"') && script.includes('LEGACY_SHARE_ICON_256'));
 }
 
 console.log(`\n${'='.repeat(48)}`);

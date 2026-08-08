@@ -102,6 +102,12 @@ LEGACY_ICON="/usr/local/share/icons/hicolor/512x512/apps/markdown-editor-pro.png
 LEGACY_DESKTOP="/usr/local/share/applications/markdown-editor-pro.desktop"
 LEGACY_MIME="/usr/local/share/mime/packages/markdown-editor-pro.xml"
 LEGACY_USER_DESKTOP="${USER_DATA_HOME}/applications/markdown-editor-pro.desktop"
+LEGACY_DPKG_PACKAGE="markdown-editor-pro"
+LEGACY_SPACED_APP_DIR="/opt/Markdown Editor Pro"
+LEGACY_SHARE_DESKTOP="/usr/share/applications/markdown-editor-pro.desktop"
+LEGACY_SHARE_ICON_256="/usr/share/icons/hicolor/256x256/apps/markdown-editor-pro.png"
+LEGACY_SHARE_ICON_512="/usr/share/icons/hicolor/512x512/apps/markdown-editor-pro.png"
+LEGACY_SHARE_MIME="/usr/share/mime/packages/markdown-editor-pro.xml"
 
 if [ -d "${APP_DIR}" ] || [ -e "${LEGACY_APP_DIR}" ] || [ -e "${LEGACY_BIN}" ] || [ -e "${LEGACY_DESKTOP}" ] || [ -e "${LEGACY_MIME}" ]; then
     echo "Removing previous installation..."
@@ -109,10 +115,14 @@ if [ -d "${APP_DIR}" ] || [ -e "${LEGACY_APP_DIR}" ] || [ -e "${LEGACY_BIN}" ] |
 fi
 
 # Remove files installed under the old markdown-editor-pro name.
-if [ -e "${LEGACY_APP_DIR}" ] || [ -e "${LEGACY_BIN}" ] || [ -e "${LEGACY_ICON}" ] || [ -e "${LEGACY_DESKTOP}" ] || [ -e "${LEGACY_MIME}" ] || [ -e "${LEGACY_USER_DESKTOP}" ]; then
+if dpkg-query -W -f='${Status}' "${LEGACY_DPKG_PACKAGE}" 2>/dev/null | grep -q '^ii '; then
+    echo "Removing old markdown-editor-pro package..."
+    sudo dpkg --remove "${LEGACY_DPKG_PACKAGE}" 2>/dev/null || sudo dpkg --purge "${LEGACY_DPKG_PACKAGE}" 2>/dev/null || true
+fi
+if [ -e "${LEGACY_APP_DIR}" ] || [ -e "${LEGACY_BIN}" ] || [ -e "${LEGACY_ICON}" ] || [ -e "${LEGACY_DESKTOP}" ] || [ -e "${LEGACY_MIME}" ] || [ -e "${LEGACY_USER_DESKTOP}" ] || [ -d "${LEGACY_SPACED_APP_DIR}" ] || [ -e "${LEGACY_SHARE_DESKTOP}" ] || [ -e "${LEGACY_SHARE_MIME}" ]; then
     echo "Removing legacy installation paths..."
-    sudo rm -rf "${LEGACY_APP_DIR}"
-    sudo rm -f "${LEGACY_BIN}" "${LEGACY_ICON}" "${LEGACY_DESKTOP}" "${LEGACY_MIME}"
+    sudo rm -rf "${LEGACY_APP_DIR}" "${LEGACY_SPACED_APP_DIR}"
+    sudo rm -f "${LEGACY_BIN}" "${LEGACY_ICON}" "${LEGACY_DESKTOP}" "${LEGACY_MIME}" "${LEGACY_SHARE_DESKTOP}" "${LEGACY_SHARE_ICON_256}" "${LEGACY_SHARE_ICON_512}" "${LEGACY_SHARE_MIME}"
     rm -f "${LEGACY_USER_DESKTOP}"
 fi
 
@@ -193,6 +203,7 @@ if [ -f "${MIME_XML}" ]; then
         install_mime_icon 512 "${PROJECT_DIR}/build/file-associations/text-markdown-512.png" "${icon_name}"
     done
     if command -v update-mime-database &> /dev/null; then
+        sudo update-mime-database /usr/share/mime 2>/dev/null || true
         sudo update-mime-database "${INSTALL_MIME_DIR}" 2>/dev/null || true
     fi
     echo -e "${GREEN}✓${NC} Installed Markdown MIME type and icons"
@@ -200,6 +211,7 @@ fi
 
 # Step 10: Update desktop / icon caches
 if command -v update-desktop-database &> /dev/null; then
+    sudo update-desktop-database /usr/share/applications/ 2>/dev/null || true
     sudo update-desktop-database /usr/local/share/applications/ 2>/dev/null || true
     if [ -n "${SUDO_USER:-}" ] && command -v runuser &> /dev/null; then
         runuser -u "${REAL_USER}" -- update-desktop-database "$(dirname "${USER_DESKTOP}")" 2>/dev/null || true
@@ -210,6 +222,7 @@ if command -v update-desktop-database &> /dev/null; then
     fi
 fi
 if command -v gtk-update-icon-cache &> /dev/null; then
+    sudo gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true
     sudo gtk-update-icon-cache -f /usr/local/share/icons/hicolor 2>/dev/null || true
 fi
 
