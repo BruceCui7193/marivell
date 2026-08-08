@@ -1375,10 +1375,31 @@ function stringifyBlockNode(node: MarkdownNode): string {
   }
 }
 
+function getLastNonEmptyBlock(children: MarkdownNode[]): { index: number; node: MarkdownNode } | null {
+  for (let index = children.length - 1; index >= 0; index -= 1) {
+    const node = children[index];
+    if (!node) {
+      continue;
+    }
+    if (stringifyBlockNode(node) !== '') {
+      return { index, node };
+    }
+  }
+  return null;
+}
+
 export function serializeMarkdown(document: JSONContent): string {
   const children = flowChildrenToMarkdown(document.content);
-  const markdown = stringifyBlockNodes(children).trimEnd();
-  return markdown.length === 0 ? '' : `${markdown}\n`;
+  const markdown = stringifyBlockNodes(children);
+  const lastBlock = getLastNonEmptyBlock(children);
+  if (lastBlock && lastBlock.node.type === 'math' && lastBlock.index < children.length - 1) {
+    // A display formula inserted through the visual editor keeps an empty
+    // paragraph after it. Preserve that blank line in source so the user's next
+    // input starts on a separate paragraph instead of touching the closing
+    // delimiter.
+    return `${markdown.replace(/\s+$/, '')}\n\n`;
+  }
+  return markdown.trimEnd().length === 0 ? '' : `${markdown.trimEnd()}\n`;
 }
 
 export function serializeMarkdownFragment(content: JSONContent[] = []): string {

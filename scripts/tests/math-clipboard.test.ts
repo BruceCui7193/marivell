@@ -109,6 +109,30 @@ function pastePayload(editor: Editor, payload: {
 console.log('\n## math insertion and clipboard round-trips');
 
 {
+  const source = serializeMarkdown({
+    type: 'doc',
+    content: [
+      {
+        type: 'paragraph',
+        content: [
+          {
+            type: 'inlineMath',
+            attrs: { display: 'yes', openDelim: '\\[', closeDelim: '\\]' },
+            content: [{ type: 'text', text: 'x' }],
+          },
+        ],
+      },
+      { type: 'paragraph' },
+    ],
+  });
+  assert(
+    'display math with bracket delimiters keeps a blank line after source',
+    source === '\\[\nx\n\\]\n\n',
+    source,
+  );
+}
+
+{
   const editor = makeEditor();
   try {
     editor.commands.setContent(parseMarkdown(''), false);
@@ -116,8 +140,8 @@ console.log('\n## math insertion and clipboard round-trips');
     editor.view.dispatch(editor.state.tr.insertText('x'));
     const source = serializeMarkdown(editor.getJSON());
     assert(
-      'inserted display math uses $$ delimiters in source',
-      source === '$$\nx\n$$\n',
+      'inserted display math uses $$ delimiters and a blank line after source',
+      source === '$$\nx\n$$\n\n',
       source,
     );
     const mathPos = findNodePosition(editor, 'inlineMath');
