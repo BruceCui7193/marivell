@@ -2,6 +2,7 @@ import clsx from 'clsx';
 import type { FolderEntry } from '@shared/contracts';
 import type { OutlineItem } from '../utils/document';
 import { formatFolderDate } from '../utils/document';
+import { translate } from '../i18n';
 
 type SidebarTab = 'files' | 'outline';
 
@@ -38,23 +39,23 @@ export default function Sidebar({
           onClick={() => onSelectTab('files')}
           type="button"
         >
-          {'\u6587\u4ef6'}
+          {translate('sidebarFiles')}
         </button>
         <button
           className={clsx('sidebar__tab', tab === 'outline' && 'is-active')}
           onClick={() => onSelectTab('outline')}
           type="button"
         >
-          {'\u5927\u7eb2'}
+          {translate('sidebarOutline')}
         </button>
       </div>
 
       {tab === 'files' ? (
         <div className="sidebar__panel">
           <div className="sidebar__panel-header">
-            <div className="sidebar__panel-title">{'\u6587\u4ef6\u5939'}</div>
+            <div className="sidebar__panel-title">{translate('sidebarFolder')}</div>
             <button className="sidebar__action" onClick={onOpenFolder} type="button">
-              {'\u6253\u5f00'}
+              {translate('sidebarOpen')}
             </button>
           </div>
 
@@ -79,7 +80,7 @@ export default function Sidebar({
               ))
             ) : (
               <div className="sidebar__empty">
-                {'\u6253\u5f00\u4e00\u4e2a\u6587\u4ef6\u5939\u540e\uff0c\u8fd9\u91cc\u4f1a\u663e\u793a\u5176\u4e2d\u7684 Markdown \u6587\u4ef6\u3002'}
+                {translate('sidebarFolderEmpty')}
               </div>
             )}
           </div>
@@ -87,7 +88,7 @@ export default function Sidebar({
       ) : (
         <div className="sidebar__panel">
           <div className="sidebar__panel-header">
-            <div className="sidebar__panel-title">{'\u6587\u6863\u5927\u7eb2'}</div>
+            <div className="sidebar__panel-title">{translate('sidebarOutline')}</div>
           </div>
 
           <div className="sidebar__list">
@@ -104,7 +105,7 @@ export default function Sidebar({
               ))
             ) : (
               <div className="sidebar__empty">
-                {'\u5f53\u524d\u6587\u6863\u8fd8\u6ca1\u6709\u6807\u9898\u7ed3\u6784\u3002'}
+                {translate('sidebarOutlineEmpty')}
               </div>
             )}
           </div>

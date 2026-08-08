@@ -288,8 +288,12 @@ section('settings helpers');
   assert('custom colors explicit enable keeps working', resolveCustomColorsEnabled('1'));
   setAppLanguage('en');
   assertEqual('empty math hint translates to English', translate('emptyMath'), 'Empty math');
+  assertEqual('sidebar files label translates to English', translate('sidebarFiles'), 'Files');
+  assertEqual('sidebar outline label translates to English', translate('sidebarOutline'), 'Outline');
   setAppLanguage('zh-CN');
   assertEqual('empty math hint translates to Chinese', translate('emptyMath'), '空公式');
+  assertEqual('sidebar files label translates to Chinese', translate('sidebarFiles'), '文件');
+  assertEqual('sidebar outline label translates to Chinese', translate('sidebarOutline'), '大纲');
 
   const baseGradient = { enabled: true, strength: 0.55 };
   const lightGradient = buildThemeGradientStyles(baseGradient, 'light', 'natural');
