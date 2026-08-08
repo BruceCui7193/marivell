@@ -782,6 +782,21 @@
   display: inline-flex;
 }
 
+.theme-panel-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.theme-panel-anchor .theme-panel {
+  top: calc(100% + 8px);
+  right: 0;
+}
+
+.toolbar--compact .theme-panel-anchor .theme-panel {
+  left: 0;
+  right: auto;
+}
+
 .toolbar-submenu-anchor.has-open-panel {
   z-index: 6;
 }
@@ -3292,6 +3307,16 @@
   background: transparent;
   border-color: transparent;
   box-shadow: none;
+}
+
+:root[data-glass-effect='liquid'] .toolbar-compact-panel .toolbar-submenu.is-open {
+  background-color: color-mix(in srgb, var(--ui-bg-strong) 88%, transparent);
+  background-image:
+    linear-gradient(135deg, color-mix(in srgb, var(--ui-accent) 6%, transparent), transparent 52%),
+    linear-gradient(315deg, color-mix(in srgb, var(--ui-accent) 3%, transparent), transparent 66%),
+    linear-gradient(180deg, color-mix(in srgb, var(--ui-bg-strong) 12%, transparent), transparent 40%);
+  -webkit-backdrop-filter: var(--glass-backdrop);
+  backdrop-filter: var(--glass-backdrop);
 }
 
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {

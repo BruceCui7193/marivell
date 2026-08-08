@@ -372,13 +372,25 @@ function Toolbar({
       if (!(target instanceof HTMLElement)) {
         return;
       }
-      const insideOpenMenu = Boolean(
-        target.closest('.toolbar-menu, .toolbar-submenu.is-open, .toolbar-compact-panel, .theme-panel.is-open'),
+      const insideThirdLevelMenu = Boolean(
+        target.closest('.toolbar-menu, .toolbar-submenu.is-open, .theme-panel.is-open'),
       );
+      const insideCompactPanel = Boolean(target.closest('.toolbar-compact-panel'));
       const isPanelTrigger = Boolean(
         target.closest('.toolbar-menu-trigger, .toolbar-group-launcher, [data-panel-trigger]'),
       );
-      if (!insideOpenMenu && !isPanelTrigger) {
+      if (insideThirdLevelMenu || isPanelTrigger) {
+        return;
+      }
+      if (insideCompactPanel) {
+        setThemePanelOpen(false);
+        setMenuOpen(null);
+        setMenuRect(null);
+        setFormulaMenuOpen(false);
+        setLinkMenuOpen(false);
+        return;
+      }
+      if (!insideCompactPanel) {
         closeAllPanels();
       }
     };
@@ -893,6 +905,103 @@ function Toolbar({
     );
   };
 
+  const renderThemePanel = () => (
+    <div
+      aria-hidden={!themePanelOpen}
+      className={themePanelOpen ? 'theme-panel is-open' : 'theme-panel is-closed'}
+    >
+      <div className="theme-panel__section">
+        <div className="theme-panel__title">{labels.appearanceMode}</div>
+        <div className="theme-panel__modes">
+          <button
+            className={clsx('theme-mode-button', theme === 'system' && 'is-active')}
+            onClick={() => {
+              onSetTheme('system');
+              setThemePanelOpen(false);
+            }}
+            type="button"
+          >
+            <Icon className="theme-mode-button__icon" name="autoTheme" />
+            <span>{labels.auto}</span>
+          </button>
+          <button
+            className={clsx('theme-mode-button', theme === 'light' && 'is-active')}
+            onClick={() => {
+              onSetTheme('light');
+              setThemePanelOpen(false);
+            }}
+            type="button"
+          >
+            <Icon className="theme-mode-button__icon" name="sun" />
+            <span>{labels.light}</span>
+          </button>
+          <button
+            className={clsx('theme-mode-button', theme === 'dark' && 'is-active')}
+            onClick={() => {
+              onSetTheme('dark');
+              setThemePanelOpen(false);
+            }}
+            type="button"
+          >
+            <Icon className="theme-mode-button__icon" name="moon" />
+            <span>{labels.dark}</span>
+          </button>
+        </div>
+      </div>
+
+      <div className="theme-panel__section">
+        <div className="theme-panel__title">{labels.glassEffect}</div>
+        <div className="theme-panel__glass-options">
+          {GLASS_EFFECT_OPTIONS.map((option) => (
+            <button
+              className={clsx(
+                'theme-glass-button',
+                glassEffect === option.id && 'is-active',
+              )}
+              key={option.id}
+              onClick={() => {
+                onSetGlassEffect(option.id);
+                setThemePanelOpen(false);
+              }}
+              title={
+                appLanguage === 'en' ? option.descriptionEn : option.description
+              }
+              type="button"
+            >
+              <span className={clsx('theme-glass-button__preview', `is-${option.id}`)} />
+              <span>{appLanguage === 'en' ? option.labelEn : option.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="theme-panel__section">
+        <div className="theme-panel__title">{labels.paletteScheme}</div>
+        <div className="theme-panel__palettes">
+          {THEME_PALETTE_OPTIONS.map((option) => (
+            <button
+              key={option.id}
+              className={clsx('theme-palette-button', themePalette === option.id && 'is-active')}
+              onClick={() => {
+                onSetThemePalette(option.id);
+                setThemePanelOpen(false);
+              }}
+              type="button"
+            >
+              <span className="theme-palette-button__swatch" style={{ background: option.swatch }} />
+              <span className="theme-palette-button__label">
+                {appLanguage === 'en' ? option.labelEn : option.label}
+              </span>
+              <span className="theme-palette-button__description">
+                {appLanguage === 'en' ? option.descriptionEn : option.description}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
   const renderMenuTrigger = (menu: 'document' | 'edit' | 'view', label: string) => (
     <div className="toolbar-menu-anchor">
       <button
@@ -1295,20 +1404,23 @@ function Toolbar({
           shortcut={shortcutLabels.sourceMode}
           title={sourceMode ? labels.sourceOn : labels.sourceOff}
         />
-        <ToolbarButton
-          active={themePanelOpen || theme !== 'system'}
-          icon="appearance"
-          onClick={() => {
-            const shouldOpen = !themePanelOpen;
-            closeAllPanels(true);
-            if (shouldOpen) {
-              setThemePanelOpen(true);
-            }
-          }}
-          panelTrigger
-          shortcut={shortcutLabels.toggleTheme}
-          title={`${labels.themePanel} / ${themeLabel} / ${currentPalette?.label ?? labels.auto}`}
-        />
+        <div className="theme-panel-anchor">
+          <ToolbarButton
+            active={themePanelOpen || theme !== 'system'}
+            icon="appearance"
+            onClick={() => {
+              const shouldOpen = !themePanelOpen;
+              closeAllPanels(true);
+              if (shouldOpen) {
+                setThemePanelOpen(true);
+              }
+            }}
+            panelTrigger
+            shortcut={shortcutLabels.toggleTheme}
+            title={`${labels.themePanel} / ${themeLabel} / ${currentPalette?.label ?? labels.auto}`}
+          />
+          {renderThemePanel()}
+        </div>
         {renderMenuTrigger('view', labels.viewMenu)}
       </>
     );
@@ -1431,101 +1543,6 @@ function Toolbar({
             <div className="toolbar__group toolbar__group--compact">{renderGroupActions(compactGroupOpen)}</div>
           </div>
         ) : null}
-
-        <div
-          aria-hidden={!themePanelOpen}
-          className={themePanelOpen ? 'theme-panel is-open' : 'theme-panel is-closed'}
-        >
-          <div className="theme-panel__section">
-            <div className="theme-panel__title">{labels.appearanceMode}</div>
-            <div className="theme-panel__modes">
-              <button
-                className={clsx('theme-mode-button', theme === 'system' && 'is-active')}
-                onClick={() => {
-                  onSetTheme('system');
-                  setThemePanelOpen(false);
-                }}
-                type="button"
-              >
-                <Icon className="theme-mode-button__icon" name="autoTheme" />
-                <span>{labels.auto}</span>
-              </button>
-              <button
-                className={clsx('theme-mode-button', theme === 'light' && 'is-active')}
-                onClick={() => {
-                  onSetTheme('light');
-                  setThemePanelOpen(false);
-                }}
-                type="button"
-              >
-                <Icon className="theme-mode-button__icon" name="sun" />
-                <span>{labels.light}</span>
-              </button>
-              <button
-                className={clsx('theme-mode-button', theme === 'dark' && 'is-active')}
-                onClick={() => {
-                  onSetTheme('dark');
-                  setThemePanelOpen(false);
-                }}
-                type="button"
-              >
-                <Icon className="theme-mode-button__icon" name="moon" />
-                <span>{labels.dark}</span>
-              </button>
-            </div>
-          </div>
-
-          <div className="theme-panel__section">
-            <div className="theme-panel__title">{labels.glassEffect}</div>
-            <div className="theme-panel__glass-options">
-              {GLASS_EFFECT_OPTIONS.map((option) => (
-                <button
-                  className={clsx(
-                    'theme-glass-button',
-                    glassEffect === option.id && 'is-active',
-                  )}
-                  key={option.id}
-                  onClick={() => {
-                    onSetGlassEffect(option.id);
-                    setThemePanelOpen(false);
-                  }}
-                  title={
-                    appLanguage === 'en' ? option.descriptionEn : option.description
-                  }
-                  type="button"
-                >
-                  <span className={clsx('theme-glass-button__preview', `is-${option.id}`)} />
-                  <span>{appLanguage === 'en' ? option.labelEn : option.label}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="theme-panel__section">
-            <div className="theme-panel__title">{labels.paletteScheme}</div>
-            <div className="theme-panel__palettes">
-              {THEME_PALETTE_OPTIONS.map((option) => (
-                <button
-                  key={option.id}
-                  className={clsx('theme-palette-button', themePalette === option.id && 'is-active')}
-                  onClick={() => {
-                    onSetThemePalette(option.id);
-                    setThemePanelOpen(false);
-                  }}
-                  type="button"
-                >
-                  <span className="theme-palette-button__swatch" style={{ background: option.swatch }} />
-                  <span className="theme-palette-button__label">
-                    {appLanguage === 'en' ? option.labelEn : option.label}
-                  </span>
-                  <span className="theme-palette-button__description">
-                    {appLanguage === 'en' ? option.descriptionEn : option.description}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
       </header>
 
       <button
