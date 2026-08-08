@@ -143,6 +143,8 @@ sudo rm -rf /opt/markdown-editor-pro \
   /usr/local/bin/markdown-editor-pro \
   /usr/local/share/icons/hicolor/512x512/apps/markdown-editor-pro.png \
   /usr/local/share/applications/markdown-editor-pro.desktop
+sudo rm -f /usr/local/share/mime/packages/markdown-editor-pro.xml
+sudo find /usr/local/share/icons/hicolor -path '*/mimetypes/text-*-markdown.png' -delete
 ```
 
 ## 构建产物
@@ -159,4 +161,4 @@ sudo rm -rf /opt/markdown-editor-pro \
 
 `.md` 和 `.markdown` 文件关联配置位于 \[electron-builder.config.mjs]。
 
-Windows 下通过 NSIS 安装包注册，Linux 下通过 desktop entry + MIME 类型实现。安装后可直接双击 `.md` 文件打开。
+Windows 下通过 NSIS 安装包注册，安装时可勾选是否关联，默认勾选；关联图标使用 `build/file-associations/` 下的自定义图标。Linux 下通过 desktop entry + MIME 类型实现，`scripts/install-linux.sh` 还会安装 Markdown MIME 图标，文件管理器可直接显示 `.md` / `.markdown` 的自定义图标，并可在“打开方式”中选择 Markdown Editor Pro。

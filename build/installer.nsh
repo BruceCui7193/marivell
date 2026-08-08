@@ -1,5 +1,6 @@
 ; Windows installer: optional Markdown file association.
 ; Defaults to checked, and registers Open With entries for .md / .markdown.
+; Custom association icons are copied into the app resources by win.extraResources.
 !include FileAssociation.nsh
 !include LogicLib.nsh
 !include nsDialogs.nsh
@@ -42,8 +43,8 @@ Page custom showAssociationPage validateAssociationPage
 
 !macro customInstall
   ${If} $AssociateMarkdown == "1"
-    !insertmacro APP_ASSOCIATE "md" "MarkdownEditorPro.md" "Markdown Document" "$appExe,0" "Open with Markdown Editor Pro" '"$appExe" "%1"'
-    !insertmacro APP_ASSOCIATE "markdown" "MarkdownEditorPro.md" "Markdown Document" "$appExe,0" "Open with Markdown Editor Pro" '"$appExe" "%1"'
+    !insertmacro APP_ASSOCIATE "md" "MarkdownEditorPro.md" "Markdown Document" "$INSTDIR\resources\md.ico" "Open with Markdown Editor Pro" '"$appExe" "%1"'
+    !insertmacro APP_ASSOCIATE "markdown" "MarkdownEditorPro.md" "Markdown Document" "$INSTDIR\resources\markdown.ico" "Open with Markdown Editor Pro" '"$appExe" "%1"'
     !insertmacro UPDATEFILEASSOC
   ${EndIf}
 !macroend

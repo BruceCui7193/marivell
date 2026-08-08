@@ -11,6 +11,10 @@ export default {
   npmRebuild: false,
   win: {
     target: ['nsis'],
+    extraResources: [
+      { from: 'build/file-associations/md.ico', to: 'md.ico' },
+      { from: 'build/file-associations/markdown.ico', to: 'markdown.ico' },
+    ],
   },
   nsis: {
     oneClick: false,

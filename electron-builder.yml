@@ -12,16 +12,38 @@ npmRebuild: false
 win:
   target:
     - nsis
-  fileAssociations:
-    - ext: md
-      name: Markdown Document
-      description: Open Markdown files with Markdown Editor Pro
-      role: Editor
-    - ext: markdown
-      name: Markdown Document
-      description: Open Markdown files with Markdown Editor Pro
-      role: Editor
+  extraResources:
+    - from: build/file-associations/md.ico
+      to: md.ico
+    - from: build/file-associations/markdown.ico
+      to: markdown.ico
 nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
+  include: build/installer.nsh
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64
+  category: Office
+  icon: build/icons
+  fileAssociations:
+    - ext: md
+      name: Markdown Document
+      description: Open Markdown files with Markdown Editor Pro
+      mimeType: text/markdown
+    - ext: markdown
+      name: Markdown Document
+      description: Open Markdown files with Markdown Editor Pro
+      mimeType: text/markdown
+  desktop:
+    entry:
+      Name: Markdown Editor Pro
+      Comment: A professional Markdown editor
+      Categories: Office;TextEditor;
+      StartupWMClass: markdown-editor-pro

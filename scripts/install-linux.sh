@@ -11,6 +11,10 @@ INSTALL_ICON="/usr/local/share/icons/hicolor/512x512/apps/${APP_NAME}.png"
 INSTALL_DESKTOP="/usr/local/share/applications/${APP_NAME}.desktop"
 USER_DESKTOP="${XDG_DATA_HOME:-$HOME/.local/share}/applications/${APP_NAME}.desktop"
 DIST_DIR="${PROJECT_DIR}/dist/linux-unpacked"
+MIME_XML="${PROJECT_DIR}/build/file-associations/markdown-editor-pro.xml"
+INSTALL_MIME_DIR="/usr/local/share/mime"
+INSTALL_MIME_PACKAGE="${INSTALL_MIME_DIR}/packages/markdown-editor-pro.xml"
+INSTALL_MIME_ICON_DIR="/usr/local/share/icons/hicolor"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -42,6 +46,17 @@ DESKTOP_EOF
     sudo mv "${target}.tmp" "$target"
   else
     mv "${target}.tmp" "$target"
+  fi
+}
+
+install_mime_icon() {
+  local size="$1"
+  local source="$2"
+  local icon_name="$3"
+  local target="${INSTALL_MIME_ICON_DIR}/${size}x${size}/mimetypes/${icon_name}.png"
+  if [ -f "$source" ]; then
+    sudo mkdir -p "$(dirname "$target")"
+    sudo cp "$source" "$target"
   fi
 }
 
@@ -138,7 +153,23 @@ if file "${INSTALL_BIN}" | grep -qi 'ELF'; then
     exit 1
 fi
 
-# Step 9: Update desktop / icon caches
+# Step 9: Install MIME metadata and icons so .md / .markdown files keep custom icons.
+if [ -f "${MIME_XML}" ]; then
+    sudo mkdir -p "$(dirname "${INSTALL_MIME_PACKAGE}")"
+    sudo cp "${MIME_XML}" "${INSTALL_MIME_PACKAGE}"
+    for icon_name in text-markdown text-x-markdown; do
+        install_mime_icon 64 "${PROJECT_DIR}/build/file-associations/text-markdown-64.png" "${icon_name}"
+        install_mime_icon 128 "${PROJECT_DIR}/build/file-associations/text-markdown-128.png" "${icon_name}"
+        install_mime_icon 256 "${PROJECT_DIR}/build/file-associations/text-markdown-256.png" "${icon_name}"
+        install_mime_icon 512 "${PROJECT_DIR}/build/file-associations/text-markdown-512.png" "${icon_name}"
+    done
+    if command -v update-mime-database &> /dev/null; then
+        sudo update-mime-database "${INSTALL_MIME_DIR}" 2>/dev/null || true
+    fi
+    echo -e "${GREEN}✓${NC} Installed Markdown MIME type and icons"
+fi
+
+# Step 10: Update desktop / icon caches
 if command -v update-desktop-database &> /dev/null; then
     sudo update-desktop-database /usr/local/share/applications/ 2>/dev/null || true
     update-desktop-database "$(dirname "${USER_DESKTOP}")" 2>/dev/null || true
@@ -163,4 +194,6 @@ echo "  3. Test: gtk-launch ${APP_NAME}"
 echo ""
 echo -e "${YELLOW}To uninstall, run:${NC}"
 echo "  sudo rm -rf ${APP_DIR} ${INSTALL_BIN} ${INSTALL_ICON} ${INSTALL_DESKTOP}"
+echo "  sudo rm -f ${INSTALL_MIME_PACKAGE}"
+echo "  sudo find ${INSTALL_MIME_ICON_DIR} -path '*/mimetypes/text-*-markdown.png' -delete"
 echo "  rm -f ${USER_DESKTOP}"
