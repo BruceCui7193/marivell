@@ -1,5 +1,7 @@
 <div align="center">
 
+**English** | [简体中文](README.zh-CN.md)
+
 # Marivell
 
 **A calm, local-first Markdown workspace with live math, diagrams, and glass UI.**
@@ -137,6 +139,8 @@ A ready-to-open demo document is available at [docs/demo/marivell.md](docs/demo/
 ## Tech Stack
 
 Electron, electron-vite, React, TypeScript, Tiptap/ProseMirror, KaTeX, Mermaid, lowlight, remark, pngjs, electron-builder.
+
+The liquid glass UI is a self-contained renderer adapted from the open-source [archisvaze/liquid-glass](https://github.com/archisvaze/liquid-glass) SVG displacement approach, with Marivell-specific backdrop sampling layers, animation, and performance tuning. See [liquid-glass.ts](src/renderer/effects/liquid-glass.ts).
 
 ## License
 
