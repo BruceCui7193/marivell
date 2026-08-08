@@ -158,6 +158,10 @@ async function main() {
     assert('footnote definition uses flex row', /\.footnote-definition-node\s*\{[^}]*display:\s*flex/.test(css));
     assert('footnote definition drops card border', /\.footnote-definition-node\s*\{[^}]*border:\s*none/.test(css));
     assert('footnote content sits inline with label', /\.footnote-definition-node__content\s*\{[^}]*padding:\s*0/.test(css));
+    assert(
+      'dialog overlay does not isolate backdrop with will-change opacity',
+      !/\.app-dialog-overlay\s*\{[^}]*will-change:\s*opacity/.test(css),
+    );
   }
 
   console.log(`\n${'='.repeat(48)}`);

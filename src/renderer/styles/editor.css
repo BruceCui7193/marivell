@@ -3376,7 +3376,6 @@
   position: fixed;
   inset: 0;
   z-index: 12000;
-  will-change: opacity;
   display: flex;
   align-items: center;
   justify-content: center;
