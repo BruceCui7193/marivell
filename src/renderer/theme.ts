@@ -1,4 +1,4 @@
-import type { CustomColorSettings } from './settings';
+import type { CustomColorSettings, GradientSettings } from './settings';
 
 export type ThemePalette = 'natural' | 'forest' | 'ocean' | 'sepia' | 'graphite' | 'nord' | 'sakura' | 'lavender' | 'cyberpunk';
 export type GlassEffect = 'frosted' | 'liquid' | 'off';
@@ -35,6 +35,38 @@ export function getThemePaletteColors(palette: ThemePalette): CustomColorSetting
     default:
       return { accent: '#4d7592', background: '#f4f7fb', editorBackground: '#fdfefe', border: '#d7e1ea', text: '#1d2b38' };
   }
+}
+
+export interface ThemeGradientStyles {
+  surface: string;
+  paper: string;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+export function buildThemeGradientStyles(
+  settings: GradientSettings,
+  themeMode: 'light' | 'dark',
+  palette: ThemePalette,
+): ThemeGradientStyles | null {
+  if (!settings.enabled) {
+    return null;
+  }
+
+  const isDark = themeMode === 'dark';
+  const cyberpunk = palette === 'cyberpunk';
+  const paletteBoost = cyberpunk ? 1.65 : 1;
+  const darkScale = isDark ? (cyberpunk ? 0.72 : 0.42) : 1;
+  const factor = clamp(settings.strength * paletteBoost * darkScale, 0, 1.5);
+  const strength = Math.round(factor * 26);
+  const secondary = cyberpunk ? 'var(--ui-text)' : 'var(--ui-accent)';
+
+  return {
+    surface: `linear-gradient(180deg, color-mix(in srgb, var(--ui-accent) ${strength}%, transparent), transparent 74%), linear-gradient(90deg, color-mix(in srgb, ${secondary} ${Math.round(strength * 0.7)}%, transparent), transparent 58%)`,
+    paper: `linear-gradient(165deg, color-mix(in srgb, var(--ui-accent) ${Math.round(strength * 0.55)}%, transparent), transparent 44%), linear-gradient(15deg, color-mix(in srgb, ${secondary} ${Math.round(strength * 0.3)}%, transparent), transparent 62%)`,
+  };
 }
 
 export const THEME_PALETTE_OPTIONS: ThemePaletteOption[] = [

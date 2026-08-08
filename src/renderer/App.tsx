@@ -7,7 +7,14 @@ import type {
   SavedDocument,
   ThemeMode,
 } from '@shared/contracts';
-import { getThemePaletteColors, type GlassEffect, type ThemePalette, isGlassEffect, isThemePalette } from './theme';
+import {
+  buildThemeGradientStyles,
+  getThemePaletteColors,
+  type GlassEffect,
+  type ThemePalette,
+  isGlassEffect,
+  isThemePalette,
+} from './theme';
 import AppDialog, { type AppDialogOptions } from './components/AppDialog';
 import SettingsDialog from './components/SettingsDialog';
 import { translate, useAppLanguage } from './i18n';
@@ -234,21 +241,15 @@ export default function App() {
   useEffect(() => {
     saveGradient(gradient);
     const style = document.documentElement.style;
-    if (!gradient.enabled) {
+    const nextGradients = buildThemeGradientStyles(gradient, resolvedTheme, themePalette);
+    if (!nextGradients) {
       style.removeProperty('--ui-surface-gradient');
       style.removeProperty('--ui-paper-gradient');
       return;
     }
-    const strength = Math.round(gradient.strength * 26);
-    style.setProperty(
-      '--ui-surface-gradient',
-      `linear-gradient(180deg, color-mix(in srgb, var(--ui-accent) ${strength}%, transparent), transparent 74%), linear-gradient(90deg, color-mix(in srgb, var(--ui-accent) ${Math.round(strength * 0.7)}%, transparent), transparent 58%)`,
-    );
-    style.setProperty(
-      '--ui-paper-gradient',
-      `linear-gradient(165deg, color-mix(in srgb, var(--ui-accent) ${Math.round(strength * 0.55)}%, transparent), transparent 44%), linear-gradient(15deg, color-mix(in srgb, var(--ui-accent) ${Math.round(strength * 0.3)}%, transparent), transparent 62%)`,
-    );
-  }, [gradient]);
+    style.setProperty('--ui-surface-gradient', nextGradients.surface);
+    style.setProperty('--ui-paper-gradient', nextGradients.paper);
+  }, [gradient, resolvedTheme, themePalette]);
 
   useEffect(() => {
     setLiquidGlassEnabled(glassEffect === 'liquid');

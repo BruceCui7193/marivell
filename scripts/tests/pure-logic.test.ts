@@ -29,7 +29,11 @@ import {
   LIQUID_GLASS_CONFIG,
   LIQUID_GLASS_SURFACE_SELECTOR,
 } from '../../src/renderer/effects/liquid-glass.ts';
-import { GLASS_EFFECT_OPTIONS, isGlassEffect } from '../../src/renderer/theme.ts';
+import {
+  buildThemeGradientStyles,
+  GLASS_EFFECT_OPTIONS,
+  isGlassEffect,
+} from '../../src/renderer/theme.ts';
 import {
   getMathCompletionCaret,
   getMathCompletionItems,
@@ -38,6 +42,7 @@ import {
 import {
   hexToRgb,
   isHexColor,
+  resolveCustomColorsEnabled,
   rgbToHex,
 } from '../../src/renderer/settings.ts';
 import { setAppLanguage, translate } from '../../src/renderer/i18n.ts';
@@ -279,10 +284,44 @@ section('settings helpers');
   assert('hex color rejects short values', !isHexColor('#fff'));
   assertEqual('hex to rgb parses channels', hexToRgb('#010203'), { r: 1, g: 2, b: 3 });
   assertEqual('rgb to hex formats channels', rgbToHex(1, 2, 3), '#010203');
+  assert('custom colors only override themes when explicitly enabled', !resolveCustomColorsEnabled(null));
+  assert('custom colors explicit enable keeps working', resolveCustomColorsEnabled('1'));
   setAppLanguage('en');
   assertEqual('empty math hint translates to English', translate('emptyMath'), 'Empty math');
   setAppLanguage('zh-CN');
   assertEqual('empty math hint translates to Chinese', translate('emptyMath'), '空公式');
+
+  const baseGradient = { enabled: true, strength: 0.55 };
+  const lightGradient = buildThemeGradientStyles(baseGradient, 'light', 'natural');
+  const darkGradient = buildThemeGradientStyles(baseGradient, 'dark', 'natural');
+  const cyberpunkLight = buildThemeGradientStyles(baseGradient, 'light', 'cyberpunk');
+  const cyberpunkDark = buildThemeGradientStyles(baseGradient, 'dark', 'cyberpunk');
+  assert(
+    'dark gradients use lower opacity than light gradients',
+    Boolean(
+      lightGradient &&
+        darkGradient &&
+        darkGradient.surface.includes('--ui-accent) 6%') &&
+        lightGradient.surface.includes('--ui-accent) 14%'),
+    ),
+    JSON.stringify({ lightGradient, darkGradient }),
+  );
+  assert(
+    'cyberpunk gradients are more pronounced than natural gradients',
+    Boolean(
+      cyberpunkLight &&
+        cyberpunkDark &&
+        lightGradient &&
+        cyberpunkLight.surface.includes('--ui-accent) 24%') &&
+        cyberpunkDark.surface.includes('--ui-accent) 17%') &&
+        cyberpunkLight.surface.includes('var(--ui-text)'),
+    ),
+    JSON.stringify({ cyberpunkLight, cyberpunkDark }),
+  );
+  assert(
+    'disabled gradients return null',
+    buildThemeGradientStyles({ enabled: false, strength: 0.55 }, 'dark', 'cyberpunk') === null,
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -150,10 +150,11 @@ export function rgbToHex(r: number, g: number, b: number): string {
 }
 
 export function loadCustomColorsEnabled(): boolean {
-  return (
-    localStorage.getItem('markdown-editor-custom-colors-enabled') === '1' ||
-    localStorage.getItem('markdown-editor-custom-colors') !== null
-  );
+  return resolveCustomColorsEnabled(localStorage.getItem('markdown-editor-custom-colors-enabled'));
+}
+
+export function resolveCustomColorsEnabled(persistedEnabled: string | null): boolean {
+  return persistedEnabled === '1';
 }
 
 export function saveCustomColorsEnabled(enabled: boolean): void {
