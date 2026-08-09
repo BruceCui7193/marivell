@@ -88,6 +88,15 @@ function getDialogParent(parentWindow: any): any {
   return parentWindow;
 }
 
+const benchmarkTimeline: Array<{ name: string; value: number }> = [];
+const benchmarkEnabled = process.env.MARIVELL_BENCHMARK === '1';
+
+function recordBenchmark(name: string, value = Date.now()): void {
+  if (benchmarkEnabled) {
+    benchmarkTimeline.push({ name, value });
+  }
+}
+
 const windows = new Set<BrowserWindow>();
 const pendingFilesOnLaunch: string[] = [];
 const dirtyWindows = new WeakMap<BrowserWindow, boolean>();
@@ -713,6 +722,8 @@ async function openDocumentInWindow(window: BrowserWindow, filePath: string): Pr
     return;
   }
 
+  recordBenchmark('document-open-main-start');
+
   // Stop watching previous file for this window
   const previousState = getWindowDocumentState(window);
   if (previousState.path) {
@@ -720,6 +731,7 @@ async function openDocumentInWindow(window: BrowserWindow, filePath: string): Pr
   }
 
   const document = await readDocument(filePath);
+  recordBenchmark('document-read-end');
   updateWindowTitle(window, document.title);
   markWindowDirty(window, false);
   markWindowDocumentState(window, {
@@ -728,6 +740,7 @@ async function openDocumentInWindow(window: BrowserWindow, filePath: string): Pr
     dirty: false,
   });
   window.webContents.send('document:opened', document);
+  recordBenchmark('document-open-sent');
 
   // Start watching for external changes
   startWatchingFile(filePath, window);
@@ -944,6 +957,7 @@ async function createMainWindow(options: WindowInitOptions = {}): Promise<Browse
   });
 
   windowInstance.webContents.on('did-finish-load', () => {
+    recordBenchmark('renderer-did-finish-load');
     if (filePath) {
       void openDocumentInWindow(windowInstance, filePath);
     }
@@ -1156,6 +1170,12 @@ async function exportClipboardDebugBundle(): Promise<string | null> {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.on('benchmark:record', (_event, payload: { name: string; value: number }) => {
+    recordBenchmark(payload.name, payload.value);
+  });
+
+  ipcMain.handle('benchmark:timeline', () => benchmarkTimeline);
+
   ipcMain.handle('window:new', async () => {
     await createMainWindow();
   });

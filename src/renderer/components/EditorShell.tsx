@@ -1133,6 +1133,9 @@ export default function EditorShell({
 
   useEffect(() => {
     editorRef.current = editor;
+    if (window.markdownEditor.getBenchmarkEnabled?.()) {
+      (window as unknown as Record<string, unknown>).__marivellEditor = editor;
+    }
   }, [editor]);
 
   const updateImageSrc = useCallback((oldSrc: string, newSrc: string) => {
@@ -1367,6 +1370,9 @@ export default function EditorShell({
       }
       editor.setEditable(true);
       setLoadingExternalDocument(false);
+      if (window.markdownEditor.getBenchmarkEnabled?.()) {
+        window.markdownEditor.reportBenchmarkMetric('visual-editor-ready', Date.now());
+      }
       // A dialog can steal focus; put the caret back after content is ready.
       // startupCaretPlaced effect also runs when loading flips false.
       requestAnimationFrame(() => {

@@ -1,6 +1,7 @@
 import { Extension } from '@tiptap/core';
 import { Plugin } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 
 interface Token {
   from: number;
@@ -53,10 +54,56 @@ function tokenizeLatex(text: string): Token[] {
   return tokens;
 }
 
-function buildDecorationsForDoc(doc: any): DecorationSet {
+function expandToInlineMathRange(doc: ProseMirrorNode, pos: number): { from: number; to: number } | null {
+  if (pos < 0 || pos > doc.content.size) {
+    return null;
+  }
+
+  const $pos = doc.resolve(pos);
+  if ($pos.parent.type.name === 'inlineMath') {
+    return {
+      from: $pos.before($pos.depth),
+      to: $pos.after($pos.depth),
+    };
+  }
+
+  const nodeBefore = $pos.nodeBefore;
+  if (nodeBefore?.type.name === 'inlineMath') {
+    return {
+      from: pos - nodeBefore.nodeSize,
+      to: pos,
+    };
+  }
+
+  const nodeAfter = $pos.nodeAfter;
+  if (nodeAfter?.type.name === 'inlineMath') {
+    return {
+      from: pos,
+      to: pos + nodeAfter.nodeSize,
+    };
+  }
+
+  return null;
+}
+
+function expandRangeToTouchingInlineMath(
+  doc: ProseMirrorNode,
+  from: number,
+  to: number,
+): { from: number; to: number } {
+  const start = expandToInlineMathRange(doc, from);
+  const end = expandToInlineMathRange(doc, to);
+
+  return {
+    from: Math.min(start?.from ?? from, end?.from ?? from),
+    to: Math.max(start?.to ?? to, end?.to ?? to),
+  };
+}
+
+function buildDecorationsForRange(doc: ProseMirrorNode, from: number, to: number): Decoration[] {
   const decorations: Decoration[] = [];
 
-  doc.descendants((node: any, pos: number) => {
+  doc.nodesBetween(from, to, (node: ProseMirrorNode, pos: number) => {
     if (node.type.name !== 'inlineMath') {
       return true;
     }
@@ -75,9 +122,11 @@ function buildDecorationsForDoc(doc: any): DecorationSet {
     return false;
   });
 
-  return decorations.length > 0
-    ? DecorationSet.create(doc, decorations)
-    : DecorationSet.empty;
+  return decorations;
+}
+
+function buildDecorationsForDoc(doc: ProseMirrorNode): DecorationSet {
+  return DecorationSet.create(doc, buildDecorationsForRange(doc, 0, doc.content.size));
 }
 
 export const MathSyntaxHighlight = Extension.create({
@@ -87,14 +136,30 @@ export const MathSyntaxHighlight = Extension.create({
     return [
       new Plugin<DecorationSet>({
         state: {
-          init(): DecorationSet {
-            return DecorationSet.empty;
+          init(_config, state): DecorationSet {
+            return buildDecorationsForDoc(state.doc);
           },
           apply(tr, oldDecorations, _oldState, newState): DecorationSet {
             if (!tr.docChanged) {
-              return oldDecorations.map(tr.mapping, tr.doc);
+              return tr.mapping.maps.length > 0
+                ? oldDecorations.map(tr.mapping, tr.doc)
+                : oldDecorations;
             }
-            return buildDecorationsForDoc(newState.doc);
+
+            const mapped = oldDecorations.map(tr.mapping, tr.doc);
+            const changed = tr.changedRange();
+            if (!changed) {
+              return mapped;
+            }
+
+            const range = expandRangeToTouchingInlineMath(newState.doc, changed.from, changed.to);
+            const stale = mapped.find(range.from, range.to);
+            const withoutStale = mapped.remove(stale);
+
+            return withoutStale.add(
+              newState.doc,
+              buildDecorationsForRange(newState.doc, range.from, range.to),
+            );
           },
         },
 

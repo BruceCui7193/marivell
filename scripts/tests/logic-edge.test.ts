@@ -41,6 +41,7 @@ import { convertHtmlToMarkdown, looksLikeStructuredHtml } from '../../src/render
 import { highlightLatex, highlightMermaid, highlightSearchInHtml } from '../../src/renderer/editor/syntax-highlight';
 import { getCodeLanguageLabel, CODE_LANGUAGE_OPTIONS } from '../../src/renderer/editor/code-languages';
 import { findVisualSearchMatches, replaceAllVisualSearchMatches, replaceVisualSearchMatch, selectVisualSearchMatch } from '../../src/renderer/editor/search';
+import { clearSearchHighlights, searchHighlightKey, setSearchHighlights } from '../../src/renderer/editor/plugins/search-highlight';
 import { moveCursorAroundBlockNode, deleteBlockNodeAndFocus } from '../../src/renderer/editor/block-node-cursor';
 import { buildSourceContextMenu, buildVisualContextMenu } from '../../src/renderer/editor/context-menu-actions';
 import { SAMPLE_DOCUMENT } from '../../src/renderer/sample-document';
@@ -129,6 +130,32 @@ console.log('\n## visual search');
     } finally {
       editor2.destroy();
     }
+  } finally {
+    editor.destroy();
+  }
+}
+
+console.log('\n## search highlight decoration set');
+
+{
+  const editor = makeEditor("hello world hello");
+  try {
+    const matches = findVisualSearchMatches(editor, "hello");
+    setSearchHighlights(editor.view, {
+      matches: matches.map((match) => ({ from: match.from, to: match.to })),
+      currentIndex: 0,
+      query: "hello",
+    });
+    const highlighted = searchHighlightKey.getState(editor.state);
+    assert("search highlight state stores set", Boolean(highlighted?.set.find().length), JSON.stringify(highlighted?.search));
+
+    editor.view.dispatch(editor.state.tr.insertText("!"));
+    const mapped = searchHighlightKey.getState(editor.state);
+    assert("search highlight set survives insert transaction", Boolean(mapped?.set.find().length), JSON.stringify(mapped?.search));
+
+    clearSearchHighlights(editor.view);
+    const cleared = searchHighlightKey.getState(editor.state);
+    assert("search highlight set clears", cleared?.set.find().length === 0, JSON.stringify(cleared?.search));
   } finally {
     editor.destroy();
   }

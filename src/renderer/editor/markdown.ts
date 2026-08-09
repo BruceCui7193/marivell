@@ -380,10 +380,18 @@ function findInlineMathClose(markdown: string, cursor: number, close: string): n
   return -1;
 }
 
+function hasMathPlaceholderToken(value: string): boolean {
+  return value.includes('\uE001') || value.includes('\uE000MDMATH_');
+}
+
 function splitTextWithMathPlaceholders(
   text: string,
   placeholders: Map<string, MathPlaceholder>,
 ): JSONContent[] {
+  if (!hasMathPlaceholderToken(text)) {
+    return text ? [{ type: 'text', text }] : [];
+  }
+
   const tokens = [...placeholders.keys()].sort((a, b) => b.length - a.length);
   const parts: JSONContent[] = [];
   let lastIndex = 0;
@@ -448,6 +456,10 @@ function getBlockMathPlaceholder(node: MarkdownNode, placeholders: Map<string, M
   // Use regex to extract the math token, so surrounding text
   // (e.g. selection markers) doesn't break the lookup.
   const text = String(children[0].value ?? '').trim();
+  if (!hasMathPlaceholderToken(text)) {
+    return null;
+  }
+
   const token = [...placeholders.keys()].find((candidate) => text.includes(candidate));
   if (!token) {
     return null;
@@ -458,6 +470,10 @@ function getBlockMathPlaceholder(node: MarkdownNode, placeholders: Map<string, M
 }
 
 function restoreLeakedMathText(value: string, placeholders: Map<string, MathPlaceholder>): string {
+  if (!hasMathPlaceholderToken(value)) {
+    return value;
+  }
+
   let restored = value;
   for (const [token, placeholder] of placeholders) {
     restored = restored.split(token).join(

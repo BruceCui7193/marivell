@@ -141,6 +141,9 @@ export interface MarkdownEditorApi {
   choosePandocTemplate: (format: PandocExportFormat) => Promise<string | null>;
   getAppInfo: () => Promise<AppInfo>;
   checkForUpdates: (includePrerelease: boolean) => Promise<UpdateCheckResult>;
+  reportBenchmarkMetric: (name: string, value: number) => void;
+  getBenchmarkTimeline: () => Promise<Array<{ name: string; value: number }>>;
+  getBenchmarkEnabled: () => boolean;
   setTheme: (theme: ThemeMode) => Promise<void>;
   zoomIn: () => Promise<void>;
   zoomOut: () => Promise<void>;

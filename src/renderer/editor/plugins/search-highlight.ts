@@ -13,6 +13,12 @@ export interface SearchHighlightState {
 interface PluginState {
   search: SearchHighlightState;
   version: number;
+  set: DecorationSet;
+}
+
+interface SearchHighlightMeta {
+  search: SearchHighlightState;
+  version: number;
 }
 
 function getDefaultSearchState(): SearchHighlightState {
@@ -51,22 +57,20 @@ export function setSearchHighlights(
   state: SearchHighlightState,
 ): void {
   const prev = searchHighlightKey.getState(view.state);
-  view.dispatch(
-    view.state.tr.setMeta(searchHighlightKey, {
-      search: state,
-      version: (prev?.version ?? 0) + 1,
-    } satisfies PluginState),
-  );
+  const meta: SearchHighlightMeta = {
+    search: state,
+    version: (prev?.version ?? 0) + 1,
+  };
+  view.dispatch(view.state.tr.setMeta(searchHighlightKey, meta));
 }
 
 export function clearSearchHighlights(view: EditorView): void {
   const prev = searchHighlightKey.getState(view.state);
-  view.dispatch(
-    view.state.tr.setMeta(searchHighlightKey, {
-      search: getDefaultSearchState(),
-      version: (prev?.version ?? 0) + 1,
-    } satisfies PluginState),
-  );
+  const meta: SearchHighlightMeta = {
+    search: getDefaultSearchState(),
+    version: (prev?.version ?? 0) + 1,
+  };
+  view.dispatch(view.state.tr.setMeta(searchHighlightKey, meta));
 }
 
 export const SearchHighlight = Extension.create({
@@ -79,12 +83,22 @@ export const SearchHighlight = Extension.create({
 
         state: {
           init(): PluginState {
-            return { search: getDefaultSearchState(), version: 0 };
+            return { search: getDefaultSearchState(), version: 0, set: DecorationSet.empty };
           },
           apply(tr, prev): PluginState {
-            const meta = tr.getMeta(searchHighlightKey) as PluginState | undefined;
+            const meta = tr.getMeta(searchHighlightKey) as SearchHighlightMeta | undefined;
             if (meta) {
-              return meta;
+              return {
+                search: meta.search,
+                version: meta.version,
+                set: buildDecorations(tr.doc, meta.search),
+              };
+            }
+            if (tr.docChanged) {
+              return {
+                ...prev,
+                set: prev.set.map(tr.mapping, tr.doc),
+              };
             }
             return prev;
           },
@@ -96,7 +110,7 @@ export const SearchHighlight = Extension.create({
             if (!pluginState) {
               return DecorationSet.empty;
             }
-            return buildDecorations(state.doc, pluginState.search);
+            return pluginState.set;
           },
         },
       }),

@@ -33,3 +33,5 @@ temp/
 .vscode/
 .cache/
 .eslintcache
+
+perf-report.json

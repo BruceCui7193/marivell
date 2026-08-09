@@ -83,7 +83,25 @@ npm run dev
 npm test
 ```
 
-The suite covers Markdown round-trips, source/visual mode switching, history, clipboard behavior, math, code blocks, images, footnotes, task lists, workflow stress cases, and packaging assets. GitHub Actions runs the same tests before building releases.
+The suite covers Markdown round-trips, source/visual mode switching, history, clipboard behavior, math, code blocks, images, footnotes, task lists, workflow stress cases, render-mode interaction/HTML regressions, and packaging assets. GitHub Actions runs the same tests before building releases.
+
+## Performance Benchmark
+
+```bash
+npm run benchmark
+npm run benchmark -- /path/to/a/large-markdown-file.md
+```
+
+Full methodology and current baseline results are in [docs/performance-benchmark.md](docs/performance-benchmark.md). A 2026-oriented, no-code-change long-term optimization plan is in [docs/performance-roadmap.md](docs/performance-roadmap.md). The benchmark builds a temporary bundle, launches Electron in visual/render mode, and measures:
+
+- visual document open: file read, renderer render, and total open time
+- an interaction suite: typing, bold, heading, list, inline/block math, table, code block, image, footnote, undo/redo, and a combined sequence
+- visual editing latency after the document is ready
+- scroll response and average/max frame time while scrolling
+- right-click context menu open latency
+- headless Markdown parse, serialize, syntax highlight, outline extraction, and formula counts
+
+Results are printed as a table and written to `perf-report.json`. Set `MARIVELL_BENCHMARK_FILE` to choose the Markdown file without passing it as an argument. Timeouts can be tuned with `MARIVELL_BENCHMARK_OPEN_TIMEOUT_MS`, `MARIVELL_BENCHMARK_INTERACTION_TIMEOUT_MS`, and `MARIVELL_BENCHMARK_SUITE_TIMEOUT_MS`.
 
 ## Build
 

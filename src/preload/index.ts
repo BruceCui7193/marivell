@@ -46,6 +46,10 @@ const api: MarkdownEditorApi = {
   getAppInfo: () => ipcRenderer.invoke('settings:app-info'),
   checkForUpdates: (includePrerelease: boolean) =>
     ipcRenderer.invoke('settings:check-updates', includePrerelease),
+  reportBenchmarkMetric: (name: string, value: number) =>
+    ipcRenderer.send('benchmark:record', { name, value }),
+  getBenchmarkTimeline: () => ipcRenderer.invoke('benchmark:timeline'),
+  getBenchmarkEnabled: () => process.env.MARIVELL_BENCHMARK === '1',
   setTheme: (theme: ThemeMode) => ipcRenderer.invoke('theme:set', theme),
   zoomIn: () => ipcRenderer.invoke('window:zoom-in'),
   zoomOut: () => ipcRenderer.invoke('window:zoom-out'),

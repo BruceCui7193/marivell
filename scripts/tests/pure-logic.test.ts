@@ -125,6 +125,20 @@ a+b
   const mathOut = serializeMarkdown(parseMarkdown('See $E=mc^2$ here\n'));
   assert('real math survives', mathOut.includes('E=mc^2') || mathOut.includes('$E=mc^2$'));
 
+  const plainDoc = parseMarkdown('Hello plain world\n');
+  assert('plain text parses as ordinary text', JSON.stringify(plainDoc).includes('"type":"text"'));
+  assert('plain text serializes without math tokens', !serializeMarkdown(plainDoc).includes('\uE000'));
+
+  const inlineMathDoc = parseMarkdown('$x^2$\n');
+  assert('single-dollar math parses as inlineMath', JSON.stringify(inlineMathDoc).includes('"type":"inlineMath"'));
+  assert('single-dollar math preserves content', JSON.stringify(inlineMathDoc).includes('x^2'));
+
+  const malformedMathOut = serializeMarkdown(parseMarkdown('unclosed $x^2\n'));
+  assert('malformed math does not leak placeholder token', !malformedMathOut.includes('\uE000') && malformedMathOut.includes('$x^2'));
+
+  const multipleMathOut = serializeMarkdown(parseMarkdown('$x^2$ and $y^2$\n'));
+  assert('multiple math placeholders restore without leakage', !multipleMathOut.includes('\uE000') && multipleMathOut.includes('$x^2$') && multipleMathOut.includes('$y^2$'));
+
   const indentedCodeMath = serializeMarkdown(
     parseMarkdown('Before\n\n    $x^2 + y^2 = z^2$\n\nAfter\n'),
   );

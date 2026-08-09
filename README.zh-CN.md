@@ -83,7 +83,25 @@ npm run dev
 npm test
 ```
 
-测试套件覆盖 Markdown 往返、源代码/可视化模式切换、历史记录、剪贴板、公式、代码块、图片、脚注、任务列表、工作流压力场景和打包资源。GitHub Actions 会在构建发布前运行相同的测试。
+测试套件覆盖 Markdown 往返、源代码/可视化模式切换、历史记录、剪贴板、公式、代码块、图片、脚注、任务列表、工作流压力场景、渲染模式交互/HTML 回归和打包资源。GitHub Actions 会在构建发布前运行相同的测试。
+
+## 性能基准
+
+```bash
+npm run benchmark
+npm run benchmark -- /path/to/大文件.md
+```
+
+完整测试方法和当前基线结果见 [docs/performance-benchmark.md](docs/performance-benchmark.md)。不涉及代码改动的 2026 长期优化方案见 [docs/performance-roadmap.md](docs/performance-roadmap.md)。基准测试会构建临时产物，以可视化/渲染模式启动 Electron，并测量：
+
+- 可视化文档打开：主进程读文件、渲染器渲染、总打开耗时
+- 交互套件：输入、加粗、标题、列表、行内/行间公式、表格、代码块、图片、脚注、撤销/重做，以及组合操作
+- 文档打开后的可视化编辑响应延迟
+- 滚动响应时间，以及滚动过程中的平均/最大帧耗时
+- 右键菜单打开延迟
+- 无界面基准：Markdown 解析、序列化、源码高亮、大纲提取、公式数量
+
+结果会打印成表格，并写入 `perf-report.json`。也可以设置 `MARIVELL_BENCHMARK_FILE` 指定测试文件。超时可用 `MARIVELL_BENCHMARK_OPEN_TIMEOUT_MS`、`MARIVELL_BENCHMARK_INTERACTION_TIMEOUT_MS` 和 `MARIVELL_BENCHMARK_SUITE_TIMEOUT_MS` 调整。
 
 ## 构建
 
