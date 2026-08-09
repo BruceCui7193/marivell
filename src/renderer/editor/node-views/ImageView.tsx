@@ -1,7 +1,8 @@
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { NodeViewWrapper } from '@tiptap/react';
 import type { NodeViewProps } from '@tiptap/react';
 import { handleBlockEditorBoundaryNavigation } from '../node-view-navigation';
+import { preloadImageSource } from '../image-preload';
 
 interface ParsedImageMarkdown {
   alt: string;
@@ -95,6 +96,40 @@ function ImageView({ editor, extension, getPos, node, selected, updateAttributes
     title: node.attrs.title ? String(node.attrs.title) : null,
   };
   const resolvedSource = extension.options.resolveImageSource(String(previewSource.src ?? ''));
+  const imageRef = useRef<HTMLImageElement | null>(null);
+
+  useEffect(() => {
+    const source = resolvedSource;
+    if (!source) {
+      return;
+    }
+
+    if (typeof IntersectionObserver === 'undefined' || /^(?:data|blob):/i.test(source)) {
+      void preloadImageSource(source);
+      return;
+    }
+
+    const imageElement = imageRef.current;
+    if (!imageElement) {
+      return;
+    }
+
+    let observer: IntersectionObserver | null = null;
+    observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          void preloadImageSource(source);
+          observer?.disconnect();
+        }
+      },
+      { rootMargin: '600px' },
+    );
+    observer.observe(imageElement);
+
+    return () => {
+      observer?.disconnect();
+    };
+  }, [editing, resolvedSource]);
 
   function commitDraft(): void {
     const nextImage = parseImageMarkdown(draft);
@@ -158,6 +193,9 @@ function ImageView({ editor, extension, getPos, node, selected, updateAttributes
               <img
                 alt={String(previewSource.alt ?? '')}
                 className="image-node__image"
+                decoding="async"
+                loading="lazy"
+                ref={imageRef}
                 src={resolvedSource}
                 title={previewSource.title ?? undefined}
               />
@@ -171,6 +209,9 @@ function ImageView({ editor, extension, getPos, node, selected, updateAttributes
         <img
           alt={String(node.attrs.alt ?? '')}
           className="image-node__image"
+          decoding="async"
+          loading="lazy"
+          ref={imageRef}
           src={resolvedSource}
           title={node.attrs.title ?? undefined}
         />

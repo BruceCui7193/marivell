@@ -52,6 +52,11 @@ import {
   getFormulaCacheKey,
   seedFormulaHtmlCache,
 } from '../../src/renderer/editor/math-render-cache.ts';
+import {
+  clearImagePreloadCache,
+  getImagePreloadState,
+  preloadImageSource,
+} from '../../src/renderer/editor/image-preload.ts';
 
 let passed = 0;
 let failed = 0;
@@ -221,6 +226,83 @@ section('math render cache LRU');
     `promoted=${String(getCachedFormulaHtml('formula-5', 'yes'))} nextOldest=${String(getCachedFormulaHtml('formula-6', 'no'))} newest=${String(getCachedFormulaHtml('formula-10005', 'yes'))}`,
   );
   clearFormulaHtmlCache();
+}
+
+// ---------------------------------------------------------------------------
+// Image preload cache deduplication / LRU
+// ---------------------------------------------------------------------------
+section('image preload cache');
+
+{
+  clearImagePreloadCache();
+
+  const globals = globalThis as Record<string, unknown>;
+  const previousImage = globals.Image;
+  let imageRequestCount = 0;
+  let lastRequestedSource = '';
+
+  class FakeImage {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    complete = false;
+
+    set src(value: string) {
+      imageRequestCount += 1;
+      lastRequestedSource = value;
+      if (value.startsWith('fail:')) {
+        this.complete = false;
+        this.onerror?.();
+        return;
+      }
+      this.complete = true;
+      this.onload?.();
+    }
+  }
+
+  globals.Image = FakeImage;
+
+  try {
+    const firstPromise = preloadImageSource('https://example.com/a.png');
+    const duplicatePromise = preloadImageSource('https://example.com/a.png');
+    assert(
+      'image preload deduplicates in-flight URL',
+      firstPromise === duplicatePromise && imageRequestCount === 1,
+      `requests=${imageRequestCount}`,
+    );
+    assertEqual('image preload records ready state', getImagePreloadState('https://example.com/a.png'), 'ready');
+
+    const readyAgain = preloadImageSource('https://example.com/a.png');
+    assert(
+      'image preload keeps ready URL cached',
+      readyAgain === firstPromise && imageRequestCount === 1,
+      `requests=${imageRequestCount}`,
+    );
+
+    const failedPromise = preloadImageSource('fail:bad.png');
+    const failedAgain = preloadImageSource('fail:bad.png');
+    assertEqual('image preload records failed state', getImagePreloadState('fail:bad.png'), 'failed');
+    assert(
+      'image preload does not retry failed URL',
+      failedPromise === failedAgain && imageRequestCount === 2,
+      `requests=${imageRequestCount}`,
+    );
+
+    for (let index = 0; index < 210; index += 1) {
+      preloadImageSource(`https://example.com/lru-${index}.png`);
+    }
+    assertEqual('image preload LRU evicts oldest URL', getImagePreloadState('https://example.com/lru-0.png'), null);
+    assertEqual('image preload LRU keeps newest URL', getImagePreloadState('https://example.com/lru-209.png'), 'ready');
+    assertEqual('image preload LRU last requested source', lastRequestedSource, 'https://example.com/lru-209.png');
+
+    clearImagePreloadCache();
+    assertEqual('image preload clear empties cache', getImagePreloadState('https://example.com/a.png'), null);
+  } finally {
+    if (previousImage === undefined) {
+      delete globals.Image;
+    } else {
+      globals.Image = previousImage;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

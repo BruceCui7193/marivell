@@ -1,7 +1,7 @@
 # Marivell 性能优化微观执行计划
 
 > 本文由 `docs/performance-roadmap.md` 的宏观方案细化而来，作为后续改代码的约束。
-> 状态：Phase 0 已完成并提交；Phase 1 前两批已完成并验证：Worker 公式 HTML 缓存、公式缓存 LRU、Mermaid 渲染缓存、benchmark 指标。剩余 Phase 1 项为视口图片预加载与公式 HTML 分块/索引传输，随后进入 Phase 2。结果见 `docs/performance-benchmark.md`。
+> 状态：Phase 0 已完成并提交；Phase 1 前三批已完成并验证：Worker 公式 HTML 缓存、公式缓存 LRU、Mermaid 渲染缓存、图片懒加载/预加载、benchmark 指标。剩余 Phase 1 项为公式 HTML 分块/索引传输（依赖 Phase 3 视口激活），随后进入 Phase 2。结果见 `docs/performance-benchmark.md`。
 
 ## 0. 总原则
 
@@ -152,6 +152,18 @@
 3. 公式缓存生命周期：`clearFormulaHtmlCache` 在 active visual load 时调用；新增按文件 key 和 LRU 上限，避免长期会话里不同文件之间缓存膨胀。
 4. 版本号：worker 返回的公式 HTML 必须携带请求/会话版本，只有 active load 且版本匹配时才 seed，旧结果不得覆盖。
 5. 新 benchmark 指标：`formula-html-count`、`formula-html-bytes`、`image-preload-count`、`mermaid-cache-hit-rate`（能采集时加入 `scripts/benchmark/performance.ts`）。
+
+### 2.3 第三批实现：图片懒加载与预加载缓存
+
+1. 新建 `src/renderer/editor/image-preload.ts`：
+   - `preloadImageSource(src: string): Promise<void>`，用 `new Image()` 预加载并缓存已请求 URL。
+   - LRU 上限 200，失败也记录为已处理，避免反复失败重试。
+2. 修改 `ImageView.tsx`：
+   - `<img>` 增加 `loading="lazy"` 和 `decoding="async"`。
+   - NodeView 挂载后，用 IntersectionObserver（rootMargin 约 600px）在图片接近视口时调用预加载；不支持 IntersectionObserver 或资源为 data/base64 时立即预加载。
+   - 不阻塞首屏渲染；预加载只是让接近视口的图片提前进入浏览器缓存。
+3. 新增测试：图片 NodeView 在 jsdom 中仍渲染 `<img loading="lazy">`，预加载缓存模块支持 URL 去重/清空。
+4. 验证：`npm test`、`npx tsc --noEmit`、`git diff --check`，并跑大文件 benchmark 确认不回归。
 
 目标：把解析、公式 HTML 生成移出主线程，建立完整公式 HTML 缓存，但不做 DOM 占位。
 

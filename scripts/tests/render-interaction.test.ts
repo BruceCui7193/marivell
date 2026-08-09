@@ -30,8 +30,11 @@ dom.window.Range.prototype.getBoundingClientRect = () => ({
 });
 
 import { Editor } from '@tiptap/core';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { NodeSelection, TextSelection } from '@tiptap/pm/state';
 import { createEditorExtensions } from '../../src/renderer/editor/create-editor-extensions';
+import ImageView from '../../src/renderer/editor/node-views/ImageView';
 import { parseMarkdown, serializeMarkdown } from '../../src/renderer/editor/markdown';
 import { replaceEditorContent } from '../../src/renderer/editor/replace-editor-content';
 import {
@@ -316,6 +319,21 @@ console.log('\n## visual render interaction matrix');
     load(editor, '![Dora](../images/dora.png)\n');
     const output = html(editor);
     assert('image renders img', output.includes('<img') && output.includes('../images/dora.png'), output);
+
+    const imageProps: any = {
+      editor: editor as any,
+      extension: { options: { resolveImageSource: (src: string) => src } } as any,
+      getPos: () => 1,
+      node: { attrs: { src: '../images/dora.png', alt: 'Dora', title: null }, nodeSize: 1 } as any,
+      selected: false,
+      updateAttributes: () => {},
+    };
+    const imageOutput = renderToStaticMarkup(createElement(ImageView, imageProps));
+    assert(
+      'image renders lazy async attrs',
+      imageOutput.includes('loading="lazy"') && imageOutput.includes('decoding="async"'),
+      imageOutput,
+    );
     assertHealthy('image', editor);
   } finally {
     editor.destroy();

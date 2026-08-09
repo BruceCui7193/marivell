@@ -187,6 +187,23 @@ Interpretation:
 - The second batch did not change the renderer's fundamental cost; it mainly prevents repeated Mermaid renders and adds lifecycle/measurement infrastructure.
 - The remaining Phase 1 item is real viewport-oriented image preloading and chunked/indexed formula cache transfer; the next large win still depends on Phase 3 placeholder NodeViews.
 
+## Phase 1 Third Result (Image Lazy Preload, 2026-08-09)
+
+| Metric | Phase 1 second run | Phase 1 third run |
+| --- | ---: | ---: |
+| visual-open | 24,733 ms | 24,898 ms |
+| renderer-render-to-ready | 17,376 ms | 17,351 ms |
+| visual-dom-height | 796,512 px | 775,531 px |
+| interaction-typing | 1,259 ms | 1,187 ms |
+| interaction-combined | 7,727 ms | 7,642 ms |
+| scroll-avg-frame | 176 ms | 129 ms |
+| scroll-max-frame | 441 ms | 403 ms |
+
+Interpretation:
+
+- Image lazy loading reduced measured DOM height and improved scroll frames slightly.
+- It does not change the fundamental full-formula DOM cost; the next large win remains Phase 3 placeholder NodeViews.
+
 ## Test Effectiveness Cross-Check
 
 The render interaction suite was cross-validated by temporarily making
