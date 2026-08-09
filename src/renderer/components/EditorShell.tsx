@@ -65,8 +65,17 @@ import { clearNodeHeightCache } from '../editor/virtualization/height-cache';
 import {
   clearFormulaHtmlCache,
   getCachedFormulaHtml,
+  getFormulaCacheKey,
   seedFormulaHtmlCache,
 } from '../editor/math-render-cache';
+import {
+  activateInlineMathGroupsInViewport,
+  hydrateInlineMathGroupsAroundScrollRatio,
+  prepareInlineMathForFormulaHtml,
+  registerInlineMathGroupsFromEditor,
+  setInlineMathPrefetchRequester,
+  syncInlineMathSelection,
+} from '../editor/virtualization/inline-math-group-registry';
 import { markdownOffsetToPmPos } from '../editor/position-map';
 import { replaceEditorContent } from '../editor/replace-editor-content';
 import {
@@ -649,6 +658,7 @@ export default function EditorShell({
   const formulaChunkRequestRef = useRef(0);
   const formulaChunkQueueRef = useRef<FormulaIndexEntry[][]>([]);
   const formulaChunkInFlightRef = useRef<Map<number, number>>(new Map());
+  const formulaPrefetchRequestedKeysRef = useRef<Set<string>>(new Set());
   const heightCacheInvalidationFrameRef = useRef<number | null>(null);
   const lastAnchorRestoredScrollTopRef = useRef<number | null>(null);
   const keepAtBottomRef = useRef(false);
@@ -932,6 +942,7 @@ export default function EditorShell({
       }
       formulaChunkQueueRef.current = [];
       formulaChunkInFlightRef.current.clear();
+      formulaPrefetchRequestedKeysRef.current.clear();
     };
   }, []);
 
@@ -1140,6 +1151,11 @@ export default function EditorShell({
       nextEditor.commands.focus('start');
     },
     onSelectionUpdate: ({ editor: nextEditor }) => {
+      requestAnimationFrame(() => {
+        if (!nextEditor.isDestroyed) {
+          syncInlineMathSelection(nextEditor);
+        }
+      });
       ensureEditableSelectionAtDocumentStart(nextEditor);
     },
     onFocus: ({ editor: nextEditor }) => {
@@ -1180,6 +1196,11 @@ export default function EditorShell({
       }
 
       visualDocEditedRef.current = true;
+      requestAnimationFrame(() => {
+        if (!nextEditor.isDestroyed) {
+          syncInlineMathSelection(nextEditor);
+        }
+      });
 
       if (!windowDirtyRef.current) {
         windowDirtyRef.current = true;
@@ -1383,6 +1404,7 @@ export default function EditorShell({
         if (scrollDelta > jumpThreshold) {
           const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
           hydrateVisibleAroundRatio(frame, frame.scrollTop, maxScrollTop);
+          hydrateInlineMathGroupsAroundScrollRatio(frame, frame.scrollTop, maxScrollTop);
           lastSyncHydrateScrollTop = frame.scrollTop;
         }
       }
@@ -1398,6 +1420,7 @@ export default function EditorShell({
         const scrollTopBeforeHydrate = frame.scrollTop;
         const scrollHeightBeforeHydrate = frame.scrollHeight;
         const oldMaxScrollTop = Math.max(scrollHeightBeforeHydrate - frame.clientHeight, 0);
+        hydrateInlineMathGroupsAroundScrollRatio(frame, frame.scrollTop, oldMaxScrollTop);
         const wasAtBottom = scrollTopBeforeHydrate >= oldMaxScrollTop - 1;
         keepAtBottomRef.current = wasAtBottom;
         const posAtCoordsMs = 0;
@@ -1715,6 +1738,7 @@ export default function EditorShell({
     clearFormulaHtmlCache();
     formulaChunkQueueRef.current = [];
     formulaChunkInFlightRef.current.clear();
+    formulaPrefetchRequestedKeysRef.current.clear();
     setLoadingExternalDocument(true);
     startupCaretPlacedRef.current = false;
     editor.setEditable(false);
@@ -1764,6 +1788,19 @@ export default function EditorShell({
       visualDocEditedRef.current = false;
       replaceEditorContent(editor, content);
       externalUpdateRef.current = false;
+      registerInlineMathGroupsFromEditor(editor);
+      const frame = editorFrameRef.current;
+      if (frame && !sourceModeRef.current) {
+        requestAnimationFrame(() => {
+          if (!isActiveLoad() || sourceModeRef.current) {
+            return;
+          }
+          const currentFrame = editorFrameRef.current;
+          if (currentFrame) {
+            activateInlineMathGroupsInViewport(currentFrame);
+          }
+        });
+      }
 
       // Keep the file's original markdown as canonical so a load+mode-switch
       // does not rewrite the document via parse/serialize normalization.
@@ -1840,6 +1877,11 @@ export default function EditorShell({
           (entry) => getCachedFormulaHtml(entry.latex, entry.display) === null,
         );
         if (missingEntries.length === 0) {
+          for (const entry of chunk) {
+            formulaPrefetchRequestedKeysRef.current.delete(
+              getFormulaCacheKey(entry.latex, entry.display),
+            );
+          }
           continue;
         }
 
@@ -1850,6 +1892,11 @@ export default function EditorShell({
           worker.removeEventListener('message', handleMessage);
           worker.removeEventListener('error', handleError);
           formulaChunkInFlightRef.current.delete(requestId);
+          for (const entry of missingEntries) {
+            formulaPrefetchRequestedKeysRef.current.delete(
+              getFormulaCacheKey(entry.latex, entry.display),
+            );
+          }
           pumpFormulaChunks();
         };
 
@@ -1862,7 +1909,13 @@ export default function EditorShell({
           formulaChunkInFlightRef.current.delete(requestId);
           if (event.data.ok && isActivePrefetch()) {
             seedFormulaHtmlCache(event.data.formulaHtml);
+            prepareInlineMathForFormulaHtml(event.data.formulaHtml);
             scheduleFormulaHeightMeasurement(missingEntries, event.data.formulaHtml);
+          }
+          for (const entry of missingEntries) {
+            formulaPrefetchRequestedKeysRef.current.delete(
+              getFormulaCacheKey(entry.latex, entry.display),
+            );
           }
           pumpFormulaChunks();
         };
@@ -1877,11 +1930,38 @@ export default function EditorShell({
       }
     };
 
+    const requestFormulaPrefetch = (entries: FormulaIndexEntry[]): void => {
+      if (!isActivePrefetch() || !entries || entries.length === 0) {
+        return;
+      }
+      const requestedKeys = formulaPrefetchRequestedKeysRef.current;
+      const missing = entries.filter((entry) => {
+        const key = getFormulaCacheKey(entry.latex, entry.display);
+        if (getCachedFormulaHtml(entry.latex, entry.display) !== null || requestedKeys.has(key)) {
+          return false;
+        }
+        requestedKeys.add(key);
+        return true;
+      });
+      if (missing.length === 0) {
+        return;
+      }
+      formulaChunkQueueRef.current.unshift(missing);
+      pumpFormulaChunks();
+    };
+
+    setInlineMathPrefetchRequester(requestFormulaPrefetch);
+
     const startFormulaChunkPrefetch = (entries: FormulaIndexEntry[] | null | undefined): void => {
       if (!isActivePrefetch() || !entries || entries.length === 0) {
         return;
       }
 
+      for (const entry of entries) {
+        formulaPrefetchRequestedKeysRef.current.add(
+          getFormulaCacheKey(entry.latex, entry.display),
+        );
+      }
       formulaChunkQueueRef.current = splitFormulaChunks(entries);
       pumpFormulaChunks();
     };
@@ -1911,6 +1991,9 @@ export default function EditorShell({
           }
           startFormulaChunkPrefetch(result.formulaIndex ?? null);
           applyParsedContent(result.content, result.outline);
+          if (result.formulaHtml) {
+            prepareInlineMathForFormulaHtml(result.formulaHtml);
+          }
         })
         .catch(async () => {
           try {
@@ -1929,6 +2012,8 @@ export default function EditorShell({
     }
 
     return () => {
+      setInlineMathPrefetchRequester(null);
+      formulaPrefetchRequestedKeysRef.current.clear();
       if (finished) {
         return;
       }

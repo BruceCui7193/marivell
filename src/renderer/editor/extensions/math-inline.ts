@@ -11,6 +11,10 @@ import {
   forceActivate,
   registerVirtualNodeView,
 } from '../virtualization/activation-controller';
+import {
+  scheduleInlineMathHeightMeasurement,
+  type InlineMathRegistration,
+} from '../virtualization/inline-math-group-registry';
 import { translate } from '../../i18n';
 
 declare module '@tiptap/core' {
@@ -165,6 +169,9 @@ export const MathInline = Node.create({
       dom.className = isBlock ? 'math-block-node math-node-wrapper' : 'math-inline-node math-node-wrapper';
       const nodeViewId = nextBlockMathNodeViewId();
       let unregisterActivation: (() => void) | null = null;
+      let unregisterInlineGroup: (() => void) | null = null;
+      let inlineRegistration: InlineMathRegistration | null = null;
+      let inlinePreviewActive = false;
       let blockPreviewActive = false;
 
       // Create editable content element
@@ -299,6 +306,83 @@ export const MathInline = Node.create({
         }
       };
 
+      const getInlineMathPosition = (): number | null => {
+        if (typeof getPos !== 'function') return null;
+        try {
+          return getPos();
+        } catch {
+          return null;
+        }
+      };
+
+      const getInlineMathParagraphPosition = (): number | null => {
+        const pos = getInlineMathPosition();
+        if (pos === null) return null;
+        try {
+          const resolved = editor.state.doc.resolve(pos);
+          return resolved.before(resolved.depth);
+        } catch {
+          return null;
+        }
+      };
+
+      const getInlineHeightKey = (): string => getFormulaHeightKey(node.textContent, 'no', dom);
+
+      const showInlinePlaceholder = (): void => {
+        inlinePreviewActive = false;
+        lastRenderedText = null;
+        dom.classList.add('math-inline-node--placeholder');
+        previewDOM.replaceChildren();
+        const hint = document.createElement('span');
+        hint.className = 'math-inline-placeholder-hint';
+        hint.textContent = `$${node.textContent}$`;
+        previewDOM.appendChild(hint);
+        const cachedHeight = getCachedNodeHeight(getInlineHeightKey());
+        if (cachedHeight !== null) {
+          previewDOM.style.minHeight = `${cachedHeight}px`;
+          previewDOM.style.lineHeight = `${cachedHeight}px`;
+        }
+      };
+
+      const activateInlinePreview = (): void => {
+        inlinePreviewActive = true;
+        dom.classList.remove('math-inline-node--placeholder');
+        renderPreview(node.textContent);
+        const cachedHeight = getCachedNodeHeight(getInlineHeightKey());
+        if (cachedHeight !== null) {
+          previewDOM.style.minHeight = `${cachedHeight}px`;
+          previewDOM.style.lineHeight = `${cachedHeight}px`;
+        }
+        const cachedHtml = getCachedFormulaHtml(node.textContent, 'no');
+        if (cachedHtml) {
+          scheduleInlineMathHeightMeasurement(node.textContent, 'no', cachedHtml, dom);
+        }
+      };
+
+      const deactivateInlinePreview = (): void => {
+        // Once an inline formula has KaTeX in the DOM it stays active to avoid
+        // a placeholder/KaTeX flicker when scrolling back to it.
+      };
+
+      const isInlineEditing = (): boolean => {
+        if (editor.view.composing) return true;
+        if (dom.contains(document.activeElement)) return true;
+        if (dom.classList.contains('is-editing')) return true;
+        return isBlockMathSelected();
+      };
+
+      const updateInlinePreview = (): void => {
+        if (!inlineRegistration) {
+          return;
+        }
+        inlineRegistration.editing = isInlineEditing();
+        if (inlineRegistration.editing || inlinePreviewActive) {
+          activateInlinePreview();
+        } else {
+          showInlinePlaceholder();
+        }
+      };
+
       // Handle clicking anywhere on the formula to enter edit mode.
       // The is-editing class is managed by the MathFocusDecoration plugin,
       // so the node view no longer needs to subscribe to editor events.
@@ -309,7 +393,11 @@ export const MathInline = Node.create({
 
         const pos = getPos();
         editor.chain().setTextSelection(pos + 1).focus().run();
-        activateBlockPreview();
+        if (isBlock) {
+          activateBlockPreview();
+        } else {
+          activateInlinePreview();
+        }
         event.preventDefault();
         event.stopPropagation();
       });
@@ -342,7 +430,37 @@ export const MathInline = Node.create({
           forceActivate(nodeViewId);
         }
       } else {
-        renderPreview(node.textContent);
+        inlineRegistration = {
+          id: nodeViewId,
+          element: dom,
+          preview: previewDOM,
+          contentDOM,
+          getPos: getInlineMathPosition,
+          getParagraphPosition: getInlineMathParagraphPosition,
+          getLatex: () => node.textContent,
+          display: 'no',
+          heightKey: getInlineHeightKey,
+          activate: activateInlinePreview,
+          deactivate: deactivateInlinePreview,
+          update: updateInlinePreview,
+          active: false,
+          requested: false,
+          editing: false,
+          prepared: false,
+          groupId: null,
+          destroyed: false,
+        };
+        const editingNow = isInlineEditing();
+        inlineRegistration.editing = editingNow;
+        const frame = editor.view.dom.closest<HTMLElement>('.editor-frame');
+        const lazyEnabled = frame !== null && typeof IntersectionObserver !== 'undefined';
+        if (editingNow || !lazyEnabled) {
+          activateInlinePreview();
+        } else {
+          showInlinePlaceholder();
+        }
+        (dom as HTMLElement & { __marivellInlineMathRegistration?: InlineMathRegistration }).__marivellInlineMathRegistration =
+          inlineRegistration;
       }
 
       return {
@@ -368,19 +486,34 @@ export const MathInline = Node.create({
               showBlockPlaceholder();
             }
           } else {
-            renderPreview(node.textContent);
+            const editingNow = isInlineEditing();
+            if (inlineRegistration) {
+              inlineRegistration.editing = editingNow;
+            }
+            if (editingNow || inlinePreviewActive) {
+              activateInlinePreview();
+            } else if (textChanged) {
+              showInlinePlaceholder();
+            }
           }
           return true;
         },
         selectNode() {
           if (isBlock) {
             activateBlockPreview();
+          } else if (inlineRegistration) {
+            inlineRegistration.editing = true;
+            activateInlinePreview();
           }
         },
         deselectNode() {},
         destroy() {
           destroyed = true;
           blockMathPlaceholderViews.delete(placeholderView);
+          unregisterInlineGroup?.();
+          unregisterInlineGroup = null;
+          delete (dom as HTMLElement & { __marivellInlineMathRegistration?: InlineMathRegistration }).__marivellInlineMathRegistration;
+          inlineRegistration = null;
           unregisterActivation?.();
         },
       };

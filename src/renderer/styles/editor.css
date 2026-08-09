@@ -2238,6 +2238,33 @@
   align-items: center;
 }
 
+.math-inline-node--placeholder {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  min-height: 1.2em;
+}
+
+.math-inline-node--placeholder .math-node-preview {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.2em;
+  line-height: 1.2;
+  max-width: 9em;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--ui-font-mono, Courier, monospace);
+  font-size: 0.85em;
+  color: var(--ui-text-soft, #888);
+  opacity: 0.82;
+}
+
+.math-inline-placeholder-hint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .math-inline-editor {
   display: inline-flex;
   align-items: center;

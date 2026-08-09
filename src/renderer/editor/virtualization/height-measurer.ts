@@ -14,13 +14,31 @@ export interface FormulaHeightSource {
 
 const WIDTH_BUCKET_SIZE = 160;
 
+let editorSurfaceCache: HTMLElement | null = null;
+let editorSurfaceCacheWidth = -1;
+let editorWidthBucketCache: number | null = null;
+
 export function getEditorWidthBucket(element?: HTMLElement | null): number {
   const frame = element?.closest('.editor-frame') as HTMLElement | null;
+  if (
+    editorSurfaceCache?.isConnected === false ||
+    (frame !== null && editorSurfaceCache?.closest('.editor-frame') !== frame)
+  ) {
+    editorSurfaceCache = null;
+    editorSurfaceCacheWidth = -1;
+    editorWidthBucketCache = null;
+  }
   const editorSurface =
+    editorSurfaceCache ??
     frame?.querySelector<HTMLElement>('.ProseMirror') ??
     (typeof document !== 'undefined'
       ? document.querySelector<HTMLElement>('.editor-surface')
       : null);
+  if (editorSurface !== editorSurfaceCache) {
+    editorSurfaceCache = editorSurface;
+    editorSurfaceCacheWidth = -1;
+    editorWidthBucketCache = null;
+  }
   const width =
     editorSurface?.clientWidth ||
     editorSurface?.getBoundingClientRect().width ||
@@ -30,7 +48,13 @@ export function getEditorWidthBucket(element?: HTMLElement | null): number {
       : 0) ||
     (typeof window !== 'undefined' ? window.innerWidth : 0) ||
     800;
-  return Math.max(1, Math.floor(width / WIDTH_BUCKET_SIZE));
+  const bucket = Math.max(1, Math.floor(width / WIDTH_BUCKET_SIZE));
+  if (editorWidthBucketCache !== null && editorSurfaceCacheWidth === width) {
+    return editorWidthBucketCache;
+  }
+  editorSurfaceCacheWidth = width;
+  editorWidthBucketCache = bucket;
+  return bucket;
 }
 
 export function getEditorThemeKey(): string {
@@ -356,6 +380,9 @@ export function measureFormulaHeights(
 }
 
 export function resetHeightMeasurerForTest(): void {
+  editorSurfaceCache = null;
+  editorSurfaceCacheWidth = -1;
+  editorWidthBucketCache = null;
   if (writeTimer !== null) {
     clearTimeout(writeTimer);
     writeTimer = null;
