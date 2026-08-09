@@ -1,7 +1,7 @@
 # Marivell 性能优化微观执行计划
 
 > 本文由 `docs/performance-roadmap.md` 的宏观方案细化而来，作为后续改代码的约束。
-> 状态：Phase 0 已完成并提交；Phase 1 前三批已完成并验证：Worker 公式 HTML 缓存、公式缓存 LRU、Mermaid 渲染缓存、图片懒加载/预加载、benchmark 指标。剩余 Phase 1 项为公式 HTML 分块/索引传输（依赖 Phase 3 视口激活），随后进入 Phase 2。结果见 `docs/performance-benchmark.md`。
+> 状态：Phase 0/1/2 已完成并验证；Phase 3 已完成：块级公式/图片/Mermaid/HTML block/code block 占位、坐标激活、公式 HTML 索引与后台分块预取、插入公式预览立即激活。性能预算门禁仍属于 Phase 4，结果见 `docs/performance-benchmark.md`。
 
 ## 0. 总原则
 
@@ -165,6 +165,20 @@
 3. 新增测试：图片 NodeView 在 jsdom 中仍渲染 `<img loading="lazy">`，预加载缓存模块支持 URL 去重/清空。
 4. 验证：`npm test`、`npx tsc --noEmit`、`git diff --check`，并跑大文件 benchmark 确认不回归。
 
+### 2.4 第四批实现：缓存版本号与 Mermaid 高度缓存
+
+1. `EditorShell.tsx` 增加公式缓存 generation：
+   - active visual load 开始时递增 generation 并清空公式缓存。
+   - worker 返回后只有当前 generation 仍匹配且 load 仍 active 才 seed，防止 stale 结果覆盖。
+2. 新建 `src/renderer/editor/mermaid-cache.ts`：
+   - key = `${theme}\u0000${code}`。
+   - `getCachedMermaidHeight(theme, code)` / `setCachedMermaidHeight(theme, code, height)` / `clearMermaidHeightCache()`。
+3. `MermaidBlockView.tsx`：
+   - SVG 渲染完成后测量 preview 高度并写入高度缓存。
+   - 后续相同 code + theme 渲染时先读取缓存高度作为初始布局参考，避免明显跳动。
+4. 新增测试：cache generation 不 seed 旧版本（如可测则测）；mermaid height cache get/set/clear。
+5. 验证：`npm test`、`npx tsc --noEmit`、`git diff --check`。
+
 目标：把解析、公式 HTML 生成移出主线程，建立完整公式 HTML 缓存，但不做 DOM 占位。
 
 文件：`src/renderer/editor/markdown.worker.ts`、`src/renderer/components/EditorShell.tsx`、`src/renderer/editor/extensions/math-inline.ts`、`src/shared/contracts.ts`
@@ -188,15 +202,46 @@
 
 目标：为增量解析和锚点跳转建立模型层，但不改变编辑路径。
 
-文件：`src/renderer/editor/markdown.ts`、`src/renderer/editor/selection-markers.ts`、`src/renderer/editor/search.ts`、`src/renderer/utils/document.ts`
+文件：`src/renderer/editor/markdown.ts`、`src/renderer/editor/selection-markers.ts`、`src/renderer/editor/search.ts`、`src/renderer/utils/document.ts`、`src/renderer/components/EditorShell.tsx`
 
-计划：
+### 3.1 Phase 2A：Block Model + Outline 不依赖 DOM + 滚动锚点
 
-1. 建立 Block Model：稳定 block ID、类型、Markdown offset、PM position、公式 hash、高度缓存 key。
-2. 维护 Markdown offset ↔ PM position 映射，用于搜索、大纲、跳转到行、脚注跳转。
-3. 编辑时后台增量解析结果必须带版本号；旧结果不可覆盖当前编辑。
-4. 搜索/大纲/统计从 PM model 和 Block Model 计算，不遍历 DOM。
-5. 滚动恢复从“scrollTop 比例”改为“锚点 block + 节点内偏移”。
+1. 新建 `src/renderer/editor/block-model.ts`：
+   - `BlockModelItem`：稳定 `id`、`type`、`pmPos`、`line`、`text`。
+   - `buildBlockModelFromEditor(editor)`：遍历 PM 文档顶层 block，生成稳定 ID（如 `block-${index}-${type}-${shortHash}`）。
+   - `getBlockAtPos(model, pos)`：返回 pos 所在或之前最近的 block。
+2. 新建 `src/renderer/editor/scroll-anchor.ts`：
+   - `ScrollAnchor`：`{ pmPos, offsetTop }`。
+   - `captureVisualScrollAnchor(frame, editor)`：用 `posAtCoords` 取视口顶部锚点。
+   - `restoreVisualScrollAnchor(frame, editor, anchor)`：内容就绪后用 `coordsAtPos` 恢复滚动。
+3. 修改 `EditorShell.tsx`：
+   - `handleNavigateOutline` 直接使用 outline 的 PM `start` 位置跳转，不再优先 `querySelectorAll('[data-outline-index]')`。
+   - `extractOutlineFromEditor` 的 heading id 使用 Block Model 稳定 ID。
+   - 文件切换时的视觉滚动记忆从 `number` 比例改为 `ScrollAnchor`；source 模式暂时保留比例 fallback。
+   - `pendingScrollRestoreRef` 兼容 `ScrollAnchor | number`。
+4. 测试：
+   - Block Model 稳定 ID、pmPos、类型。
+   - Outline jump 不需要 DOM 查询（通过纯函数/单元测试覆盖）。
+   - Scroll anchor capture/restore 在 jsdom 中不抛错，并尽量验证 pmPos 往返。
+5. 验证：`npm test`、`npx tsc --noEmit`、`git diff --check`。
+
+### 3.2 Phase 2B：Markdown↔PM 映射与 Source 滚动锚点
+
+1. 新建 `src/renderer/editor/position-map.ts`：
+   - `markdownOffsetToPmPos(markdown, content, offset)`：用现有 selection marker 机制把 markdown offset 插入成唯一 marker，parse 后在 JSON 中定位 marker，返回对应 PM position；调用方负责缓存。
+   - 本批先实现 source→visual 方向；visual→source 继续复用现有 mode-switch marker 流程。
+2. 扩展 `src/renderer/editor/scroll-anchor.ts`：
+   - `SourceScrollAnchor { markdownOffset: number; offsetTop: number }`。
+   - `captureSourceScrollAnchor(textarea)` / `restoreSourceScrollAnchor(textarea, anchor)`。
+3. 修改 `EditorShell.tsx`：
+   - `scrollMemoryRef` 值类型扩展为 `ScrollAnchor | SourceScrollAnchor | number`。
+   - source 模式文件切换保存 `SourceScrollAnchor`，visual 模式保存 `ScrollAnchor`，不再只用比例。
+   - `pendingScrollRestoreRef` 支持 source anchor；启动时 source 模式用 `restoreSourceScrollAnchor`。
+4. 后台增量解析版本沿用现有 request id / formula generation，不新增重复机制。
+5. 测试：
+   - `markdownOffsetToPmPos` 对普通段落、heading、math、image 的简单文档返回有效 PM position。
+   - source scroll anchor capture/restore 在 jsdom 中不抛错。
+6. 验证：现有 mode-switch、search、outline、history 测试全通过；大文件 benchmark 无回归。
 
 验收：
 
@@ -206,13 +251,25 @@
 
 ## 4. Phase 3：单 PM + 视口节点虚拟化
 
-目标：在单一 PM 实例内实现稳定高度 placeholder，不拆多编辑器。
+实施顺序（同一 Phase 内的代码批次，不再拆成独立 Phase）：
+
+- **3A 虚拟化核心 + 块级公式**：Height Cache、Activation Controller、NodeView Registry，先只把块级公式改为稳定高度 placeholder；inline math 不虚拟化。
+- **3B 坐标/跳转 + 其他复杂节点**：Coordinate Service、两阶段跳转，再把代码块、图片、Mermaid、HTML block 接入 placeholder。
+- **3C 选区/剪贴板/导出与验收**：
+  1. EditorShell 的搜索跳转、大纲跳转、图片菜单、Math completion 统一调用 `forceActivateAtPosition`；视觉模式插入行间公式后，只要选区/焦点在节点内，NodeView 必须立即激活并显示预览，不能只等 IntersectionObserver。
+  2. 拖拽跨占位区用 `forceActivateAtCoords` 实时激活经过的占位节点；`Ctrl+A` 保持完整选区高亮。
+  3. 导出保持 model-based；若未来新增 DOM 截图/print，先全量 `forceHydrate()`。
+  4. 公式 HTML 改为索引 + 视口 chunk 请求，当前视口/预加载范围必须 ready。
+  5. 跑完整交互矩阵和 benchmark，确认无功能回归。
+
+目标：在单一 PM 实例内实现稳定高度 placeholder，不拆多编辑器，不依赖 `content-visibility`。
 
 文件：
 
 - 新建 `src/renderer/editor/virtualization/activation-controller.ts`
 - 新建 `src/renderer/editor/virtualization/height-cache.ts`
 - 新建 `src/renderer/editor/virtualization/coordinate-service.ts`
+- 新建 `src/renderer/editor/virtualization/node-view-registry.ts`
 - 修改 `src/renderer/editor/extensions/math-inline.ts`
 - 修改 `src/renderer/editor/extensions/code-block.ts`
 - 修改 `src/renderer/editor/extensions/mermaid-block.ts`
@@ -220,36 +277,65 @@
 - 修改 `src/renderer/editor/extensions/html-block.ts`
 - 修改 `src/renderer/components/EditorShell.tsx`
 
-计划：
+### 4.1 NodeView Registry 与 Activation Controller
 
-1. 激活控制器：维护 NodeView 状态 registry，用 IntersectionObserver + preload buffer 调度 `pending -> active -> placeholder`。
-2. 坐标服务：拦截/包装 `coordsAtPos`、`posAtCoords`、`domAtPos`、`scrollIntoView`，先 force activate 目标区域。
-3. 高度缓存：按 `(nodeType, content hash, widthBucket, theme, zoom, fontVersion)` 缓存真实高度；激活/降级保持高度。
-4. 非叶子节点 placeholder 只替换预览/装饰 DOM，contentDOM 必须保留。
-5. 拖拽框选使用 PM Selection Decoration；搜索/大纲/脚注两阶段跳转。
-6. 导出保持 model-based；未来 DOM 截图/print 必须 force hydrate。
-7. 不虚拟化 Table、Inline math 首轮、聚焦/选中/IME 节点、打开子菜单节点、普通文本块。
+1. registry 记录每个复杂节点的状态：`placeholder / pending / active`、PM position、node type、content hash、height key。
+2. 状态迁移：
+   - 进入预加载范围先 `pending`，准备完成后再 `active`。
+   - 节点进入视口前必须已完成 `active`，用户看到时不能是未渲染公式/图片/Mermaid。
+   - 离屏足够远后降级回 `placeholder`；有焦点、选区、IME composing、打开子菜单/弹层的节点禁止降级。
+3. 调度：
+   - 用 IntersectionObserver + preload buffer 批量激活，一次 rAF 不激活上千个复杂 NodeView。
+   - 激活/降级带版本号；节点编辑后旧 Worker 结果不得覆盖。
+4. 搜索/大纲/脚注/图片菜单/Math completion 等目标跳转统一调用 `forceActivate()`。
 
-验收：
+### 4.2 Coordinate Service
 
-- 大文件滚动 avg ≤ 16ms、max ≤ 32ms（目标）；当前视口/预加载范围公式完整。
+1. 包装 `coordsAtPos`、`posAtCoords`、`domAtPos`、`scrollIntoView`。
+2. 调用前先 force activate 目标区域，避免占位坐标错位。
+3. 点击/双击/拖放/右键/图片菜单/公式补全都走同一服务，不能各自临时判断。
+4. 目标跳转采用两阶段：先 activate，再按真实 `getBoundingClientRect()` 滚动。
+
+### 4.3 Height Cache 与滚动补偿
+
+1. key = `(nodeType, content hash, widthBucket, theme, zoom, fontVersion)`。
+2. 已激活节点记录真实高度；降级 placeholder 使用该高度。
+3. `resize`、zoom、theme、`document.fonts.ready` 后失效缓存并重测当前视口。
+4. 高度变化时用锚点滚动补偿，不能只改 scrollTop 比例。
+5. Mermaid 使用 Phase 1 渲染/高度缓存；图片使用 Phase 1 懒加载/预加载缓存。
+
+### 4.4 NodeView 改造
+
+1. 首轮可虚拟化：块级公式、代码块、图片、Mermaid、HTML block。
+2. 首轮不虚拟化：Table/CellSelection、inline math、普通文本块。
+3. 非叶子节点只替换预览/装饰 DOM，contentDOM 必须保留。
+4. 代码块离屏可保留纯文本 contentDOM、去掉语法高亮 DOM；有焦点/语言菜单不降级。
+5. 导出保持 model-based；未来 DOM 截图/print 必须先全量 `forceHydrate()`。
+
+### 4.5 验收
+
+- 大文件滚动目标：avg ≤ 16ms、max ≤ 32ms 作为 Phase 4 门禁；Phase 3 必须保证当前视口/预加载范围公式完整。
+- 视觉模式插入行间公式后预览立即显示 latex；render-interaction 与 benchmark 都必须覆盖该体验。
 - `DownArrow`、PageDown、搜索跳转、大纲跳转、右键、复制粘贴、图片菜单、Math completion 全部通过交互测试。
 - 任何占位展开不得出现未渲染公式/图片/Mermaid。
 
-## 5. Phase 4：性能预算与回归门禁
+## 5. Phase 4：性能预算与发布回归门禁
+
+目标：把大文件性能预算变成发布硬门禁，防止后续改动回退。
 
 文件：`package.json`、`scripts/benchmark/performance.ts`、新增 `perf-budget.json`
 
 计划：
 
-1. 将大文件关键指标写入预算：open、parse、interaction、scroll、context-menu。
-2. `npm run benchmark` 增加 `--check-budget` 或单独 `npm run perf:check`，超过预算即失败。
-3. 在 CI/发布脚本中把 benchmark 预算和 `npm test` 一起执行。
-4. 保留失败时的 `perf-report.json` 和 trace，便于定位。
+1. 将大文件关键指标写入 `perf-budget.json`：open、parse、interaction、scroll、context-menu。
+2. `npm run benchmark` 增加 `--check-budget`，或新增 `npm run perf:check`，超预算即失败。
+3. 发布脚本/CI 必须串行跑 `npm test`、`npx tsc --noEmit`、`npm run perf:check`。
+4. 失败时保留 `perf-report.json` 和必要 trace，方便定位。
+5. 大文件至少重复跑 2 次，不能以单次幸运数据作为通过依据。
 
 验收：
 
-- 发布流程必须跑 `npm test`、`npx tsc --noEmit`、`npm run perf:check`。
+- 发布流程必须通过 `npm test`、`npx tsc --noEmit`、`npm run perf:check`。
 - 大文件不达标不允许 release。
 
 ## 6. 禁止事项（所有 Phase 通用）

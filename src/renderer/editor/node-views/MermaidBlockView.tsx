@@ -1,21 +1,29 @@
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { NodeViewWrapper } from '@tiptap/react';
 import type { NodeViewProps } from '@tiptap/react';
 import { deleteBlockNodeAndFocus } from '../block-node-cursor';
 import { handleBlockEditorBoundaryNavigation } from '../node-view-navigation';
 import { highlightMermaid } from '../syntax-highlight';
 import HighlightedTextarea from './HighlightedTextarea';
+import {
+  getCachedMermaidHeight,
+  getMermaidCacheKey,
+  setCachedMermaidHeight,
+} from '../mermaid-cache';
+import { registerVirtualNodeView } from '../virtualization/activation-controller';
 
 let renderIndex = 0;
 let mermaidLoader: Promise<typeof import('mermaid')> | null = null;
 const mermaidRenderCache = new Map<string, Promise<string>>();
+const MERMAID_DEFAULT_PLACEHOLDER_HEIGHT = 180;
+let mermaidBlockNodeViewId = 0;
+function nextMermaidBlockNodeViewId(): string {
+  mermaidBlockNodeViewId += 1;
+  return `mermaid-block-${mermaidBlockNodeViewId}`;
+}
 
 function isDarkTheme(): boolean {
   return document.documentElement.dataset.theme === 'dark';
-}
-
-function getMermaidCacheKey(theme: string, code: string): string {
-  return `${theme}\u0000${code}`;
 }
 
 function loadMermaid() {
@@ -55,11 +63,27 @@ async function renderMermaid(source: string, theme: 'dark' | 'base'): Promise<st
 
 function MermaidBlockView({ editor, getPos, node, selected, updateAttributes }: NodeViewProps) {
   const [editing, setEditing] = useState(!node.attrs.code);
+  const [isActive, setIsActive] = useState(() => typeof IntersectionObserver === 'undefined');
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  const editingRef = useRef(editing);
+  editingRef.current = editing;
+  const nodeViewId = useMemo(() => nextMermaidBlockNodeViewId(), []);
+  const contentHashRef = useRef(String(node.attrs.code ?? ''));
+  contentHashRef.current = String(node.attrs.code ?? '');
+  const getPosRef = useRef(getPos);
+  getPosRef.current = getPos;
   const [draft, setDraft] = useState(String(node.attrs.code ?? ''));
   const [svg, setSvg] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [theme, setTheme] = useState<'dark' | 'base'>(() => (isDarkTheme() ? 'dark' : 'base'));
+  const previewRef = useRef<HTMLDivElement | null>(null);
   const highlightedDraft = highlightMermaid(draft);
+  const source = String(editing ? draft : node.attrs.code ?? '');
+  const cachedHeight = getCachedMermaidHeight(theme, source);
+  const previewStyle = cachedHeight !== null ? { minHeight: `${cachedHeight}px` } : undefined;
+  const placeholderStyle = { minHeight: `${cachedHeight ?? MERMAID_DEFAULT_PLACEHOLDER_HEIGHT}px` };
 
   useEffect(() => {
     const updateTheme = () => setTheme(isDarkTheme() ? 'dark' : 'base');
@@ -76,8 +100,55 @@ function MermaidBlockView({ editor, getPos, node, selected, updateAttributes }: 
   }, []);
 
   useEffect(() => {
+    if (selected || editing) {
+      setIsActive(true);
+    }
+  }, [editing, selected]);
+
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) {
+      return;
+    }
+
+    return registerVirtualNodeView(
+      nodeViewId,
+      wrapper,
+      {
+        activate: () => setIsActive(true),
+        deactivate: () => setIsActive(false),
+        shouldDeactivate: () => {
+          if (editingRef.current || selectedRef.current) {
+            return false;
+          }
+          if (editor.view.composing) {
+            return false;
+          }
+          return !wrapper.contains(document.activeElement);
+        },
+      },
+      {
+        nodeType: 'mermaidBlock',
+        contentHash: () => contentHashRef.current,
+        getPosition: () => {
+          try {
+            return getPosRef.current?.() ?? null;
+          } catch {
+            return null;
+          }
+        },
+      },
+    );
+  }, [nodeViewId]);
+
+  useEffect(() => {
     let cancelled = false;
-    const source = String(editing ? draft : node.attrs.code ?? '');
+
+    if (!isActive) {
+      return () => {
+        cancelled = true;
+      };
+    }
 
     if (!source.trim()) {
       setSvg('');
@@ -110,18 +181,40 @@ function MermaidBlockView({ editor, getPos, node, selected, updateAttributes }: 
     return () => {
       cancelled = true;
     };
-  }, [draft, editing, node.attrs.code, theme]);
+  }, [isActive, source, theme]);
+
+  useEffect(() => {
+    if (!svg) {
+      return;
+    }
+
+    const preview = previewRef.current;
+    if (!preview) {
+      return;
+    }
+
+    const height = preview.getBoundingClientRect().height;
+    if (height > 0) {
+      setCachedMermaidHeight(theme, source, height);
+    }
+  }, [source, svg, theme]);
 
   return (
     <NodeViewWrapper
+      ref={wrapperRef}
       className={`mermaid-node ${selected ? 'is-selected' : ''} ${editing ? 'is-editing' : ''}`}
       onClick={(event: any) => {
         if (!editing && !(event.target as HTMLElement).closest('.mermaid-node__editor')) {
+          setIsActive(true);
           setEditing(true);
         }
       }}
     >
-      {editing ? (
+      {!isActive ? (
+        <div className="mermaid-node__placeholder" style={placeholderStyle}>
+          <span className="mermaid-node__placeholder-label">Mermaid</span>
+        </div>
+      ) : editing ? (
         <div className="live-preview-block mermaid-node__editor">
           <HighlightedTextarea
             autoFocus
@@ -176,13 +269,20 @@ function MermaidBlockView({ editor, getPos, node, selected, updateAttributes }: 
             <div
               className="live-preview-block__preview mermaid-node__preview"
               dangerouslySetInnerHTML={{ __html: svg }}
+              ref={previewRef}
+              style={previewStyle}
             />
           ) : null}
         </div>
       ) : error ? (
         <div className="node-card__error">{error}</div>
       ) : svg ? (
-        <div className="mermaid-node__preview" dangerouslySetInnerHTML={{ __html: svg }} />
+        <div
+          className="mermaid-node__preview"
+          dangerouslySetInnerHTML={{ __html: svg }}
+          ref={previewRef}
+          style={previewStyle}
+        />
       ) : (
         <div className="mermaid-node__empty">Mermaid</div>
       )}

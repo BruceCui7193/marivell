@@ -1861,6 +1861,15 @@
   overflow: auto;
 }
 
+.code-block-node__pre.code-block-node--placeholder {
+  opacity: 0.64;
+  transition: opacity 140ms ease;
+}
+
+.code-block-node--placeholder .code-block-node__toolbar {
+  display: none;
+}
+
 .code-block-node__pre [data-node-view-content-react] {
   display: block;
   min-height: 1.2em;
@@ -2188,6 +2197,20 @@
   font-size: 13px;
 }
 
+.image-node__placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 150px;
+  padding: 18px;
+  border: 1px dashed var(--ui-border);
+  border-radius: 18px;
+  background: var(--ui-bg-strong);
+  color: var(--ui-text-soft);
+  font-size: 13px;
+  opacity: 0.78;
+}
+
 .editor-source {
   display: block;
   min-height: 100%;
@@ -2327,6 +2350,16 @@
 .highlighted-textarea__input::selection {
   background: color-mix(in srgb, var(--ui-accent) 30%, transparent);
   -webkit-text-fill-color: transparent;
+}
+
+.mermaid-node__placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  color: var(--ui-text-soft);
+  font-size: 13px;
+  opacity: 0.78;
 }
 
 .highlighted-textarea__input::placeholder {
@@ -2505,6 +2538,17 @@
 }
 
 /* --- HTML Block --- */
+
+.html-block-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 84px;
+  color: var(--ui-text-soft);
+}
+.html-block-placeholder__hint {
+  opacity: 0.78;
+}
 
 .html-block {
   margin: 0.9rem 0;
@@ -2781,6 +2825,19 @@
   border-top: 1px dashed var(--ui-border, rgba(128, 128, 128, 0.2));
   padding-top: 12px;
   width: 100%;
+}
+
+.math-block-node-placeholder .math-node-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.math-node-placeholder-hint {
+  color: var(--ui-text-soft);
+  font-size: 0.95em;
+  font-style: italic;
+  opacity: 0.72;
 }
 
 /* --- Math LaTeX syntax highlighting --- */

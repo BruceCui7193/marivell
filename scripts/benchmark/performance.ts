@@ -237,6 +237,7 @@ async function runVisualInteractionSuite(
       const start = performance.now();
       let applied = false;
       let error = '';
+      let previewError = '';
       try {
         switch (name) {
           case 'typing':
@@ -292,7 +293,17 @@ async function runVisualInteractionSuite(
         error = String(err);
       }
       await raf();
-      return { ms: performance.now() - start, applied, error };
+      if (name === 'block-math' && applied) {
+        const blockNode = document.querySelector('.math-block-node');
+        if (
+          !blockNode ||
+          blockNode.classList.contains('math-block-node-placeholder') ||
+          !blockNode.querySelector('.math-node-preview .katex')
+        ) {
+          previewError = 'block math preview not ready after insertion';
+        }
+      }
+      return { ms: performance.now() - start, applied, error: error || previewError };
     };
 
     const results = {};

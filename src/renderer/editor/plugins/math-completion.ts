@@ -6,6 +6,7 @@ import {
   getMathCompletionItems,
   type MathCompletionItem,
 } from '../math-completions';
+import { coordsAtPos } from '../virtualization/coordinate-service';
 
 interface MathCompletionState {
   open: boolean;
@@ -152,7 +153,11 @@ export const MathCompletion = Extension.create({
               return;
             }
 
-            const coords = view.coordsAtPos(state.to);
+            const coords = coordsAtPos({ view }, state.to);
+            if (!coords) {
+              popup.style.display = 'none';
+              return;
+            }
             const width = Math.min(280, window.innerWidth - 16);
             const left = Math.max(8, Math.min(coords.left, window.innerWidth - width - 8));
             const estimatedHeight = Math.min(260, state.items.length * 36 + 12);

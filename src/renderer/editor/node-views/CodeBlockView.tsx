@@ -2,13 +2,33 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { NodeViewContent, NodeViewWrapper } from '@tiptap/react';
 import type { NodeViewProps } from '@tiptap/react';
 import { CODE_LANGUAGE_OPTIONS } from '../code-languages';
+import { registerVirtualNodeView } from '../virtualization/activation-controller';
 
-export default function CodeBlockView({ node, updateAttributes }: NodeViewProps) {
+let codeBlockNodeViewId = 0;
+function nextCodeBlockNodeViewId(): string {
+  codeBlockNodeViewId += 1;
+  return `code-block-${codeBlockNodeViewId}`;
+}
+
+export default function CodeBlockView({ editor, getPos, node, selected, updateAttributes }: NodeViewProps) {
+  const [isActive, setIsActive] = useState(
+    () => typeof IntersectionObserver === 'undefined' || selected,
+  );
   const [languageDraft, setLanguageDraft] = useState(String(node.attrs.language ?? ''));
   const [isLanguageMenuOpen, setLanguageMenuOpen] = useState(false);
   const [languageMenuPlacement, setLanguageMenuPlacement] = useState<'down' | 'up'>('down');
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
   const languagePickerRef = useRef<HTMLDivElement | null>(null);
   const languageMenuRef = useRef<HTMLDivElement | null>(null);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  const isLanguageMenuOpenRef = useRef(isLanguageMenuOpen);
+  isLanguageMenuOpenRef.current = isLanguageMenuOpen;
+  const nodeViewId = useMemo(() => nextCodeBlockNodeViewId(), []);
+  const contentHashRef = useRef(node.textContent);
+  contentHashRef.current = node.textContent;
+  const getPosRef = useRef(getPos);
+  getPosRef.current = getPos;
 
   const languageOptions = useMemo(() => {
     const seenLabels = new Set<string>();
@@ -40,6 +60,48 @@ export default function CodeBlockView({ node, updateAttributes }: NodeViewProps)
   useEffect(() => {
     setLanguageDraft(String(node.attrs.language ?? ''));
   }, [node.attrs.language]);
+
+  useEffect(() => {
+    if (selected) {
+      setIsActive(true);
+    }
+  }, [selected]);
+
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) {
+      return;
+    }
+
+    return registerVirtualNodeView(
+      nodeViewId,
+      wrapper,
+      {
+        activate: () => setIsActive(true),
+        deactivate: () => setIsActive(false),
+        shouldDeactivate: () => {
+          if (selectedRef.current || isLanguageMenuOpenRef.current) {
+            return false;
+          }
+          if (editor.view.composing) {
+            return false;
+          }
+          return !wrapper.contains(document.activeElement);
+        },
+      },
+      {
+        nodeType: 'codeBlock',
+        contentHash: () => contentHashRef.current ?? '',
+        getPosition: () => {
+          try {
+            return getPosRef.current?.() ?? null;
+          } catch {
+            return null;
+          }
+        },
+      },
+    );
+  }, [nodeViewId]);
 
   const applyLanguage = (nextLanguage: string) => {
     const normalizedLanguage = nextLanguage.trim();
@@ -84,12 +146,29 @@ export default function CodeBlockView({ node, updateAttributes }: NodeViewProps)
     };
   }, [isLanguageMenuOpen, filteredLanguageOptions.length]);
 
+  const placeholderClassName = isActive ? '' : ' code-block-node--placeholder';
+
   return (
     <NodeViewWrapper
-      className={node.attrs.language ? 'code-block-node has-language' : 'code-block-node'}
+      ref={wrapperRef}
+      className={`code-block-node ${node.attrs.language ? 'has-language' : ''}${placeholderClassName}`}
       data-language={String(node.attrs.language ?? '').trim() || undefined}
+      onClick={() => {
+        if (!isActive) {
+          setIsActive(true);
+        }
+      }}
+      onFocusCapture={() => {
+        if (!isActive) {
+          setIsActive(true);
+        }
+      }}
     >
-      <NodeViewContent as="pre" className="node-code-surface code-block-node__pre" spellCheck={false} />
+      <NodeViewContent
+        as="pre"
+        className={`node-code-surface code-block-node__pre${placeholderClassName}`}
+        spellCheck={false}
+      />
       <div className="code-block-node__toolbar" contentEditable={false}>
         <span className="code-block-node__toolbar-label">Lang</span>
         <div

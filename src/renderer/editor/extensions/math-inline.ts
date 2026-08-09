@@ -1,7 +1,12 @@
 import { InputRule, Node, mergeAttributes } from '@tiptap/core';
-import { TextSelection } from '@tiptap/pm/state';
+import { NodeSelection, TextSelection } from '@tiptap/pm/state';
 import katex from 'katex';
 import { getCachedFormulaHtml, getFormulaCacheKey, seedFormulaHtmlCache } from '../math-render-cache';
+import { getCachedNodeHeight, getHeightCacheKey, setCachedNodeHeight } from '../virtualization/height-cache';
+import {
+  forceActivate,
+  registerVirtualNodeView,
+} from '../virtualization/activation-controller';
 import { translate } from '../../i18n';
 
 declare module '@tiptap/core' {
@@ -22,6 +27,60 @@ function mathLog(...args: unknown[]): void {
   if (__mathDebug) console.log('[math]', ...args);
 }
 
+interface MathNodeLike {
+  type: { name: string };
+  textContent: string;
+  nodeSize: number;
+}
+
+const BLOCK_MATH_DEFAULT_HEIGHT = 96;
+const BLOCK_MATH_WIDTH_BUCKET = 160;
+let blockMathNodeViewId = 0;
+
+function nextBlockMathNodeViewId(): string {
+  blockMathNodeViewId += 1;
+  return `block-math-${blockMathNodeViewId}`;
+}
+
+function getBlockMathThemeKey(): string {
+  const root = document.documentElement;
+  const theme = root.dataset.theme ?? 'light';
+  const palette = root.dataset.colorScheme ?? 'default';
+  return `${theme}:${palette}`;
+}
+
+function getBlockMathZoomKey(): number {
+  if (typeof window === 'undefined') return 1;
+  return window.devicePixelRatio || 1;
+}
+
+function getBlockMathFontVersionKey(): string {
+  const root = document.documentElement;
+  if (root.dataset.fontVersion) return root.dataset.fontVersion;
+  try {
+    const font = getComputedStyle(root).getPropertyValue('--ui-font').trim();
+    if (font) return font;
+  } catch {}
+  return 'default';
+}
+
+function getBlockMathWidthBucket(element: HTMLElement): number {
+  const frame = element.closest('.editor-frame') as HTMLElement | null;
+  const editorSurface = frame?.querySelector('.ProseMirror') as HTMLElement | null;
+  const width = editorSurface?.clientWidth || frame?.clientWidth || (typeof window !== 'undefined' ? window.innerWidth : 0) || 800;
+  return Math.max(1, Math.floor(width / BLOCK_MATH_WIDTH_BUCKET));
+}
+
+function getBlockMathHeightKey(node: MathNodeLike, element: HTMLElement): string {
+  return getHeightCacheKey(
+    node.type.name,
+    node.textContent,
+    getBlockMathWidthBucket(element),
+    getBlockMathThemeKey(),
+    getBlockMathZoomKey(),
+    getBlockMathFontVersionKey(),
+  );
+}
 
 function findMathCaretPosition(doc: any, from: number, display: string, value: string): number | null {
   let caret: number | null = null;
@@ -110,6 +169,9 @@ export const MathInline = Node.create({
       // Create container
       const dom = document.createElement(isBlock ? 'div' : 'span');
       dom.className = isBlock ? 'math-block-node math-node-wrapper' : 'math-inline-node math-node-wrapper';
+      const nodeViewId = nextBlockMathNodeViewId();
+      let unregisterActivation: (() => void) | null = null;
+      let blockPreviewActive = false;
 
       // Create editable content element
       const contentDOM = document.createElement('span');
@@ -127,6 +189,23 @@ export const MathInline = Node.create({
       // Cache last rendered text to skip redundant KaTeX renders.
       let lastRenderedText: string | null = null;
       let destroyed = false;
+
+      const getBlockPreviewHeight = (): number => {
+        const cachedHeight = getCachedNodeHeight(getBlockMathHeightKey(node, dom));
+        return cachedHeight ?? BLOCK_MATH_DEFAULT_HEIGHT;
+      };
+
+      const showBlockPlaceholder = (): void => {
+        blockPreviewActive = false;
+        lastRenderedText = null;
+        dom.classList.add('math-block-node-placeholder');
+        previewDOM.style.minHeight = `${getBlockPreviewHeight()}px`;
+        previewDOM.replaceChildren();
+        const hint = document.createElement('span');
+        hint.className = 'math-node-placeholder-hint';
+        hint.textContent = translate('emptyMath');
+        previewDOM.appendChild(hint);
+      };
 
       const doRender = (text: string) => {
         if (text === lastRenderedText) return;
@@ -168,6 +247,99 @@ export const MathInline = Node.create({
         doRender(text);
       };
 
+      const getBlockPreviewLayoutHeight = (): number => {
+        const rectHeight = previewDOM.getBoundingClientRect().height;
+        if (rectHeight > 0) {
+          return rectHeight;
+        }
+        const minHeight = Number.parseFloat(previewDOM.style.minHeight);
+        return Number.isFinite(minHeight) && minHeight > 0 ? minHeight : BLOCK_MATH_DEFAULT_HEIGHT;
+      };
+
+      const measureAndCacheBlockPreview = (): number => {
+        const key = getBlockMathHeightKey(node, dom);
+        const previousMinHeight = previewDOM.style.minHeight;
+        previewDOM.style.minHeight = '0px';
+        const height = Math.max(
+          previewDOM.getBoundingClientRect().height,
+          previewDOM.scrollHeight,
+          previewDOM.clientHeight,
+        );
+        if (height > 0) {
+          previewDOM.style.minHeight = `${height}px`;
+          setCachedNodeHeight(key, height);
+          return height;
+        }
+        if (previousMinHeight) {
+          previewDOM.style.minHeight = previousMinHeight;
+          return Number.parseFloat(previousMinHeight) || BLOCK_MATH_DEFAULT_HEIGHT;
+        }
+        previewDOM.style.minHeight = `${BLOCK_MATH_DEFAULT_HEIGHT}px`;
+        return BLOCK_MATH_DEFAULT_HEIGHT;
+      };
+
+      const isBlockMathSelected = (): boolean => {
+        if (typeof getPos !== 'function') return false;
+        let pos = 0;
+        try {
+          pos = getPos();
+        } catch {
+          return false;
+        }
+        const { selection } = editor.state;
+        if (selection instanceof NodeSelection) {
+          return selection.from === pos && selection.to === pos + node.nodeSize;
+        }
+        if (selection.empty) {
+          return selection.from > pos && selection.from < pos + node.nodeSize;
+        }
+        return Math.max(selection.from, pos) < Math.min(selection.to, pos + node.nodeSize);
+      };
+
+      const isBlockMathSubmenuOpen = (): boolean => {
+        const popup = document.querySelector<HTMLElement>('.math-completion');
+        return popup !== null && popup.style.display !== 'none';
+      };
+
+      const shouldDeactivateBlockPreview = (): boolean => {
+        if (dom.classList.contains('is-editing')) return false;
+        if (editor.view.composing) return false;
+        if (dom.contains(document.activeElement)) return false;
+        if (isBlockMathSelected()) return false;
+        if (isBlockMathSubmenuOpen()) return false;
+        return true;
+      };
+
+      const compensateBlockPreviewScroll = (previousHeight: number): void => {
+        const realHeight = measureAndCacheBlockPreview();
+        if (realHeight === previousHeight) {
+          return;
+        }
+        if (!shouldDeactivateBlockPreview()) {
+          return;
+        }
+        const frame = dom.closest('.editor-frame') as HTMLElement | null;
+        if (!frame) {
+          return;
+        }
+        const frameRect = frame.getBoundingClientRect();
+        const nodeRect = dom.getBoundingClientRect();
+        if (nodeRect.bottom >= frameRect.top) {
+          return;
+        }
+        const delta = realHeight - previousHeight;
+        const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+        frame.scrollTop = Math.max(0, Math.min(frame.scrollTop + delta, maxScrollTop));
+      };
+
+      const activateBlockPreview = (): void => {
+        const previousHeight = getBlockPreviewLayoutHeight();
+        dom.classList.remove('math-block-node-placeholder');
+        blockPreviewActive = true;
+        renderPreview(node.textContent);
+        compensateBlockPreviewScroll(previousHeight);
+      };
+
       // Handle clicking anywhere on the formula to enter edit mode.
       // The is-editing class is managed by the MathFocusDecoration plugin,
       // so the node view no longer needs to subscribe to editor events.
@@ -178,12 +350,41 @@ export const MathInline = Node.create({
 
         const pos = getPos();
         editor.chain().setTextSelection(pos + 1).focus().run();
+        activateBlockPreview();
         event.preventDefault();
         event.stopPropagation();
       });
 
       mathLog('nodeView created:', node.textContent);
-      renderPreview(node.textContent);
+      if (isBlock) {
+        showBlockPlaceholder();
+        unregisterActivation = registerVirtualNodeView(
+          nodeViewId,
+          dom,
+          {
+            activate: activateBlockPreview,
+            deactivate: showBlockPlaceholder,
+            shouldDeactivate: shouldDeactivateBlockPreview,
+          },
+          {
+            nodeType: 'inlineMath',
+            contentHash: () => `${node.attrs.display}:${node.textContent}`,
+            heightKey: () => getBlockMathHeightKey(node, dom),
+            getPosition: () => {
+              try {
+                return getPos?.() ?? null;
+              } catch {
+                return null;
+              }
+            },
+          },
+        );
+        if (isBlockMathSelected()) {
+          forceActivate(nodeViewId);
+        }
+      } else {
+        renderPreview(node.textContent);
+      }
 
       return {
         dom,
@@ -194,15 +395,31 @@ export const MathInline = Node.create({
           const textChanged = newNode.textContent !== node.textContent;
           node = newNode;
           if (textChanged) {
-            lastRenderedText = ''; // force re-render only when content actually changed
+            lastRenderedText = isBlock ? null : '';
           }
-          renderPreview(node.textContent);
+          if (isBlock) {
+            if (blockPreviewActive) {
+              renderPreview(node.textContent);
+              measureAndCacheBlockPreview();
+            } else if (isBlockMathSelected()) {
+              activateBlockPreview();
+            } else {
+              showBlockPlaceholder();
+            }
+          } else {
+            renderPreview(node.textContent);
+          }
           return true;
         },
-        selectNode() {},
+        selectNode() {
+          if (isBlock) {
+            activateBlockPreview();
+          }
+        },
         deselectNode() {},
         destroy() {
           destroyed = true;
+          unregisterActivation?.();
         },
       };
     };

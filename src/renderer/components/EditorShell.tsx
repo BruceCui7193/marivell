@@ -37,11 +37,34 @@ import {
   buildVisualContextMenu,
 } from '../editor/context-menu-actions';
 import { parseMarkdown, serializeMarkdown } from '../editor/markdown';
+import { buildBlockModelFromEditor } from '../editor/block-model';
+import {
+  captureSourceScrollAnchor,
+  captureVisualScrollAnchor,
+  restoreSourceScrollAnchor,
+  restoreVisualScrollAnchor,
+  type ScrollAnchor,
+  type SourceScrollAnchor,
+} from '../editor/scroll-anchor';
+import { forceActivateViewport } from '../editor/virtualization/activation-controller';
+import {
+  coordsAtPos,
+  forceActivateAtCoords,
+  forceActivateAtPosition,
+  posAtCoords,
+  scrollPosIntoView,
+} from '../editor/virtualization/coordinate-service';
+import { clearNodeHeightCache } from '../editor/virtualization/height-cache';
 import {
   clearFormulaHtmlCache,
+  getCachedFormulaHtml,
   seedFormulaHtmlCache,
 } from '../editor/math-render-cache';
 import { replaceEditorContent } from '../editor/replace-editor-content';
+import type {
+  FormulaChunkResponse,
+  FormulaIndexEntry,
+} from '../editor/markdown.worker';
 import {
   SELECTION_END_MARKER,
   SELECTION_START_MARKER,
@@ -96,6 +119,7 @@ interface WorkerParseSuccess {
   ok: true;
   content: JSONContent;
   outline: OutlineItem[];
+  formulaIndex?: FormulaIndexEntry[];
   formulaHtml?: Record<string, string>;
 }
 
@@ -106,6 +130,11 @@ interface WorkerParseFailure {
 }
 
 type WorkerParseResponse = WorkerParseSuccess | WorkerParseFailure;
+
+const FORMULA_CHUNK_ENTRIES_PER_REQUEST = 150;
+const FORMULA_CHUNK_MAX_IN_FLIGHT = 2;
+const FORMULA_CHUNK_VIEWPORT_WINDOW = 600;
+const FORMULA_CHUNK_REQUEST_ID_OFFSET = 0x4000_0000;
 
 function createEmptyDocument(): JSONContent {
   return {
@@ -164,46 +193,33 @@ function getEditorPlainText(editor: TiptapEditor): string {
   return editor.state.doc.textBetween(0, editor.state.doc.content.size, '\n', '\n');
 }
 
-function extractOutlineFromEditor(editor: TiptapEditor): OutlineItem[] {
+export function extractOutlineFromEditor(editor: TiptapEditor): OutlineItem[] {
   const items: OutlineItem[] = [];
-  let blockIndex = 0;
+  const blockModel = buildBlockModelFromEditor(editor);
 
-  editor.state.doc.forEach((node) => {
-    if (node.type.name === 'heading') {
-      const text = node.textContent.trim();
-      if (text) {
-        items.push({
-          id: `heading-pos-${blockIndex}-${items.length}`,
-          level: Number(node.attrs.level ?? 1),
-          text,
-          line: blockIndex,
-          start: -1,
-        });
-      }
+  for (const block of blockModel) {
+    if (block.type !== 'heading') {
+      continue;
     }
-    blockIndex += 1;
-  });
 
-  // Prefer precise positions for scroll-to-heading when available.
-  let itemIdx = 0;
-  editor.state.doc.descendants((node, position) => {
-    if (node.type.name !== 'heading') {
-      return true;
-    }
-    const text = node.textContent.trim();
+    const text = block.text.trim();
     if (!text) {
-      return true;
+      continue;
     }
-    if (items[itemIdx]) {
-      items[itemIdx] = {
-        ...items[itemIdx],
-        id: `heading-${position}-${itemIdx}`,
-        start: position,
-      };
-      itemIdx += 1;
+
+    const node = editor.state.doc.nodeAt(block.pmPos);
+    if (!node || node.type.name !== 'heading') {
+      continue;
     }
-    return true;
-  });
+
+    items.push({
+      id: block.id,
+      level: Number(node.attrs.level ?? 1),
+      text,
+      line: block.line,
+      start: block.pmPos,
+    });
+  }
 
   return items;
 }
@@ -223,7 +239,13 @@ function areOutlinesEqual(left: OutlineItem[], right: OutlineItem[]): boolean {
 
   return left.every((item, index) => {
     const next = right[index];
-    return item.id === next.id && item.level === next.level && item.text === next.text;
+    return (
+      item.id === next.id &&
+      item.level === next.level &&
+      item.text === next.text &&
+      item.start === next.start &&
+      item.line === next.line
+    );
   });
 }
 
@@ -570,9 +592,9 @@ export default function EditorShell({
   const pendingSourceSelectionRef = useRef<SourceSearchMatch | null>(null);
   const pendingVisualSelectionRestoreRef = useRef(false);
   const startupCaretPlacedRef = useRef(false);
-  const scrollMemoryRef = useRef<Map<string, number>>(new Map());
+  const scrollMemoryRef = useRef<Map<string, ScrollAnchor | SourceScrollAnchor | number>>(new Map());
   const prevDocPathRef = useRef(document.path);
-  const pendingScrollRestoreRef = useRef<number | null>(null);
+  const pendingScrollRestoreRef = useRef<ScrollAnchor | SourceScrollAnchor | number | null>(null);
   const modeSwitchOverlayTimerRef = useRef<number | null>(null);
   const sourceSelectionRef = useRef<SourceSearchMatch>({
     start: 0,
@@ -585,6 +607,14 @@ export default function EditorShell({
   } | null>(null);
   const sourcePreviewTimerRef = useRef<number | null>(null);
   const sourcePreviewRequestRef = useRef(0);
+  const formulaHtmlCacheGenerationRef = useRef(0);
+  const formulaIndexRef = useRef<FormulaIndexEntry[] | null>(null);
+  const formulaChunkRequestRef = useRef(0);
+  const formulaChunkQueueRef = useRef<FormulaIndexEntry[][]>([]);
+  const formulaChunkInFlightRef = useRef<Map<number, number>>(new Map());
+  const formulaChunkWindowStartRef = useRef(0);
+  const formulaChunkWindowEndRef = useRef(0);
+  const heightCacheInvalidationFrameRef = useRef<number | null>(null);
   const [toolbarVisible, setToolbarVisible] = useState(() => {
     return window.localStorage.getItem('markdown-editor-toolbar') !== 'hidden';
   });
@@ -847,6 +877,8 @@ export default function EditorShell({
         window.clearTimeout(sourcePreviewTimerRef.current);
         sourcePreviewTimerRef.current = null;
       }
+      formulaChunkQueueRef.current = [];
+      formulaChunkInFlightRef.current.clear();
     };
   }, []);
 
@@ -910,12 +942,10 @@ export default function EditorShell({
     let x = 16;
     let y = 16;
     if (currentEditor && info.pos != null) {
-      try {
-        const coords = currentEditor.view.coordsAtPos(info.pos);
+      const coords = coordsAtPos(currentEditor, info.pos);
+      if (coords) {
         x = coords.left;
         y = coords.bottom + 8;
-      } catch {
-        // Keep the menu near the viewport if the image position is transient.
       }
     }
     x = Math.max(8, Math.min(x, window.innerWidth - 280));
@@ -1013,6 +1043,15 @@ export default function EditorShell({
       handleDOMEvents: {
         copy: handleEditorCopy,
         cut: handleEditorCut,
+        mousemove: (_view: TiptapEditor['view'], event: globalThis.MouseEvent) => {
+          const currentEditor = editorRef.current;
+          const domSelection = window.getSelection();
+          if (!currentEditor || !domSelection || domSelection.isCollapsed) {
+            return false;
+          }
+          forceActivateAtCoords(currentEditor, event.clientX, event.clientY);
+          return false;
+        },
       },
       handleClick: handleEditorClick,
     }),
@@ -1141,6 +1180,80 @@ export default function EditorShell({
     if (window.markdownEditor.getBenchmarkEnabled?.()) {
       (window as unknown as Record<string, unknown>).__marivellEditor = editor;
     }
+  }, [editor]);
+
+  useEffect(() => {
+    if (!editor) {
+      return;
+    }
+
+    let disposed = false;
+
+    const rehydrateViewport = () => {
+      heightCacheInvalidationFrameRef.current = null;
+      if (sourceModeRef.current) {
+        return;
+      }
+      const frame = editorFrameRef.current;
+      if (!frame) {
+        return;
+      }
+      forceActivateViewport(frame);
+    };
+
+    const invalidateHeightCache = () => {
+      clearNodeHeightCache();
+      if (heightCacheInvalidationFrameRef.current !== null) {
+        window.cancelAnimationFrame(heightCacheInvalidationFrameRef.current);
+      }
+      heightCacheInvalidationFrameRef.current = window.requestAnimationFrame(rehydrateViewport);
+    };
+
+    window.addEventListener('resize', invalidateHeightCache);
+
+    let zoomQuery: MediaQueryList | null = null;
+    try {
+      zoomQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+      zoomQuery.addEventListener?.('change', invalidateHeightCache);
+    } catch {
+      // Some test environments expose a partial matchMedia implementation.
+    }
+
+    let themeObserver: MutationObserver | null = null;
+    if (typeof MutationObserver !== 'undefined') {
+      themeObserver = new MutationObserver(() => invalidateHeightCache());
+      themeObserver.observe(window.document.documentElement, {
+        attributes: true,
+        attributeFilter: ['data-theme', 'data-color-scheme', 'data-font-version'],
+      });
+    }
+
+    let fontsReady: Promise<unknown> | null = null;
+    try {
+      fontsReady = window.document.fonts?.ready ?? null;
+    } catch {
+      fontsReady = null;
+    }
+    if (fontsReady) {
+      fontsReady.then(() => {
+        if (!disposed) {
+          invalidateHeightCache();
+        }
+      }).catch(() => {
+        // Font loading can be interrupted in tests; the next resize/theme event retries.
+      });
+    }
+
+    return () => {
+      disposed = true;
+      window.removeEventListener('resize', invalidateHeightCache);
+      zoomQuery?.removeEventListener?.('change', invalidateHeightCache);
+      themeObserver?.disconnect();
+      if (heightCacheInvalidationFrameRef.current !== null) {
+        window.cancelAnimationFrame(heightCacheInvalidationFrameRef.current);
+        heightCacheInvalidationFrameRef.current = null;
+      }
+    };
   }, [editor]);
 
   const updateImageSrc = useCallback((oldSrc: string, newSrc: string) => {
@@ -1318,7 +1431,18 @@ export default function EditorShell({
       : editorFrameRef.current;
     const previousPath = prevDocPathRef.current;
     if (scrollEl && previousPath) {
-      scrollMemoryRef.current.set(previousPath, computeScrollRatio(scrollEl));
+      let savedScroll: ScrollAnchor | SourceScrollAnchor | number;
+      if (sourceModeRef.current && sourceTextareaRef.current) {
+        savedScroll = captureSourceScrollAnchor(sourceTextareaRef.current);
+      } else if (sourceModeRef.current) {
+        savedScroll = computeScrollRatio(scrollEl);
+      } else {
+        const currentEditor = editorRef.current ?? editor;
+        savedScroll =
+          (currentEditor ? captureVisualScrollAnchor(scrollEl, currentEditor) : null) ??
+          computeScrollRatio(scrollEl);
+      }
+      scrollMemoryRef.current.set(previousPath, savedScroll);
     }
     prevDocPathRef.current = document.path;
   }, [document.path]);
@@ -1340,6 +1464,11 @@ export default function EditorShell({
       }
     };
 
+    // Queue scroll restoration before the source/visual startup effects consume it.
+    const pathKey = document.path;
+    const savedScroll = pathKey ? scrollMemoryRef.current.get(pathKey) : undefined;
+    pendingScrollRestoreRef.current = savedScroll ?? null;
+
     if (sourceMode) {
       ensureEditable();
       setLoadingExternalDocument(false);
@@ -1355,17 +1484,14 @@ export default function EditorShell({
     let cancelled = false;
     const loadId = latestExternalLoadRef.current + 1;
     latestExternalLoadRef.current = loadId;
+    const formulaCacheGeneration = ++formulaHtmlCacheGenerationRef.current;
     clearFormulaHtmlCache();
+    formulaIndexRef.current = null;
+    formulaChunkQueueRef.current = [];
     setLoadingExternalDocument(true);
     startupCaretPlacedRef.current = false;
     editor.setEditable(false);
 
-    // Queue scroll restoration for after the content loads.
-    const pathKey = document.path;
-    const savedRatio = pathKey ? scrollMemoryRef.current.get(pathKey) : undefined;
-    if (savedRatio != null) {
-      pendingScrollRestoreRef.current = savedRatio;
-    }
 
     const isActiveLoad = () =>
       !cancelled && latestExternalLoadRef.current === loadId && !editor.isDestroyed;
@@ -1393,6 +1519,7 @@ export default function EditorShell({
           }
         }
       });
+      attachViewportPrefetchScroll();
     };
 
     const applyParsedContent = (content: JSONContent, outlineItems: OutlineItem[] | null) => {
@@ -1439,6 +1566,166 @@ export default function EditorShell({
       setVisualSearchRevision((current) => current + 1);
     };
 
+    const pumpFormulaChunks = (): void => {
+      if (
+        !isActiveLoad() ||
+        formulaHtmlCacheGenerationRef.current !== formulaCacheGeneration ||
+        formulaChunkQueueRef.current.length === 0
+      ) {
+        return;
+      }
+
+      if (!markdownWorkerRef.current) {
+        markdownWorkerRef.current = createMarkdownWorker();
+      }
+      const worker = markdownWorkerRef.current;
+
+      const inFlightForGeneration = (): number => {
+        let count = 0;
+        for (const generation of formulaChunkInFlightRef.current.values()) {
+          if (generation === formulaCacheGeneration) {
+            count += 1;
+          }
+        }
+        return count;
+      };
+
+      while (formulaChunkQueueRef.current.length > 0 && inFlightForGeneration() < FORMULA_CHUNK_MAX_IN_FLIGHT) {
+        const chunk = formulaChunkQueueRef.current.shift();
+        if (!chunk) {
+          break;
+        }
+
+        const missingEntries = chunk.filter(
+          (entry) => getCachedFormulaHtml(entry.latex, entry.display) === null,
+        );
+        if (missingEntries.length === 0) {
+          continue;
+        }
+
+        const requestId = FORMULA_CHUNK_REQUEST_ID_OFFSET + ++formulaChunkRequestRef.current;
+        formulaChunkInFlightRef.current.set(requestId, formulaCacheGeneration);
+
+        const handleError = (): void => {
+          worker.removeEventListener('message', handleMessage);
+          worker.removeEventListener('error', handleError);
+          formulaChunkInFlightRef.current.delete(requestId);
+          pumpFormulaChunks();
+        };
+
+        const handleMessage = (event: MessageEvent<FormulaChunkResponse>) => {
+          if (event.data.requestType !== 'formula-chunk' || event.data.id !== requestId) {
+            return;
+          }
+          worker.removeEventListener('message', handleMessage);
+          worker.removeEventListener('error', handleError);
+          formulaChunkInFlightRef.current.delete(requestId);
+          if (
+            event.data.ok &&
+            isActiveLoad() &&
+            formulaHtmlCacheGenerationRef.current === formulaCacheGeneration
+          ) {
+            seedFormulaHtmlCache(event.data.formulaHtml);
+          }
+          pumpFormulaChunks();
+        };
+
+        worker.addEventListener('message', handleMessage);
+        worker.addEventListener('error', handleError);
+        worker.postMessage({
+          id: requestId,
+          requestType: 'formula-chunk',
+          entries: missingEntries,
+        });
+      }
+    };
+
+    const queueFormulaChunkEntries = (entries: FormulaIndexEntry[]): void => {
+      for (let index = 0; index < entries.length; index += FORMULA_CHUNK_ENTRIES_PER_REQUEST) {
+        formulaChunkQueueRef.current.push(
+          entries.slice(index, index + FORMULA_CHUNK_ENTRIES_PER_REQUEST),
+        );
+      }
+    };
+
+    const startFormulaChunkPrefetch = (entries: FormulaIndexEntry[] | null | undefined): void => {
+      if (
+        !isActiveLoad() ||
+        formulaHtmlCacheGenerationRef.current !== formulaCacheGeneration ||
+        !entries ||
+        entries.length === 0
+      ) {
+        return;
+      }
+
+      formulaChunkWindowStartRef.current = 0;
+      formulaChunkWindowEndRef.current = Math.min(
+        entries.length,
+        FORMULA_CHUNK_VIEWPORT_WINDOW,
+      );
+      queueFormulaChunkEntries(
+        entries.slice(
+          formulaChunkWindowStartRef.current,
+          formulaChunkWindowEndRef.current,
+        ),
+      );
+      pumpFormulaChunks();
+    };
+
+    let viewportPrefetchFrame: number | null = null;
+    let attachedScrollFrame: HTMLElement | null = null;
+
+    const scheduleViewportFormulaPrefetch = (): void => {
+      if (viewportPrefetchFrame !== null) {
+        return;
+      }
+
+      viewportPrefetchFrame = window.requestAnimationFrame(() => {
+        viewportPrefetchFrame = null;
+        if (
+          !isActiveLoad() ||
+          formulaHtmlCacheGenerationRef.current !== formulaCacheGeneration
+        ) {
+          return;
+        }
+
+        const frame = editorFrameRef.current;
+        const entries = formulaIndexRef.current;
+        if (!frame || !entries || entries.length === 0) {
+          return;
+        }
+
+        const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+        const ratio =
+          maxScrollTop > 0 ? Math.min(1, Math.max(0, frame.scrollTop / maxScrollTop)) : 0;
+        const center = Math.floor(ratio * entries.length);
+        const halfWindow = Math.floor(FORMULA_CHUNK_VIEWPORT_WINDOW / 2);
+        const start = Math.max(0, center - halfWindow);
+        const end = Math.min(entries.length, start + FORMULA_CHUNK_VIEWPORT_WINDOW);
+
+        if (
+          start === formulaChunkWindowStartRef.current &&
+          end === formulaChunkWindowEndRef.current
+        ) {
+          return;
+        }
+
+        formulaChunkWindowStartRef.current = start;
+        formulaChunkWindowEndRef.current = end;
+        queueFormulaChunkEntries(entries.slice(start, end));
+        pumpFormulaChunks();
+      });
+    };
+
+    const attachViewportPrefetchScroll = (): void => {
+      const frame = editorFrameRef.current;
+      if (!frame || attachedScrollFrame === frame) {
+        return;
+      }
+      attachedScrollFrame = frame;
+      frame.addEventListener('scroll', scheduleViewportFormulaPrefetch, { passive: true });
+    };
+
     if (document.markdown.length < LARGE_DOCUMENT_THRESHOLD) {
       void import('../editor/markdown')
         .then(({ parseMarkdown }) => {
@@ -1453,9 +1740,16 @@ export default function EditorShell({
     } else {
       void parseMarkdownInWorker(document.markdown, true)
         .then((result) => {
-          if (isActiveLoad() && result.formulaHtml) {
-            seedFormulaHtmlCache(result.formulaHtml);
+          if (
+            isActiveLoad() &&
+            formulaHtmlCacheGenerationRef.current === formulaCacheGeneration
+          ) {
+            if (result.formulaHtml) {
+              seedFormulaHtmlCache(result.formulaHtml);
+            }
+            formulaIndexRef.current = result.formulaIndex ?? null;
           }
+          startFormulaChunkPrefetch(result.formulaIndex ?? null);
           applyParsedContent(result.content, result.outline);
         })
         .catch(async () => {
@@ -1476,6 +1770,16 @@ export default function EditorShell({
 
     return () => {
       cancelled = true;
+      formulaChunkQueueRef.current = [];
+      if (viewportPrefetchFrame !== null) {
+        window.cancelAnimationFrame(viewportPrefetchFrame);
+        viewportPrefetchFrame = null;
+      }
+      attachedScrollFrame?.removeEventListener(
+        'scroll',
+        scheduleViewportFormulaPrefetch,
+      );
+      attachedScrollFrame = null;
       // If this load is still the latest owner, unlock so a cancelled/re-run path
       // cannot leave contenteditable=false. A newer load will lock again immediately.
       if (latestExternalLoadRef.current === loadId && !editor.isDestroyed) {
@@ -1494,12 +1798,23 @@ export default function EditorShell({
         }
 
         input.focus({ preventScroll: true });
+        const savedScroll = pendingScrollRestoreRef.current;
+        if (
+          savedScroll != null &&
+          typeof savedScroll === 'object' &&
+          'markdownOffset' in savedScroll
+        ) {
+          restoreSourceScrollAnchor(input, savedScroll);
+          pendingScrollRestoreRef.current = null;
+        }
+
         const selection = pendingSourceSelectionRef.current;
         if (selection) {
           input.setSelectionRange(selection.start, selection.end);
           sourceSelectionRef.current = selection;
           queueSourcePreview(sourceDraftRef.current, selection);
           pendingSourceSelectionRef.current = null;
+          startupCaretPlacedRef.current = true;
           return;
         }
 
@@ -1509,20 +1824,10 @@ export default function EditorShell({
         };
         sourceSelectionRef.current = nextSelection;
         queueSourcePreview(sourceDraftRef.current, nextSelection);
+        startupCaretPlacedRef.current = true;
       });
       return;
     }
-
-    requestAnimationFrame(() => {
-      if (!editorHostRef.current) {
-        return;
-      }
-
-      const headings = editorHostRef.current.querySelectorAll('h1, h2, h3, h4, h5, h6');
-      headings.forEach((heading, index) => {
-        (heading as HTMLElement).dataset.outlineIndex = String(index);
-      });
-    });
   }, [document.markdown, queueSourcePreview, sourceMode]);
 
   useEffect(() => {
@@ -1594,13 +1899,17 @@ export default function EditorShell({
       editor.chain().focus('start').run();
 
       // Restore saved scroll position if available; otherwise scroll to top.
-      const savedRatio = pendingScrollRestoreRef.current;
-      if (savedRatio != null) {
+      const savedScroll = pendingScrollRestoreRef.current;
+      if (savedScroll != null) {
         pendingScrollRestoreRef.current = null;
         const frame = editorFrameRef.current;
         if (frame) {
-          const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
-          frame.scrollTop = maxScrollTop * savedRatio;
+          if (typeof savedScroll === 'number') {
+            const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+            frame.scrollTop = maxScrollTop * savedScroll;
+          } else if ('pmPos' in savedScroll) {
+            restoreVisualScrollAnchor(frame, editor, savedScroll);
+          }
         }
       } else {
         editorFrameRef.current?.scrollTo({ top: 0 });
@@ -1721,14 +2030,7 @@ export default function EditorShell({
       // Scroll to the match position using the DOM, which is more reliable
       // than tr.scrollIntoView() when the editor doesn't have focus.
       requestAnimationFrame(() => {
-        try {
-          const resolved = view.domAtPos(Math.min(pos, state.doc.content.size));
-          const node = resolved.node;
-          const element = node.nodeType === Node.TEXT_NODE
-            ? node.parentElement
-            : node as HTMLElement;
-          element?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        } catch { /* ignore scroll failures */ }
+        scrollPosIntoView(editor, Math.min(pos, editor.state.doc.content.size));
       });
     },
     [editor],
@@ -2547,10 +2849,7 @@ export default function EditorShell({
       ) {
         event.preventDefault();
         if (editor) {
-          const coords = editor.view.posAtCoords({
-            left: event.clientX,
-            top: event.clientY,
-          });
+          const coords = posAtCoords(editor, event.clientX, event.clientY);
           if (coords) {
             const resolved = editor.state.doc.resolve(coords.pos);
             const selection = resolved.parent.isTextblock
@@ -2732,24 +3031,19 @@ export default function EditorShell({
         return;
       }
 
-      const target = editorHostRef.current?.querySelector(
-        `[data-outline-index="${index}"]`,
-      ) as HTMLElement | null;
-      if (target) {
-        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const item = outline[index];
+      if (!editor || !item || item.start == null || item.start < 0) {
         return;
       }
 
-      // Fallback: jump by heading node position from live outline.
-      if (editor && outline[index]?.start != null && outline[index].start >= 0) {
-        try {
-          const pos = outline[index].start;
-          const selection = TextSelection.create(editor.state.doc, pos + 1);
-          editor.view.dispatch(editor.state.tr.setSelection(selection).scrollIntoView());
-          editor.view.focus();
-        } catch {
-          // ignore invalid positions
-        }
+      try {
+        forceActivateAtPosition(editor, item.start);
+        const pos = item.start;
+        const selection = TextSelection.create(editor.state.doc, pos + 1);
+        editor.view.dispatch(editor.state.tr.setSelection(selection).scrollIntoView());
+        editor.view.focus();
+      } catch {
+        // ignore invalid positions
       }
     },
     [editor, jumpSourceToOffset, outline],

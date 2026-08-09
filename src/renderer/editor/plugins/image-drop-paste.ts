@@ -1,5 +1,6 @@
 import { Extension } from '@tiptap/core';
 import { Plugin, TextSelection } from '@tiptap/pm/state';
+import { posAtCoords } from '../virtualization/coordinate-service';
 
 export interface UploadedImage {
   src: string;
@@ -129,10 +130,11 @@ export function createImageDropPasteExtension(
               }
 
               event.preventDefault();
-              const coordinates = view.posAtCoords({
-                left: event.clientX,
-                top: event.clientY,
-              });
+              const coordinates = posAtCoords(
+                { view },
+                event.clientX,
+                event.clientY,
+              );
               const dropPosition = coordinates?.pos ?? view.state.selection.from;
 
               void (async () => {

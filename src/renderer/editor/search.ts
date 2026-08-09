@@ -1,5 +1,6 @@
 import type { Editor } from '@tiptap/react';
 import { NodeSelection, TextSelection } from '@tiptap/pm/state';
+import { forceActivateAtPosition } from './virtualization/coordinate-service';
 
 export interface SearchOptions {
   caseSensitive?: boolean;
@@ -157,6 +158,9 @@ export function selectVisualSearchMatch(
   focusEditor = true,
 ): void {
   const { state, view } = editor;
+  const pos = match.kind === 'text' ? match.from : match.pos;
+
+  forceActivateAtPosition(editor, pos);
 
   if (match.kind === 'text') {
     const selection = TextSelection.create(state.doc, match.from, match.to);

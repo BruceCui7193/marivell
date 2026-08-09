@@ -3,11 +3,18 @@ import { NodeViewWrapper } from '@tiptap/react';
 import type { NodeViewProps } from '@tiptap/react';
 import { handleBlockEditorBoundaryNavigation } from '../node-view-navigation';
 import { preloadImageSource } from '../image-preload';
+import { registerVirtualNodeView } from '../virtualization/activation-controller';
 
 interface ParsedImageMarkdown {
   alt: string;
   src: string;
   title: string | null;
+}
+
+let imageNodeViewId = 0;
+function nextImageNodeViewId(): string {
+  imageNodeViewId += 1;
+  return `image-${imageNodeViewId}`;
 }
 
 function formatImageMarkdown({ alt, src, title }: ParsedImageMarkdown): string {
@@ -67,6 +74,17 @@ function parseImageMarkdown(markdown: string): ParsedImageMarkdown | null {
 
 function ImageView({ editor, extension, getPos, node, selected, updateAttributes }: NodeViewProps) {
   const [editing, setEditing] = useState(false);
+  const [isActive, setIsActive] = useState(() => typeof IntersectionObserver === 'undefined');
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  const editingRef = useRef(editing);
+  editingRef.current = editing;
+  const nodeViewId = useMemo(() => nextImageNodeViewId(), []);
+  const contentHashRef = useRef(String(node.attrs.src ?? ''));
+  contentHashRef.current = String(node.attrs.src ?? '');
+  const getPosRef = useRef(getPos);
+  getPosRef.current = getPos;
   const [draft, setDraft] = useState(
     formatImageMarkdown({
       alt: String(node.attrs.alt ?? ''),
@@ -89,6 +107,48 @@ function ImageView({ editor, extension, getPos, node, selected, updateAttributes
     );
   }, [editing, node.attrs.alt, node.attrs.src, node.attrs.title]);
 
+  useEffect(() => {
+    if (selected || editing) {
+      setIsActive(true);
+    }
+  }, [editing, selected]);
+
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) {
+      return;
+    }
+
+    return registerVirtualNodeView(
+      nodeViewId,
+      wrapper,
+      {
+        activate: () => setIsActive(true),
+        deactivate: () => setIsActive(false),
+        shouldDeactivate: () => {
+          if (editingRef.current || selectedRef.current) {
+            return false;
+          }
+          if (editor.view.composing) {
+            return false;
+          }
+          return !wrapper.contains(document.activeElement);
+        },
+      },
+      {
+        nodeType: 'image',
+        contentHash: () => contentHashRef.current,
+        getPosition: () => {
+          try {
+            return getPosRef.current?.() ?? null;
+          } catch {
+            return null;
+          }
+        },
+      },
+    );
+  }, [nodeViewId]);
+
   const parsedDraft = useMemo(() => parseImageMarkdown(draft), [draft]);
   const previewSource = parsedDraft ?? {
     alt: String(node.attrs.alt ?? ''),
@@ -99,6 +159,10 @@ function ImageView({ editor, extension, getPos, node, selected, updateAttributes
   const imageRef = useRef<HTMLImageElement | null>(null);
 
   useEffect(() => {
+    if (!isActive) {
+      return;
+    }
+
     const source = resolvedSource;
     if (!source) {
       return;
@@ -129,7 +193,7 @@ function ImageView({ editor, extension, getPos, node, selected, updateAttributes
     return () => {
       observer?.disconnect();
     };
-  }, [editing, resolvedSource]);
+  }, [editing, isActive, resolvedSource]);
 
   function commitDraft(): void {
     const nextImage = parseImageMarkdown(draft);
@@ -144,15 +208,23 @@ function ImageView({ editor, extension, getPos, node, selected, updateAttributes
 
   return (
     <NodeViewWrapper
+      ref={wrapperRef}
       className={`image-node ${selected ? 'is-selected' : ''} ${editing ? 'is-editing' : ''}`}
       onClick={(event: any) => {
         const target = event.target as HTMLElement;
-        if (!editing && target.closest('.image-node__image')) {
+        if (!editing && target.closest('.image-node__image, .image-node__placeholder')) {
+          setIsActive(true);
           setEditing(true);
         }
       }}
     >
-      {editing ? (
+      {!isActive ? (
+        <div className="image-node__placeholder">
+          <span className="image-node__placeholder-label">
+            {String(node.attrs.alt ?? '') || 'Image'}
+          </span>
+        </div>
+      ) : editing ? (
         <div className="image-node__editor">
           <textarea
             autoFocus

@@ -1,4 +1,6 @@
 import { Node } from '@tiptap/core';
+import { NodeSelection } from '@tiptap/pm/state';
+import { registerVirtualNodeView } from '../virtualization/activation-controller';
 
 declare global {
   // Prevent TypeScript from widening string types
@@ -6,6 +8,13 @@ declare global {
 
 export interface HtmlBlockOptions {
   // No options needed for now
+}
+
+let htmlBlockNodeViewId = 0;
+
+function nextHtmlBlockNodeViewId(): string {
+  htmlBlockNodeViewId += 1;
+  return `html-block-${htmlBlockNodeViewId}`;
 }
 
 export const HtmlBlock = Node.create<HtmlBlockOptions>({
@@ -53,22 +62,106 @@ export const HtmlBlock = Node.create<HtmlBlockOptions>({
   },
 
   addNodeView() {
-    return ({ node }) => {
+    return ({ node, editor, getPos }) => {
       const dom = document.createElement('div');
       dom.className = 'html-block';
       dom.setAttribute('data-html-block', '');
       dom.contentEditable = 'false';
-      dom.innerHTML = node.attrs.html ?? '';
+      const nodeViewId = nextHtmlBlockNodeViewId();
+      let unregisterActivation: (() => void) | null = null;
+      let blockActive = false;
+
+      const showPlaceholder = (): void => {
+        blockActive = false;
+        dom.classList.add('html-block-placeholder');
+        dom.replaceChildren();
+        const hint = document.createElement('span');
+        hint.className = 'html-block-placeholder__hint';
+        hint.textContent = 'HTML Block';
+        dom.appendChild(hint);
+      };
+
+      const activate = (): void => {
+        blockActive = true;
+        dom.classList.remove('html-block-placeholder');
+        dom.innerHTML = node.attrs.html ?? '';
+      };
+
+      const isSelected = (): boolean => {
+        if (typeof getPos !== 'function') {
+          return false;
+        }
+
+        let pos = 0;
+        try {
+          pos = getPos();
+        } catch {
+          return false;
+        }
+
+        const { selection } = editor.state;
+        if (selection instanceof NodeSelection) {
+          return selection.from === pos && selection.to === pos + node.nodeSize;
+        }
+        if (selection.empty) {
+          return selection.from > pos && selection.from < pos + node.nodeSize;
+        }
+        return Math.max(selection.from, pos) < Math.min(selection.to, pos + node.nodeSize);
+      };
+
+      const shouldDeactivate = (): boolean => {
+        if (editor.view.composing) {
+          return false;
+        }
+        if (dom.contains(document.activeElement)) {
+          return false;
+        }
+        return !isSelected();
+      };
+
+      showPlaceholder();
+      unregisterActivation = registerVirtualNodeView(
+        nodeViewId,
+        dom,
+        {
+          activate,
+          deactivate: showPlaceholder,
+          shouldDeactivate,
+        },
+        {
+          nodeType: 'htmlBlock',
+          contentHash: () => String(node.attrs.html ?? ''),
+          getPosition: () => {
+            try {
+              return getPos?.() ?? null;
+            } catch {
+              return null;
+            }
+          },
+        },
+      );
 
       return {
         dom,
         contentDOM: undefined,
         update(updatedNode) {
           if (updatedNode.attrs.html !== node.attrs.html) {
-            dom.innerHTML = updatedNode.attrs.html ?? '';
+            node = updatedNode;
+            if (blockActive) {
+              dom.innerHTML = node.attrs.html ?? '';
+            } else {
+              showPlaceholder();
+            }
             return true;
           }
           return false;
+        },
+        selectNode() {
+          activate();
+        },
+        deselectNode() {},
+        destroy() {
+          unregisterActivation?.();
         },
       };
     };

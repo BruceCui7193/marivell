@@ -53,10 +53,28 @@ import {
   seedFormulaHtmlCache,
 } from '../../src/renderer/editor/math-render-cache.ts';
 import {
+  collectFormulaIndex,
+  renderFormulaChunk,
+} from '../../src/renderer/editor/markdown.worker.ts';
+import {
   clearImagePreloadCache,
   getImagePreloadState,
   preloadImageSource,
 } from '../../src/renderer/editor/image-preload.ts';
+import {
+  clearMermaidHeightCache,
+  getCachedMermaidHeight,
+  getMermaidCacheKey,
+  setCachedMermaidHeight,
+} from '../../src/renderer/editor/mermaid-cache.ts';
+import {
+  clearNodeHeightCache,
+  getCachedNodeHeight,
+  getHeightCacheKey,
+  setCachedNodeHeight,
+  subscribeNodeHeightCacheInvalidation,
+  unsubscribeNodeHeightCacheInvalidation,
+} from '../../src/renderer/editor/virtualization/height-cache.ts';
 
 let passed = 0;
 let failed = 0;
@@ -229,6 +247,69 @@ section('math render cache LRU');
 }
 
 // ---------------------------------------------------------------------------
+// Formula HTML index
+// ---------------------------------------------------------------------------
+section('formula html index');
+
+{
+  const content = parseMarkdown('$x^2$ and $y^2$\n\n$$\nz^2\n$$\n');
+  const index = collectFormulaIndex(content);
+
+  assert(
+    'formula index entries include key, latex, and display',
+    index.length === 3 &&
+      index.every(
+        (entry) =>
+          typeof entry.key === 'string' &&
+          typeof entry.latex === 'string' &&
+          (entry.display === 'yes' || entry.display === 'no'),
+      ),
+    JSON.stringify(index),
+  );
+
+  const inlineX = index.find((entry) => entry.latex === 'x^2' && entry.display === 'no');
+  assertEqual('formula index key matches cache key', inlineX?.key, getFormulaCacheKey('x^2', 'no'));
+
+  const blockZ = index.find((entry) => entry.latex === 'z^2' && entry.display === 'yes');
+  assert('formula index includes block display', Boolean(blockZ), JSON.stringify(index));
+
+  const duplicateContent = parseMarkdown('$x^2$ and $x^2$\n');
+  assertEqual(
+    'formula index deduplicates identical formulas',
+    collectFormulaIndex(duplicateContent).length,
+    1,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Formula chunk rendering
+// ---------------------------------------------------------------------------
+section('formula chunk rendering');
+
+{
+  const entries = [
+    { key: getFormulaCacheKey('x^2', 'no'), latex: 'x^2', display: 'no' as const },
+    { key: getFormulaCacheKey('y^2', 'yes'), latex: 'y^2', display: 'yes' as const },
+  ];
+  const rendered = renderFormulaChunk(entries);
+
+  assert(
+    'formula chunk renders every requested entry',
+    Object.keys(rendered).length === 2 &&
+      typeof rendered[entries[0]!.key] === 'string' &&
+      typeof rendered[entries[1]!.key] === 'string',
+    JSON.stringify(Object.keys(rendered)),
+  );
+  assert(
+    'formula chunk output contains katex html',
+    rendered[entries[0]!.key]?.includes('katex') === true &&
+      rendered[entries[1]!.key]?.includes('katex') === true,
+    String(rendered[entries[0]!.key]?.slice(0, 80)),
+  );
+  assertEqual('formula chunk renders empty input', renderFormulaChunk([]), {});
+}
+
+// ---------------------------------------------------------------------------
 // Image preload cache deduplication / LRU
 // ---------------------------------------------------------------------------
 section('image preload cache');
@@ -303,6 +384,119 @@ section('image preload cache');
       globals.Image = previousImage;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Mermaid height cache
+// ---------------------------------------------------------------------------
+section('mermaid height cache');
+
+{
+  clearMermaidHeightCache();
+
+  const code = 'graph LR\n  A-->B';
+  assertEqual(
+    'mermaid height cache key uses null separator',
+    getMermaidCacheKey('dark', code),
+    `dark\u0000${code}`,
+  );
+  assertEqual(
+    'mermaid height cache starts empty',
+    getCachedMermaidHeight('base', code),
+    null,
+  );
+
+  setCachedMermaidHeight('dark', code, 220);
+  assertEqual('mermaid height cache get after set', getCachedMermaidHeight('dark', code), 220);
+  assertEqual(
+    'mermaid height cache isolates theme',
+    getCachedMermaidHeight('base', code),
+    null,
+  );
+
+  setCachedMermaidHeight('base', code, 180);
+  assertEqual(
+    'mermaid height cache keeps both themes',
+    getCachedMermaidHeight('dark', code) === 220 && getCachedMermaidHeight('base', code) === 180,
+    true,
+  );
+
+  clearMermaidHeightCache();
+  assertEqual(
+    'mermaid height cache clear empties cache',
+    getCachedMermaidHeight('dark', code),
+    null,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Node height cache (LRU)
+// ---------------------------------------------------------------------------
+section('node height cache');
+
+{
+  clearNodeHeightCache();
+
+  const keyA = getHeightCacheKey('inlineMath', 'x^2', 6, 'light:default', 1, 'default');
+  const keyB = getHeightCacheKey('inlineMath', 'x^2', 7, 'light:default', 1, 'default');
+  assertEqual('node height cache key is stable', getHeightCacheKey('inlineMath', 'x^2', 6, 'light:default', 1, 'default'), keyA);
+  assert('node height cache key includes width bucket', keyA !== keyB, `${keyA} vs ${keyB}`);
+  assertEqual('node height cache starts empty', getCachedNodeHeight(keyA), null);
+
+  setCachedNodeHeight(keyA, 96);
+  assertEqual('node height cache get after set', getCachedNodeHeight(keyA), 96);
+  setCachedNodeHeight(keyA, 112);
+  assertEqual('node height cache set updates value', getCachedNodeHeight(keyA), 112);
+
+  clearNodeHeightCache();
+  assertEqual('node height cache clear empties cache', getCachedNodeHeight(keyA), null);
+
+  const lruKeys = Array.from({ length: 5006 }, (_, index) =>
+    getHeightCacheKey('inlineMath', `formula-${index}`, 1, 'light', 1, 'v1'),
+  );
+  for (let index = 0; index < 5005; index += 1) {
+    setCachedNodeHeight(lruKeys[index]!, index);
+  }
+  assertEqual('node height cache LRU evicts oldest entries', getCachedNodeHeight(lruKeys[0]!), null);
+  assertEqual('node height cache LRU keeps newest entry', getCachedNodeHeight(lruKeys[5004]!), 5004);
+
+  getCachedNodeHeight(lruKeys[5]!);
+  setCachedNodeHeight(lruKeys[5005]!, 5005);
+  assertEqual('node height cache LRU keeps promoted entry', getCachedNodeHeight(lruKeys[5]!), 5);
+  assertEqual('node height cache LRU evicts next oldest', getCachedNodeHeight(lruKeys[6]!), null);
+  assertEqual('node height cache LRU keeps newest after overflow', getCachedNodeHeight(lruKeys[5005]!), 5005);
+
+  const invalidationEvents: string[] = [];
+  const firstCallback = () => invalidationEvents.push('first');
+  const secondCallback = () => invalidationEvents.push('second');
+  const firstUnsubscribe = subscribeNodeHeightCacheInvalidation(firstCallback);
+  subscribeNodeHeightCacheInvalidation(secondCallback);
+  setCachedNodeHeight(keyA, 96);
+  clearNodeHeightCache();
+  assertEqual(
+    'node height cache invalidation notifies subscribers on clear',
+    invalidationEvents,
+    ['first', 'second'],
+  );
+  assertEqual('node height cache invalidation clears cached height', getCachedNodeHeight(keyA), null);
+
+  firstUnsubscribe();
+  clearNodeHeightCache();
+  assertEqual(
+    'node height cache unsubscribe stops notifications',
+    invalidationEvents,
+    ['first', 'second', 'second'],
+  );
+
+  unsubscribeNodeHeightCacheInvalidation(secondCallback);
+  clearNodeHeightCache();
+  assertEqual(
+    'node height cache fully unsubscribed listeners are silent',
+    invalidationEvents,
+    ['first', 'second', 'second'],
+  );
+
+  clearNodeHeightCache();
 }
 
 // ---------------------------------------------------------------------------

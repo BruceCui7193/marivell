@@ -204,6 +204,93 @@ Interpretation:
 - Image lazy loading reduced measured DOM height and improved scroll frames slightly.
 - It does not change the fundamental full-formula DOM cost; the next large win remains Phase 3 placeholder NodeViews.
 
+## Phase 1 Fourth Result (Cache Version + Mermaid Height, 2026-08-09)
+
+| Metric | Phase 1 third run | Phase 1 fourth run |
+| --- | ---: | ---: |
+| visual-open | 24,898 ms | 27,115 ms |
+| renderer-render-to-ready | 17,351 ms | 17,287 ms |
+| interaction-typing | 1,187 ms | 1,134 ms |
+| interaction-combined | 7,642 ms | 7,834 ms |
+| visual-edit | 431 ms | 855 ms |
+| scroll-avg-frame | 129 ms | 64 ms |
+| scroll-max-frame | 403 ms | 330 ms |
+| context-menu-open | 953 ms | 484 ms |
+
+Interpretation:
+
+- Cache generation and Mermaid height cache do not change open cost materially; renderer-render-to-ready remains about 17.3 s.
+- Scroll and context-menu showed large variance improvements in this run, but they are still far above the final budget and should not be treated as stable until repeated benchmark runs.
+- The dominant remaining cost is still full formula DOM; Phase 3 placeholder NodeViews is the next major milestone.
+
+## Phase 2 Result (Block Model, Outline, Scroll Anchor, Position Map, 2026-08-09)
+
+Phase 2 does not target the same hot path as formula DOM, so the open/render numbers stay in the same range.
+
+| Metric | Phase 1 fourth run | Phase 2 run |
+| --- | ---: | ---: |
+| visual-open | 27,115 ms | 25,717 ms |
+| renderer-render-to-ready | 17,287 ms | 17,887 ms |
+| interaction-typing | 1,134 ms | 1,103 ms |
+| interaction-combined | 7,834 ms | 7,800 ms |
+| scroll-avg-frame | 64 ms | 165 ms |
+| scroll-max-frame | 330 ms | 436 ms |
+
+Interpretation:
+
+- Phase 2A/2B add Block Model, PM-based outline jump, visual/source scroll anchors, and markdown-offset-to-PM-position mapping.
+- The scroll variance is within the existing run-to-run noise on the full formula DOM; the next structural improvement is still Phase 3 placeholder virtualization.
+
+## Phase 3 First Result (Block Math Placeholder + Image/Mermaid/Html Virtualization, 2026-08-09)
+
+Phase 3A/3B added placeholder virtualization for block math, image, Mermaid, and HTML block. Inline math, tables, and text blocks remain full DOM.
+
+| Metric | Phase 2 run | Phase 3 first run | Delta |
+| --- | ---: | ---: | ---: |
+| visual-open | 25,717 ms | 14,817 ms | -10,900 ms |
+| renderer-render-to-ready | 17,887 ms | 10,638 ms | -7,249 ms |
+| interaction typing | 1,103 ms | 772 ms | -331 ms |
+| interaction combined | 7,800 ms | 4,217 ms | -3,583 ms |
+| visual-edit | 438 ms | 616 ms | slower |
+| scroll-avg-frame | 165 ms | 83 ms | -82 ms |
+| scroll-max-frame | 436 ms | 638 ms | slower |
+| context-menu-open | 685 ms | 287 ms | -398 ms |
+
+Interpretation:
+
+- Placeholder virtualization produces the first large open/render improvement: renderer ready drops below 11 s.
+- Interactions are roughly half the previous cost, but still above the Phase 4 budget.
+- Scroll average improves to 83 ms, but max frame regressed in this run; repeated benchmark runs are needed before Phase 4 gates.
+
+## Phase 3 Final (Formula Chunk Prefetch + Batch Activation + Inserted Math Preview, 2026-08-09)
+
+This run includes the full Phase 3 placeholder set, formula HTML index plus
+viewport-oriented chunk prefetch, rAF-batched activation, full registry/forceHydrate,
+coordinate-service coverage, height-cache invalidation, and an inserted-math preview
+guard. The benchmark now fails `interaction-block-math` if the inserted `x+y`
+formula is still a placeholder after two animation frames.
+
+| Metric | Phase 3 first run | Phase 3 final run | Delta |
+| --- | ---: | ---: | ---: |
+| visual-open | 14,817 ms | 14,805 ms | -12 ms |
+| renderer-render-to-ready | 10,638 ms | 10,549 ms | -89 ms |
+| interaction typing | 772 ms | 684 ms | -88 ms |
+| interaction block-math | n/a | 1,110 ms (applied, preview ready) | n/a |
+| interaction combined | 4,217 ms | 4,657 ms | +440 ms |
+| visual-edit | 616 ms | 365 ms | -251 ms |
+| scroll-avg-frame | 83 ms | 77.3 ms | -5.7 ms |
+| scroll-max-frame | 638 ms | 383 ms | -255 ms |
+| context-menu-open | 287 ms | 235 ms | -52 ms |
+
+Interpretation:
+
+- Phase 3 implementation scope is complete: open/render stays below the old
+  full-DOM baseline and inserted block math no longer shows `空公式` while the
+  caret is inside it.
+- Scroll and context-menu are still above the Phase 4 budget. Inline math,
+  tables, and text blocks remain full DOM by design in Phase 3, so scroll/paint
+  cost cannot reach the final 16/32 ms budget until the Phase 4 work.
+
 ## Test Effectiveness Cross-Check
 
 The render interaction suite was cross-validated by temporarily making
