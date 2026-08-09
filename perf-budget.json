@@ -1,0 +1,13 @@
+{
+  "visualOpenMs": 5000,
+  "rendererReadyMs": 4000,
+  "typingMs": 100,
+  "interactionCombinedMs": 1500,
+  "modeSwitchSourceToVisualMs": 1000,
+  "modeSwitchVisualToSourceMs": 1000,
+  "scrollAvgFrameMs": 16.6,
+  "scrollMaxFrameMs": 33,
+  "scrollJumpReadyMs": 200,
+  "scrollDriftPx": 0,
+  "viewportPlaceholders": 0
+}

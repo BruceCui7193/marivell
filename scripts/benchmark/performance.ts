@@ -22,6 +22,15 @@ interface ReportEntry {
   note?: string;
 }
 
+type MeasuredValue = number | string | null;
+
+interface BudgetComparisonEntry {
+  budget: number;
+  measured: MeasuredValue;
+  status: 'pass' | 'fail' | 'not-measured';
+  note?: string;
+}
+
 interface BenchmarkTimelineEntry {
   name: string;
   value: number;
@@ -474,6 +483,10 @@ async function measureScrollJumpScenario(
   timings: Record<string, unknown> | null;
   hydrateTimings: Record<string, unknown> | null;
   placeholderDetails: string[];
+  firstFrameReady: boolean;
+  inlineHeightDrift: number | 'n/a';
+  inlineHeightDriftNote: string;
+  inlineHeightAnchor: string | null;
   timedOut: boolean;
 }> {
   const scenarioName = JSON.stringify(scenario);
@@ -488,6 +501,28 @@ async function measureScrollJumpScenario(
       '[data-virtual-node-id].html-block-placeholder',
       '[data-virtual-node-id].code-block-node--placeholder',
     ];
+    const isInlineMathPlaceholder = (element) => {
+      if (element.classList.contains('math-inline-node--placeholder')) {
+        return true;
+      }
+      const preview = element.querySelector(':scope > .math-node-preview');
+      if (!preview) {
+        return true;
+      }
+      if (preview.querySelector('.katex')) {
+        return false;
+      }
+      if (preview.querySelector('.katex-error')) {
+        return false;
+      }
+      if (preview.querySelector('.math-node-empty-hint, .math-node-placeholder-hint') !== null) {
+        return false;
+      }
+      const hasDirectErrorText = Array.from(preview.childNodes).some(
+        (child) => child.nodeType === Node.TEXT_NODE && Boolean(child.textContent?.trim()),
+      );
+      return !hasDirectErrorText;
+    };
     const visiblePlaceholderCount = () => {
       const frameRect = frame.getBoundingClientRect();
       let count = 0;
@@ -499,7 +534,39 @@ async function measureScrollJumpScenario(
           }
         }
       }
+      for (const element of frame.querySelectorAll('.math-inline-node')) {
+        if (isInlineMathPlaceholder(element)) {
+          const rect = element.getBoundingClientRect();
+          if (rect.bottom > frameRect.top && rect.top < frameRect.bottom) {
+            count += 1;
+          }
+        }
+      }
       return count;
+    };
+
+    const getTopAnchor = () => {
+      const frameRect = frame.getBoundingClientRect();
+      const candidates = Array.from(
+        frame.querySelectorAll('.editor-surface p, .math-inline-node'),
+      )
+        .map((element) => {
+          const rect = element.getBoundingClientRect();
+          return { element, relativeTop: rect.top - frameRect.top, top: rect.top, bottom: rect.bottom };
+        })
+        .filter((candidate) => candidate.bottom > frameRect.top && candidate.top < frameRect.bottom)
+        .sort(
+          (a, b) =>
+            a.relativeTop - b.relativeTop ||
+            (a.element.classList.contains('math-inline-node') ? -1 : 1),
+        );
+      const anchor = candidates[0]?.element ?? null;
+      if (!anchor || !anchor.isConnected) return null;
+      return {
+        element: anchor,
+        relativeTop: anchor.getBoundingClientRect().top - frame.getBoundingClientRect().top,
+        description: anchor.tagName.toLowerCase() + '.' + (Array.from(anchor.classList).join('.') || 'no-class'),
+      };
     };
 
     const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
@@ -525,6 +592,7 @@ async function measureScrollJumpScenario(
       frame.scrollTop = targetScrollTop;
     }
     const afterAssignScrollTop = frame.scrollTop;
+    const beforeTopAnchor = getTopAnchor();
     frame.dispatchEvent(new Event('scroll'));
 
     const deadline = performance.now() + 15_000;
@@ -579,6 +647,28 @@ async function measureScrollJumpScenario(
     const scrollTopDrift = ${scenarioName} === 'bottom'
       ? Math.abs(frame.scrollTop - currentMaxScrollTop)
       : Math.abs(frame.scrollTop - targetScrollTop);
+
+    let inlineHeightDrift = 'n/a';
+    let inlineHeightDriftNote = 'no visible paragraph or inline math anchor before jump';
+    let inlineHeightAnchor = null;
+    if (beforeTopAnchor) {
+      inlineHeightAnchor = beforeTopAnchor.description;
+      const anchor = beforeTopAnchor.element;
+      if (!anchor.isConnected) {
+        inlineHeightDriftNote = 'top anchor was removed during hydration';
+      } else {
+        const frameRect = frame.getBoundingClientRect();
+        const rect = anchor.getBoundingClientRect();
+        if (rect.bottom <= frameRect.top || rect.top >= frameRect.bottom) {
+          inlineHeightDriftNote = 'top anchor is no longer visible after hydration';
+        } else {
+          const afterRelativeTop = rect.top - frameRect.top;
+          inlineHeightDrift = Math.abs(afterRelativeTop - beforeTopAnchor.relativeTop);
+          inlineHeightDriftNote = 'anchor=' + inlineHeightAnchor + ' before=' + Math.round(beforeTopAnchor.relativeTop * 10) / 10 + ' after=' + Math.round(afterRelativeTop * 10) / 10;
+        }
+      }
+    }
+
     return {
       jumpReadyMs: performance.now() - start,
       firstFramePlaceholders,
@@ -593,6 +683,10 @@ async function measureScrollJumpScenario(
       timings: window.__marivellPhase4Timings ?? null,
       hydrateTimings: window.__marivellPhase4HydrateTimings ?? null,
       placeholderDetails: firstFramePlaceholderDetails,
+      firstFrameReady: firstFramePlaceholders === 0,
+      inlineHeightDrift,
+      inlineHeightDriftNote,
+      inlineHeightAnchor,
       timedOut,
     };
   })()`;
@@ -603,6 +697,10 @@ async function measureScrollJumpScenario(
     scrollTopDrift: number;
     targetScrollTop: number;
     scrollHeight: number;
+    firstFrameReady: boolean;
+    inlineHeightDrift: number | 'n/a';
+    inlineHeightDriftNote: string;
+    inlineHeightAnchor: string | null;
     timedOut: boolean;
   }>;
 }
@@ -740,6 +838,206 @@ async function measureNodePipeline(markdownPath: string): Promise<ReportEntry[]>
   ];
 }
 
+const BUDGET_METRIC_ALIASES: Record<string, string[]> = {
+  visualOpenMs: ['visual-open'],
+  rendererReadyMs: ['renderer-render-to-ready'],
+  typingMs: ['interaction-typing'],
+  interactionCombinedMs: ['interaction-combined'],
+  modeSwitchSourceToVisualMs: ['mode-switch-source-to-visual-ms'],
+  modeSwitchVisualToSourceMs: ['mode-switch-visual-to-source-ms'],
+  scrollAvgFrameMs: ['scroll-avg-frame'],
+  scrollMaxFrameMs: ['scroll-max-frame'],
+};
+
+function readPerfBudget(): Record<string, number> {
+  const budgetPath = path.join(projectRoot, 'perf-budget.json');
+  const parsed = JSON.parse(fs.readFileSync(budgetPath, 'utf8')) as Record<string, unknown>;
+  const budget: Record<string, number> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new Error(`perf-budget.json key ${key} must be a finite number`);
+    }
+    budget[key] = value;
+  }
+  return budget;
+}
+
+function compareToBudget(
+  report: ReportEntry[],
+  budget: Record<string, number>,
+): Record<string, BudgetComparisonEntry> {
+  const scenarios = ['scroll-jump-bottom', 'scroll-jump-middle', 'scroll-drag-sequence'];
+  const result: Record<string, BudgetComparisonEntry> = {};
+
+  const firstValue = (metrics: string[]): MeasuredValue => {
+    for (const metric of metrics) {
+      const entry = report.find((item) => item.metric === metric);
+      if (entry) {
+        return entry.value;
+      }
+    }
+    return null;
+  };
+
+  const worstJumpValue = (suffix: string): MeasuredValue => {
+    const values: MeasuredValue[] = [];
+    for (const scenario of scenarios) {
+      const entry = report.find((item) => item.metric === `${scenario}-${suffix}`);
+      values.push(entry ? entry.value : null);
+    }
+    if (values.some((value) => value === null || value === 'n/a' || value === 'timeout')) {
+      return 'n/a';
+    }
+    const numericValues = values.filter((value): value is number => typeof value === 'number');
+    return numericValues.length > 0 ? Math.max(...numericValues) : 'n/a';
+  };
+
+  const statusFor = (measured: MeasuredValue, budgetValue: number): BudgetComparisonEntry['status'] => {
+    if (measured === null || measured === 'n/a' || measured === 'timeout') {
+      return 'not-measured';
+    }
+    if (typeof measured !== 'number') {
+      return 'not-measured';
+    }
+    return measured <= budgetValue ? 'pass' : 'fail';
+  };
+
+  const scenarioBreakdown = (suffix: string): string => {
+    return scenarios
+      .map((scenario) => {
+        const entry = report.find((item) => item.metric === `${scenario}-${suffix}`);
+        return `${scenario}=${entry ? entry.value : 'missing'}`;
+      })
+      .join(' ');
+  };
+
+  for (const [key, budgetValue] of Object.entries(budget)) {
+    let measured: MeasuredValue = null;
+    let note: string | undefined;
+
+    if (key === 'scrollJumpReadyMs') {
+      measured = worstJumpValue('jump-ready-ms');
+      note = scenarioBreakdown('jump-ready-ms');
+    } else if (key === 'scrollDriftPx') {
+      measured = worstJumpValue('drift');
+      note = scenarioBreakdown('drift');
+    } else if (key === 'viewportPlaceholders') {
+      measured = worstJumpValue('first-frame-placeholders');
+      note = scenarioBreakdown('first-frame-placeholders');
+    } else if (BUDGET_METRIC_ALIASES[key]) {
+      measured = firstValue(BUDGET_METRIC_ALIASES[key]);
+    } else {
+      measured = firstValue([key]);
+    }
+
+    const status = statusFor(measured, budgetValue);
+    if (status === 'not-measured') {
+      note = note ? `${note}; not-measured` : 'not-measured';
+    }
+    result[key] = {
+      budget: budgetValue,
+      measured,
+      status,
+      note,
+    };
+  }
+
+  return result;
+}
+
+function formatBudgetComparison(budget: Record<string, BudgetComparisonEntry>): string {
+  const width = Math.max(...Object.keys(budget).map((key) => key.length), 10);
+  return Object.entries(budget)
+    .map(([key, entry]) => {
+      const measured = entry.measured === null ? 'not-measured' : String(entry.measured);
+      return `  ${key.padEnd(width)}  ${measured.padStart(10)}  ${entry.status.padEnd(12)}  budget=${entry.budget}${
+        entry.note ? `  (${entry.note})` : ''
+      }`;
+    })
+    .join('\n');
+}
+
+async function measureDomSnapshot(page: Page): Promise<ReportEntry[]> {
+  const snapshot = await page.evaluate(() => {
+    const inlineMathNodes = Array.from(document.querySelectorAll<HTMLElement>('.math-inline-node'));
+    const inlineMathPreviewActive = inlineMathNodes.filter((node) =>
+      node.querySelector('.math-node-preview .katex'),
+    ).length;
+    const inlineMathPreviewPlaceholder = inlineMathNodes.filter((node) => {
+      if (node.classList.contains('math-inline-node--placeholder')) {
+        return true;
+      }
+      const preview = node.querySelector(':scope > .math-node-preview');
+      if (!preview) {
+        return true;
+      }
+      if (preview.querySelector('.katex')) {
+        return false;
+      }
+      if (preview.querySelector('.katex-error')) {
+        return false;
+      }
+      const hasCurrentActiveHint = preview.querySelector(
+        '.math-node-empty-hint, .math-node-placeholder-hint',
+      );
+      if (hasCurrentActiveHint !== null) {
+        return false;
+      }
+      const hasDirectErrorText = Array.from(preview.childNodes).some(
+        (child) => child.nodeType === Node.TEXT_NODE && Boolean(child.textContent?.trim()),
+      );
+      return !hasDirectErrorText;
+    }).length;
+    return {
+      documentDomNodeCount: document.querySelectorAll('*').length,
+      paragraphNodeCount: document.querySelectorAll('.editor-surface p').length,
+      katexNodeCount: document.querySelectorAll('.math-node-preview .katex').length,
+      inlineMathNodeCount: inlineMathNodes.length,
+      inlineMathPreviewActive,
+      inlineMathPreviewPlaceholder,
+    };
+  });
+
+  return [
+    {
+      metric: 'document-dom-node-count',
+      value: snapshot.documentDomNodeCount,
+      unit: 'nodes',
+      note: 'document.querySelectorAll(*) count',
+    },
+    {
+      metric: 'paragraph-node-count',
+      value: snapshot.paragraphNodeCount,
+      unit: 'nodes',
+      note: '.editor-surface p count',
+    },
+    {
+      metric: 'katex-node-count',
+      value: snapshot.katexNodeCount,
+      unit: 'nodes',
+      note: '.math-node-preview .katex count',
+    },
+    {
+      metric: 'inline-math-node-count',
+      value: snapshot.inlineMathNodeCount,
+      unit: 'nodes',
+      note: '.math-inline-node count',
+    },
+    {
+      metric: 'inline-math-preview-active',
+      value: snapshot.inlineMathPreviewActive,
+      unit: 'nodes',
+      note: '.math-inline-node with rendered .math-node-preview .katex',
+    },
+    {
+      metric: 'inline-math-preview-placeholder',
+      value: snapshot.inlineMathPreviewPlaceholder,
+      unit: 'nodes',
+      note: 'contract: .math-inline-node--placeholder or preview without .katex (current hint/error text previews are not placeholder state)',
+    },
+  ];
+}
+
 function round(value: number): number {
   return Math.round(value * 10) / 10;
 }
@@ -782,6 +1080,7 @@ async function main(): Promise<void> {
 
   const handle = await launchElectron(outDir, markdownPath, port, profile);
   const report: ReportEntry[] = [];
+  const perfBudget = readPerfBudget();
   const spawnWallStart = handle.spawnedAt;
 
   try {
@@ -841,6 +1140,7 @@ async function main(): Promise<void> {
           unit: 'px',
         },
       );
+      report.push(...(await measureDomSnapshot(handle.page)));
       report.push(...(await measureNodePipeline(markdownPath)));
 
       const suite = await withTimeout(
@@ -910,6 +1210,23 @@ async function main(): Promise<void> {
             note: switchResult.ok ? switchResult.value.note : undefined,
           });
         }
+
+        if (modeStep.targetMode === 'visual') {
+          report.push(
+            {
+              metric: 'mode-switch-no-reparse',
+              value: false,
+              unit: 'boolean',
+              note: 'full-parse-expected-before-phase-d; no Phase D cache marker found',
+            },
+            {
+              metric: 'mode-switch-source-to-visual-no-reparse',
+              value: false,
+              unit: 'boolean',
+              note: 'full-parse-expected-before-phase-d',
+            },
+          );
+        }
       }
 
       const edit = await withTimeout(measureVisualEdit(handle.page), interactionTimeoutMs, 'visual-edit');
@@ -953,6 +1270,8 @@ async function main(): Promise<void> {
           : { metric: 'scroll-max-frame', value: 'timeout', unit: `${interactionTimeoutMs}ms` },
       );
 
+      const scrollFirstFrameReady: Record<string, boolean> = {};
+      const inlineHeightDrifts: Record<string, number | 'n/a'> = {};
       const scrollJumpScenarios: Array<{ metric: string; scenario: ScrollJumpScenario }> = [
         { metric: 'scroll-jump-bottom', scenario: 'bottom' },
         { metric: 'scroll-jump-middle', scenario: 'middle' },
@@ -988,15 +1307,54 @@ async function main(): Promise<void> {
               value: round(jump.value.scrollTopDrift),
               unit: 'px',
             },
+            {
+              metric: `${jumpScenario.metric}-first-frame-ready`,
+              value: jump.value.firstFrameReady,
+              unit: 'boolean',
+              note: `first-frame-placeholders=${jump.value.firstFramePlaceholders}`,
+            },
+            {
+              metric: `${jumpScenario.metric}-inline-height-drift`,
+              value: jump.value.inlineHeightDrift,
+              unit: 'px',
+              note: jump.value.inlineHeightDriftNote,
+            },
           );
+          scrollFirstFrameReady[jumpScenario.metric] = jump.value.firstFrameReady;
+          inlineHeightDrifts[jumpScenario.metric] = jump.value.inlineHeightDrift;
         } else {
           report.push({
             metric: jumpScenario.metric,
             value: 'timeout',
             unit: `${interactionTimeoutMs}ms`,
           });
+          scrollFirstFrameReady[jumpScenario.metric] = false;
+          inlineHeightDrifts[jumpScenario.metric] = 'n/a';
         }
       }
+
+      const allScrollFirstFrameReady =
+        Object.keys(scrollFirstFrameReady).length > 0 &&
+        Object.values(scrollFirstFrameReady).every((value) => value);
+      const numericHeightDrifts = Object.values(inlineHeightDrifts).filter(
+        (value): value is number => typeof value === 'number',
+      );
+      const inlineHeightDriftSummary =
+        numericHeightDrifts.length > 0 ? Math.max(...numericHeightDrifts) : 'n/a';
+      report.push(
+        {
+          metric: 'scroll-first-frame-ready',
+          value: allScrollFirstFrameReady,
+          unit: 'boolean',
+          note: `bottom=${scrollFirstFrameReady['scroll-jump-bottom'] ?? 'n/a'} middle=${scrollFirstFrameReady['scroll-jump-middle'] ?? 'n/a'} drag=${scrollFirstFrameReady['scroll-drag-sequence'] ?? 'n/a'}`,
+        },
+        {
+          metric: 'inline-height-drift',
+          value: inlineHeightDriftSummary,
+          unit: 'px',
+          note: `bottom=${inlineHeightDrifts['scroll-jump-bottom'] ?? 'n/a'} middle=${inlineHeightDrifts['scroll-jump-middle'] ?? 'n/a'} drag=${inlineHeightDrifts['scroll-drag-sequence'] ?? 'n/a'}`,
+        },
+      );
 
       const contextMenu = await withTimeout(
         measureVisualContextMenu(handle.page),
@@ -1028,8 +1386,12 @@ async function main(): Promise<void> {
 
   console.log(`\nPerformance report for ${markdownPath}`);
   console.log(formatEntries(report));
+  const budgetComparison = compareToBudget(report, perfBudget);
+  console.log(`\nBudget comparison`);
+  console.log(formatBudgetComparison(budgetComparison));
   const outputPath = path.join(projectRoot, 'perf-report.json');
-  fs.writeFileSync(outputPath, JSON.stringify(report, null, 2), 'utf8');
+  const output = { metrics: report, budget: budgetComparison };
+  fs.writeFileSync(outputPath, JSON.stringify(output, null, 2), 'utf8');
   console.log(`\nSaved machine-readable report to ${outputPath}`);
 }
 
