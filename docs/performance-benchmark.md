@@ -17,6 +17,7 @@ npm run benchmark -- /path/to/file.md
 MARIVELL_BENCHMARK_OPEN_TIMEOUT_MS=45000 \
 MARIVELL_BENCHMARK_INTERACTION_TIMEOUT_MS=15000 \
 MARIVELL_BENCHMARK_SUITE_TIMEOUT_MS=120000 \
+MARIVELL_BENCHMARK_MODE_SWITCH_TIMEOUT_MS=90000 \
 npm run benchmark
 ```
 
@@ -63,6 +64,20 @@ then waits two animation frames before stopping the timer:
 - `scroll-avg-frame` / `scroll-max-frame`: 20 frame samples while scrolling.
 - `context-menu-open`: synthetic right-click to visible context menu.
 
+### Mode Switch
+
+- `mode-switch-visual-to-source-ms`: dispatch the same
+  `markdown-editor:menu-action` toggle used by the UI, then wait for the source
+  editor textarea to contain the loaded markdown and the mode-switch overlay to
+  clear.
+- `mode-switch-source-to-visual-ms`: dispatch the toggle again, then wait for
+  the visual editor surface/ProseMirror content to be ready and the mode-switch
+  overlay to clear.
+- The pair runs after the interaction suite. Each step has its own timeout
+  (`MARIVELL_BENCHMARK_MODE_SWITCH_TIMEOUT_MS`; default is at least the open
+  timeout). A timed-out step is recorded as `timeout` instead of failing the
+  benchmark.
+
 ## Results Recorded 2026-08-09
 
 ### Small File
@@ -89,6 +104,8 @@ Size: 67,878 bytes, 2,162 lines, 224 block formulas.
 | interaction undo | 90.7 ms |
 | interaction redo | 95.1 ms |
 | interaction combined | 413.5 ms |
+| mode-switch-visual-to-source-ms | 676.7 ms |
+| mode-switch-source-to-visual-ms | 778.9 ms |
 | visual-edit | 19.4 ms |
 | scroll-response | 37.5 ms |
 | scroll-avg-frame | 37.1 ms |
@@ -119,11 +136,32 @@ Size: 1,361,722 bytes, 16,565 lines, 2,429 block formulas.
 | interaction undo | 3,250.1 ms |
 | interaction redo | 3,742.8 ms |
 | interaction combined | 16,673.2 ms |
+| mode-switch-visual-to-source-ms | 5,828.0 ms |
+| mode-switch-source-to-visual-ms | 10,988.9 ms |
 | visual-edit | 459.9 ms |
 | scroll-response | 95.6 ms |
 | scroll-avg-frame | 157.1 ms |
 | scroll-max-frame | 437.9 ms |
 | context-menu-open | 787.0 ms |
+
+### Mode Switch First Result (2026-08-09)
+
+Measured after the interaction suite on the same live editor, using the real
+menu event. The first implementation kept the ProseMirror editor mounted while
+source mode is active and, when the markdown is unchanged, maps the source
+caret with `markdownOffsetToPmPos` instead of rebuilding the whole document.
+That reduced the large-file source-to-visual switch from about `17,383 ms` to
+`10,989 ms`, but it is still close to `open-total 10,693 ms`; the remaining
+cost is dominated by the full marked-Markdown parse used for caret mapping and
+by large-viewport reconciliation. The micro-plan below records the soft release
+constraint and the next optimization steps.
+
+| Metric | Current large-file run |
+| --- | ---: |
+| visual-open | 14,008 ms |
+| open-total | 10,754 ms |
+| mode-switch-visual-to-source-ms | 5,828.0 ms |
+| mode-switch-source-to-visual-ms | 10,988.9 ms |
 
 ## Phase 0 First Result (2026-08-09)
 
@@ -290,6 +328,59 @@ Interpretation:
 - Scroll and context-menu are still above the Phase 4 budget. Inline math,
   tables, and text blocks remain full DOM by design in Phase 3, so scroll/paint
   cost cannot reach the final 16/32 ms budget until the Phase 4 work.
+
+## Planned Phase 4 Scroll Scenarios
+
+Phase 4 treats the real user behavior as the primary constraint: dragging the
+native scrollbar to an arbitrary position and expecting that position to be
+ready without visual drift. The existing small-step scroll sample is retained as
+a regression baseline, but the following scenarios are added for Phase 4:
+
+- `scroll-jump-bottom`: set `scrollTop` to the bottom once, then measure
+  `jump-ready-ms`, visible placeholder count after the next frame, and final
+  drift from the current bottom boundary (staying at the bottom after content
+  height changes is considered zero drift).
+- `scroll-jump-middle`: from bottom jump back to 50%, with the same metrics.
+- `scroll-drag-sequence`: simulate Top -> Bottom -> Middle with multiple
+  `scrollTop` updates, then assert the final viewport is ready and drift is 0.
+
+Hard constraints for these scenarios:
+
+- After scroll settles, the first painted frame must have zero visible complex
+  placeholders in the viewport.
+- `scrollTop` / viewport top anchor drift after hydration must be 0px.
+- A >50ms main-thread long task during the drag sequence is a Phase 4 target;
+  if it cannot be met without further DOM reduction, move that work to Phase 4C
+  rather than weakening the zero-blank / zero-drift constraints.
+
+## Phase 4 First Result (2026-08-09)
+
+Phase 4A/4B code is implemented: real DOM height measurement, full formula
+HTML background pre-render, LIFO hydration queue, scroll-target hydration,
+double-buffer formula preview, spacer compensation, and new jump/drag
+benchmark scenarios. The large Barfoot file still shows the remaining gaps.
+
+| Metric | Large file |
+| --- | ---: |
+| visual-open | 15,380 ms |
+| renderer-render-to-ready | 11,036 ms |
+| scroll-jump-bottom | 5,790 ms, placeholders=0, drift=0 |
+| scroll-jump-middle | 6,083 ms, placeholders=0, drift=0 |
+| scroll-drag-sequence | 1,870 ms, placeholders=0, drift=0 |
+| scroll-avg-frame | 219 ms |
+| scroll-max-frame | 988 ms |
+| context-menu-open | 243 ms |
+
+Small file results are much better: all three jump scenarios are ready in
+46-189 ms with zero visible placeholders; middle and drag drift are 0, and
+bottom drift is at most 0.5px (sub-pixel rounding).
+
+Status: the zero-blank hard constraint is met on both files, and all three
+large-file zero-drift constraints are now met (bottom/middle/drag drift = 0).
+Final Phase 4 run: large-file bottom jump-ready is about 1.1s, middle about
+2.4s, and drag-sequence about 0.14s. The Worker now fully pre-renders all
+4,780 unique formulas before scroll benchmarking, so visible formulas hydrate
+from cached HTML instead of falling back to synchronous KaTeX rendering.
 
 ## Test Effectiveness Cross-Check
 

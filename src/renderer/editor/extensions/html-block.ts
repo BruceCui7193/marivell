@@ -1,6 +1,8 @@
 import { Node } from '@tiptap/core';
 import { NodeSelection } from '@tiptap/pm/state';
 import { registerVirtualNodeView } from '../virtualization/activation-controller';
+import { getCachedNodeHeight, setCachedNodeHeight } from '../virtualization/height-cache';
+import { getNodeHeightKey } from '../virtualization/height-measurer';
 
 declare global {
   // Prevent TypeScript from widening string types
@@ -71,10 +73,28 @@ export const HtmlBlock = Node.create<HtmlBlockOptions>({
       let unregisterActivation: (() => void) | null = null;
       let blockActive = false;
 
+      const cacheCurrentHeight = (): void => {
+        try {
+          const height = dom.getBoundingClientRect().height || dom.scrollHeight;
+          if (height > 0) {
+            setCachedNodeHeight(
+              getNodeHeightKey('htmlBlock', String(node.attrs.html ?? ''), dom),
+              height,
+            );
+          }
+        } catch {
+          // jsdom has no real layout; active node views still measure in Chromium.
+        }
+      };
+
       const showPlaceholder = (): void => {
         blockActive = false;
         dom.classList.add('html-block-placeholder');
         dom.replaceChildren();
+        const cachedHeight = getCachedNodeHeight(
+          getNodeHeightKey('htmlBlock', String(node.attrs.html ?? ''), dom),
+        );
+        dom.style.minHeight = cachedHeight !== null ? `${cachedHeight}px` : '';
         const hint = document.createElement('span');
         hint.className = 'html-block-placeholder__hint';
         hint.textContent = 'HTML Block';
@@ -85,6 +105,7 @@ export const HtmlBlock = Node.create<HtmlBlockOptions>({
         blockActive = true;
         dom.classList.remove('html-block-placeholder');
         dom.innerHTML = node.attrs.html ?? '';
+        cacheCurrentHeight();
       };
 
       const isSelected = (): boolean => {
@@ -149,6 +170,7 @@ export const HtmlBlock = Node.create<HtmlBlockOptions>({
             node = updatedNode;
             if (blockActive) {
               dom.innerHTML = node.attrs.html ?? '';
+              cacheCurrentHeight();
             } else {
               showPlaceholder();
             }

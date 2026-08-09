@@ -82,7 +82,7 @@ export function scrollPosIntoView(editor: CoordinateEditor, pos: number): boolea
     const domPosition = editor.view.domAtPos(clamped);
     const node = domPosition.node;
     const element = node.nodeType === Node.TEXT_NODE ? node.parentElement : node as HTMLElement;
-    element?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    element?.scrollIntoView({ block: 'center', behavior: 'auto' });
     return true;
   } catch {
     return false;

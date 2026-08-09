@@ -48,6 +48,11 @@ import {
   seedFormulaHtmlCache,
 } from '../../src/renderer/editor/math-render-cache';
 import {
+  collectFormulaIndex,
+  renderFormulaChunk,
+  splitFormulaChunks,
+} from '../../src/renderer/editor/markdown.worker';
+import {
   insertSelectionMarkersIntoMarkdown,
   restoreSelectionMarkersFromEditorState,
 } from '../../src/renderer/editor/selection-markers';
@@ -66,8 +71,10 @@ import {
   VIRTUAL_ACTIVATION_BATCH_SIZE,
   forceActivate,
   forceHydrateAll,
+  hydrateTargetRange,
   registerVirtualNodeView,
   resetActivationControllerForTest,
+  setScrollAnchorProvider,
 } from '../../src/renderer/editor/virtualization/activation-controller';
 import {
   coordsAtPos,
@@ -77,7 +84,19 @@ import {
   posAtCoords,
   scrollPosIntoView,
 } from '../../src/renderer/editor/virtualization/coordinate-service';
-import { clearNodeHeightCache } from '../../src/renderer/editor/virtualization/height-cache';
+import {
+  clearNodeHeightCache,
+  getCachedNodeHeight,
+  getHeightCacheKey,
+  notifyNodeHeightCacheSeeded,
+  setCachedNodeHeight,
+} from '../../src/renderer/editor/virtualization/height-cache';
+import {
+  buildFormulaHeightMeasurementItems,
+  getFormulaHeightKey,
+  measureFormulaHeights,
+  resetHeightMeasurerForTest,
+} from '../../src/renderer/editor/virtualization/height-measurer';
 
 const fixturesDir = fileURLToPath(new URL('../../tests/fixtures/markdown/', import.meta.url));
 
@@ -772,6 +791,16 @@ function selectParagraphText(editor: Editor, text: string): boolean {
 
   const unregisters: Array<() => void> = [];
   const activated = new Array<number>(VIRTUAL_ACTIVATION_BATCH_SIZE * 2).fill(0);
+  const anchorEvents: string[] = [];
+  setScrollAnchorProvider({
+    capture: () => {
+      anchorEvents.push('capture');
+      return { pmPos: 1, offsetTop: 0 };
+    },
+    restore: () => {
+      anchorEvents.push('restore');
+    },
+  });
   try {
     for (let index = 0; index < activated.length; index += 1) {
       const element = document.createElement('div');
@@ -801,6 +830,11 @@ function selectParagraphText(editor: Editor, text: string): boolean {
         rafCallbacks.length === 1,
       `active=${activated.filter((count) => count > 0).length} frames=${rafCallbacks.length}`,
     );
+    assert(
+      'activation controller anchors around each IO batch',
+      anchorEvents.length === 2 && anchorEvents[0] === 'capture' && anchorEvents[1] === 'restore',
+      `anchorEvents=${anchorEvents.join(',')}`,
+    );
 
     const secondFrame = rafCallbacks.shift();
     secondFrame?.(0);
@@ -808,6 +842,15 @@ function selectParagraphText(editor: Editor, text: string): boolean {
       'activation controller drains pending nodes on the next frame',
       activated.every((count) => count === 1) && rafCallbacks.length === 0,
       `active=${activated.filter((count) => count > 0).length} frames=${rafCallbacks.length}`,
+    );
+    assert(
+      'activation controller anchors every activation batch',
+      anchorEvents.length === 4 &&
+        anchorEvents[0] === 'capture' &&
+        anchorEvents[1] === 'restore' &&
+        anchorEvents[2] === 'capture' &&
+        anchorEvents[3] === 'restore',
+      `anchorEvents=${anchorEvents.join(',')}`,
     );
   } finally {
     for (const unregister of unregisters) {
@@ -1133,6 +1176,99 @@ console.log('\n## visual render interaction matrix');
 
 
 {
+  const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
+  const firstKey = getHeightCacheKey('inlineMath', 'x^2', 6, 'light:default', 1, 'default');
+  const secondKey = getHeightCacheKey('inlineMath', 'y^2', 6, 'light:default', 1, 'default');
+  resetHeightMeasurerForTest();
+  HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+    if (this.className.includes('math-node-preview')) {
+      return { height: this.textContent?.includes('x') ? 42 : 37 } as DOMRect;
+    }
+    return originalGetBoundingClientRect.call(this);
+  };
+  try {
+    const heightsPromise = measureFormulaHeights([
+      { key: firstKey, html: '<span>x</span>', display: 'yes' },
+      { key: secondKey, html: '<span>y</span>', display: 'no' },
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const heights = await heightsPromise;
+    assert(
+      'height measurer returns mocked layout heights',
+      JSON.stringify(heights) === JSON.stringify({ [firstKey]: 42, [secondKey]: 37 }),
+      JSON.stringify(heights),
+    );
+    for (const [key, height] of Object.entries(heights)) {
+      setCachedNodeHeight(key, height);
+    }
+    assert('height measurer seeds node height cache', getCachedNodeHeight(firstKey) === 42, String(getCachedNodeHeight(firstKey)));
+    assert(
+      'height measurer removes hidden layer after read',
+      document.querySelector('.height-measurer') === null,
+      String(document.querySelector('.height-measurer')?.outerHTML),
+    );
+  } finally {
+    resetHeightMeasurerForTest();
+    clearNodeHeightCache();
+    HTMLElement.prototype.getBoundingClientRect = originalGetBoundingClientRect;
+  }
+}
+
+{
+  const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
+  resetHeightMeasurerForTest();
+  HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+    if (this.className.includes('math-node-preview')) {
+      return { height: 48 } as DOMRect;
+    }
+    return originalGetBoundingClientRect.call(this);
+  };
+  try {
+    const entries = collectFormulaIndex(
+      parseMarkdown('$a^2$\n\n$$\nb^2\n$$\n'),
+    );
+    const chunks = splitFormulaChunks(entries, 2);
+    const firstChunk = chunks[0]!;
+    const renderedChunk = renderFormulaChunk(firstChunk);
+    const measurementItems = buildFormulaHeightMeasurementItems(
+      firstChunk,
+      renderedChunk,
+      document.body,
+    );
+    assert(
+      'formula chunk height measurement items cover rendered chunk',
+      measurementItems.length === firstChunk.length,
+      `items=${measurementItems.length} chunk=${firstChunk.length}`,
+    );
+
+    const heights = await measureFormulaHeights(measurementItems);
+    assert(
+      'formula chunk measurement returns heights for every item',
+      Object.keys(heights).length === measurementItems.length,
+      JSON.stringify(heights),
+    );
+    for (const [key, height] of Object.entries(heights)) {
+      setCachedNodeHeight(key, height);
+    }
+    assert(
+      'formula chunk measured height writes node height cache',
+      measurementItems.every((item) => getCachedNodeHeight(item.key) === 48),
+      JSON.stringify(heights),
+    );
+    assert(
+      'formula chunk measurement clears hidden layer',
+      document.querySelector('.height-measurer') === null,
+      String(document.querySelector('.height-measurer')?.outerHTML),
+    );
+  } finally {
+    resetHeightMeasurerForTest();
+    clearNodeHeightCache();
+    HTMLElement.prototype.getBoundingClientRect = originalGetBoundingClientRect;
+  }
+}
+
+{
   const editor = makeEditor('Initial');
   try {
     load(editor, '```ts\nconst x = 1;\n```\n');
@@ -1350,6 +1486,7 @@ console.log('\n## visual render interaction matrix');
   try {
     load(editor, 'before\n\n$$\nx+y\n$$\n\nafter\n');
     const blockNode = editor.view.dom.querySelector<HTMLElement>('.math-block-node');
+    const preview = blockNode?.querySelector<HTMLElement>('.math-node-preview');
     const virtualNodeId = blockNode?.dataset.virtualNodeId;
     assert(
       'block math placeholder is registered under fake IO',
@@ -1375,6 +1512,13 @@ console.log('\n## visual render interaction matrix');
       blockNode?.classList.contains('math-block-node-placeholder') === false,
       String(blockNode?.className),
     );
+    assert(
+      'block math double-buffer preview replaces placeholder without residue',
+      preview?.querySelector('.katex') !== null &&
+        preview?.querySelector('.math-node-placeholder-hint') === null &&
+        preview?.querySelector('.math-node-empty-hint') === null,
+      String(preview?.outerHTML ?? 'missing'),
+    );
 
     let clearThrew = false;
     try {
@@ -1388,6 +1532,48 @@ console.log('\n## visual render interaction matrix');
       'clearNodeHeightCache threw',
     );
   } finally {
+    editor.destroy();
+    if (previousIntersectionObserver === undefined) {
+      delete globals.IntersectionObserver;
+    } else {
+      globals.IntersectionObserver = previousIntersectionObserver;
+    }
+    resetActivationControllerForTest();
+  }
+}
+
+{
+  const globals = globalThis as Record<string, unknown>;
+  const previousIntersectionObserver = globals.IntersectionObserver;
+  class FakeIntersectionObserver {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+  globals.IntersectionObserver = FakeIntersectionObserver as unknown as typeof IntersectionObserver;
+  resetActivationControllerForTest();
+
+  const editor = makeEditor('before after');
+  try {
+    load(editor, 'before\n\n$$\nx+y\n$$\n\nafter\n');
+    const blockNode = editor.view.dom.querySelector<HTMLElement>('.math-block-node');
+    const preview = blockNode?.querySelector<HTMLElement>('.math-node-preview');
+    assert(
+      'block math placeholder starts with default height',
+      preview?.style.minHeight === '96px',
+      String(preview?.style.minHeight),
+    );
+
+    const heightKey = getFormulaHeightKey('x+y', 'yes', blockNode ?? undefined);
+    setCachedNodeHeight(heightKey, 77);
+    notifyNodeHeightCacheSeeded();
+    assert(
+      'block math placeholder refreshes to measured height',
+      preview?.style.minHeight === '77px',
+      String(preview?.style.minHeight),
+    );
+  } finally {
+    clearNodeHeightCache();
     editor.destroy();
     if (previousIntersectionObserver === undefined) {
       delete globals.IntersectionObserver;

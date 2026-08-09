@@ -3,6 +3,8 @@ import { NodeViewContent, NodeViewWrapper } from '@tiptap/react';
 import type { NodeViewProps } from '@tiptap/react';
 import { CODE_LANGUAGE_OPTIONS } from '../code-languages';
 import { registerVirtualNodeView } from '../virtualization/activation-controller';
+import { setCachedNodeHeight } from '../virtualization/height-cache';
+import { getNodeHeightKey } from '../virtualization/height-measurer';
 
 let codeBlockNodeViewId = 0;
 function nextCodeBlockNodeViewId(): string {
@@ -66,6 +68,25 @@ export default function CodeBlockView({ editor, getPos, node, selected, updateAt
       setIsActive(true);
     }
   }, [selected]);
+
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper || !isActive) {
+      return;
+    }
+
+    try {
+      const height = wrapper.getBoundingClientRect().height;
+      if (height > 0) {
+        setCachedNodeHeight(
+          getNodeHeightKey('codeBlock', node.textContent, wrapper),
+          height,
+        );
+      }
+    } catch {
+      // jsdom has no real layout; the mounted contentDOM remains the fallback.
+    }
+  }, [isActive, node.textContent]);
 
   useEffect(() => {
     const wrapper = wrapperRef.current;

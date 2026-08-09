@@ -56,6 +56,20 @@ function estimateNodeSize(node: JSONContent): number {
   return 1;
 }
 
+function normalizeTopLevelContent(content: JSONContent): JSONContent {
+  if (!Array.isArray(content.content)) {
+    return content;
+  }
+  return {
+    ...content,
+    content: content.content.map((node) =>
+      node.type === "inlineMath" && node.attrs?.display === "yes"
+        ? { type: "paragraph", content: [node] }
+        : node,
+    ),
+  };
+}
+
 function locateMarkerInJson(
   node: JSONContent | null | undefined,
   nodePos: number,
@@ -101,6 +115,6 @@ export function markdownOffsetToPmPos(
     clampedOffset,
     clampedOffset,
   );
-  const markedContent = parseMarkdown(markedMarkdown);
+  const markedContent = normalizeTopLevelContent(parseMarkdown(markedMarkdown));
   return locateMarkerInJson(markedContent, 0, true);
 }

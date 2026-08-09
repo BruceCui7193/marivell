@@ -2,7 +2,11 @@ import { InputRule, Node, mergeAttributes } from '@tiptap/core';
 import { NodeSelection, TextSelection } from '@tiptap/pm/state';
 import katex from 'katex';
 import { getCachedFormulaHtml, getFormulaCacheKey, seedFormulaHtmlCache } from '../math-render-cache';
-import { getCachedNodeHeight, getHeightCacheKey, setCachedNodeHeight } from '../virtualization/height-cache';
+import {
+  getCachedNodeHeight,
+  subscribeNodeHeightCacheSeeded,
+} from '../virtualization/height-cache';
+import { getFormulaHeightKey } from '../virtualization/height-measurer';
 import {
   forceActivate,
   registerVirtualNodeView,
@@ -27,14 +31,36 @@ function mathLog(...args: unknown[]): void {
   if (__mathDebug) console.log('[math]', ...args);
 }
 
+interface BlockMathPlaceholderView {
+  dom: HTMLElement;
+  preview: HTMLElement;
+  getKey: () => string;
+}
+
+const blockMathPlaceholderViews = new Set<BlockMathPlaceholderView>();
+
+function refreshBlockMathPlaceholderHeights(): void {
+  for (const view of blockMathPlaceholderViews) {
+    if (!view.dom.classList.contains('math-block-node-placeholder')) {
+      continue;
+    }
+    const height = getCachedNodeHeight(view.getKey());
+    if (height !== null) {
+      view.preview.style.minHeight = `${height}px`;
+    }
+  }
+}
+
+subscribeNodeHeightCacheSeeded(refreshBlockMathPlaceholderHeights);
+
 interface MathNodeLike {
   type: { name: string };
   textContent: string;
   nodeSize: number;
+  attrs?: { display?: string };
 }
 
 const BLOCK_MATH_DEFAULT_HEIGHT = 96;
-const BLOCK_MATH_WIDTH_BUCKET = 160;
 let blockMathNodeViewId = 0;
 
 function nextBlockMathNodeViewId(): string {
@@ -42,43 +68,11 @@ function nextBlockMathNodeViewId(): string {
   return `block-math-${blockMathNodeViewId}`;
 }
 
-function getBlockMathThemeKey(): string {
-  const root = document.documentElement;
-  const theme = root.dataset.theme ?? 'light';
-  const palette = root.dataset.colorScheme ?? 'default';
-  return `${theme}:${palette}`;
-}
-
-function getBlockMathZoomKey(): number {
-  if (typeof window === 'undefined') return 1;
-  return window.devicePixelRatio || 1;
-}
-
-function getBlockMathFontVersionKey(): string {
-  const root = document.documentElement;
-  if (root.dataset.fontVersion) return root.dataset.fontVersion;
-  try {
-    const font = getComputedStyle(root).getPropertyValue('--ui-font').trim();
-    if (font) return font;
-  } catch {}
-  return 'default';
-}
-
-function getBlockMathWidthBucket(element: HTMLElement): number {
-  const frame = element.closest('.editor-frame') as HTMLElement | null;
-  const editorSurface = frame?.querySelector('.ProseMirror') as HTMLElement | null;
-  const width = editorSurface?.clientWidth || frame?.clientWidth || (typeof window !== 'undefined' ? window.innerWidth : 0) || 800;
-  return Math.max(1, Math.floor(width / BLOCK_MATH_WIDTH_BUCKET));
-}
-
 function getBlockMathHeightKey(node: MathNodeLike, element: HTMLElement): string {
-  return getHeightCacheKey(
-    node.type.name,
+  return getFormulaHeightKey(
     node.textContent,
-    getBlockMathWidthBucket(element),
-    getBlockMathThemeKey(),
-    getBlockMathZoomKey(),
-    getBlockMathFontVersionKey(),
+    node.attrs?.display === 'yes' ? 'yes' : 'no',
+    element,
   );
 }
 
@@ -182,6 +176,12 @@ export const MathInline = Node.create({
       const previewDOM = document.createElement('span');
       previewDOM.className = 'math-node-preview';
       previewDOM.setAttribute('contenteditable', 'false');
+      const placeholderView: BlockMathPlaceholderView = {
+        dom,
+        preview: previewDOM,
+        getKey: () => getBlockMathHeightKey(node, dom),
+      };
+      blockMathPlaceholderViews.add(placeholderView);
 
       dom.appendChild(contentDOM);
       dom.appendChild(previewDOM);
@@ -207,75 +207,52 @@ export const MathInline = Node.create({
         previewDOM.appendChild(hint);
       };
 
-      const doRender = (text: string) => {
-        if (text === lastRenderedText) return;
-        lastRenderedText = text;
+      const buildPreviewFragment = (text: string): DocumentFragment => {
+        const fragment = document.createDocumentFragment();
         if (!text.trim()) {
-          previewDOM.replaceChildren();
           const hint = document.createElement('span');
           hint.className = 'math-node-empty-hint';
           hint.textContent = translate('emptyMath');
-          previewDOM.appendChild(hint);
-          return;
+          fragment.appendChild(hint);
+          return fragment;
         }
+
         try {
           const display = isBlock ? 'yes' : 'no';
           const cachedHtml = getCachedFormulaHtml(text, display);
+          let html: string;
           if (cachedHtml !== null) {
-            previewDOM.innerHTML = cachedHtml;
-            mathLog('cached:', text, 'children:', previewDOM.childNodes.length);
-            return;
+            html = cachedHtml;
+            mathLog('cached:', text, 'children:', html.length);
+          } else {
+            html = katex.renderToString(text, {
+              displayMode: isBlock,
+              throwOnError: false,
+              strict: 'ignore',
+              output: 'html',
+            });
+            seedFormulaHtmlCache({
+              [getFormulaCacheKey(text, display)]: html,
+            });
+            mathLog('rendered:', text, 'children:', html.length);
           }
-          const html = katex.renderToString(text, {
-            displayMode: isBlock,
-            throwOnError: false,
-            strict: 'ignore',
-            output: 'html',
-          });
-          previewDOM.innerHTML = html;
-          seedFormulaHtmlCache({
-            [getFormulaCacheKey(text, display)]: html,
-          });
-          mathLog('rendered:', text, 'children:', previewDOM.childNodes.length);
+
+          const template = document.createElement('template');
+          template.innerHTML = html;
+          fragment.append(...Array.from(template.content.childNodes));
+          return fragment;
         } catch (err) {
-          previewDOM.textContent = text;
+          fragment.appendChild(document.createTextNode(text));
           mathLog('render error:', err);
         }
+
+        return fragment;
       };
 
       const renderPreview = (text: string) => {
-        doRender(text);
-      };
-
-      const getBlockPreviewLayoutHeight = (): number => {
-        const rectHeight = previewDOM.getBoundingClientRect().height;
-        if (rectHeight > 0) {
-          return rectHeight;
-        }
-        const minHeight = Number.parseFloat(previewDOM.style.minHeight);
-        return Number.isFinite(minHeight) && minHeight > 0 ? minHeight : BLOCK_MATH_DEFAULT_HEIGHT;
-      };
-
-      const measureAndCacheBlockPreview = (): number => {
-        const key = getBlockMathHeightKey(node, dom);
-        const previousMinHeight = previewDOM.style.minHeight;
-        previewDOM.style.minHeight = '0px';
-        const height = Math.max(
-          previewDOM.getBoundingClientRect().height,
-          previewDOM.scrollHeight,
-          previewDOM.clientHeight,
-        );
-        if (height > 0) {
-          previewDOM.style.minHeight = `${height}px`;
-          setCachedNodeHeight(key, height);
-          return height;
-        }
-        if (previousMinHeight) {
-          previewDOM.style.minHeight = previousMinHeight;
-          return Number.parseFloat(previousMinHeight) || BLOCK_MATH_DEFAULT_HEIGHT;
-        }
-        previewDOM.style.minHeight = `${BLOCK_MATH_DEFAULT_HEIGHT}px`;
-        return BLOCK_MATH_DEFAULT_HEIGHT;
+        if (text === lastRenderedText) return;
+        lastRenderedText = text;
+        previewDOM.replaceChildren(buildPreviewFragment(text));
       };
 
       const isBlockMathSelected = (): boolean => {
@@ -310,34 +287,16 @@ export const MathInline = Node.create({
         return true;
       };
 
-      const compensateBlockPreviewScroll = (previousHeight: number): void => {
-        const realHeight = measureAndCacheBlockPreview();
-        if (realHeight === previousHeight) {
-          return;
-        }
-        if (!shouldDeactivateBlockPreview()) {
-          return;
-        }
-        const frame = dom.closest('.editor-frame') as HTMLElement | null;
-        if (!frame) {
-          return;
-        }
-        const frameRect = frame.getBoundingClientRect();
-        const nodeRect = dom.getBoundingClientRect();
-        if (nodeRect.bottom >= frameRect.top) {
-          return;
-        }
-        const delta = realHeight - previousHeight;
-        const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
-        frame.scrollTop = Math.max(0, Math.min(frame.scrollTop + delta, maxScrollTop));
-      };
-
       const activateBlockPreview = (): void => {
-        const previousHeight = getBlockPreviewLayoutHeight();
+        const cachedHeight = getCachedNodeHeight(getBlockMathHeightKey(node, dom));
         dom.classList.remove('math-block-node-placeholder');
         blockPreviewActive = true;
         renderPreview(node.textContent);
-        compensateBlockPreviewScroll(previousHeight);
+        if (cachedHeight !== null) {
+          previewDOM.style.minHeight = `${cachedHeight}px`;
+        } else {
+          previewDOM.style.minHeight = `${BLOCK_MATH_DEFAULT_HEIGHT}px`;
+        }
       };
 
       // Handle clicking anywhere on the formula to enter edit mode.
@@ -389,6 +348,9 @@ export const MathInline = Node.create({
       return {
         dom,
         contentDOM,
+        ignoreMutation(mutation) {
+          return mutation.target !== contentDOM && !contentDOM.contains(mutation.target);
+        },
         update(newNode) {
           if (newNode.type !== node.type) return false;
           if (newNode.attrs.display !== node.attrs.display) return false;
@@ -400,7 +362,6 @@ export const MathInline = Node.create({
           if (isBlock) {
             if (blockPreviewActive) {
               renderPreview(node.textContent);
-              measureAndCacheBlockPreview();
             } else if (isBlockMathSelected()) {
               activateBlockPreview();
             } else {
@@ -419,6 +380,7 @@ export const MathInline = Node.create({
         deselectNode() {},
         destroy() {
           destroyed = true;
+          blockMathPlaceholderViews.delete(placeholderView);
           unregisterActivation?.();
         },
       };

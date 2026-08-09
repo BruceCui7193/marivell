@@ -55,6 +55,7 @@ import {
 import {
   collectFormulaIndex,
   renderFormulaChunk,
+  splitFormulaChunks,
 } from '../../src/renderer/editor/markdown.worker.ts';
 import {
   clearImagePreloadCache,
@@ -71,10 +72,17 @@ import {
   clearNodeHeightCache,
   getCachedNodeHeight,
   getHeightCacheKey,
+  notifyNodeHeightCacheSeeded,
   setCachedNodeHeight,
   subscribeNodeHeightCacheInvalidation,
+  subscribeNodeHeightCacheSeeded,
   unsubscribeNodeHeightCacheInvalidation,
 } from '../../src/renderer/editor/virtualization/height-cache.ts';
+import {
+  buildFormulaHeightMeasurementItems,
+  measureFormulaHeights,
+} from '../../src/renderer/editor/virtualization/height-measurer.ts';
+import { createHydrationQueue } from '../../src/renderer/editor/virtualization/hydration-queue.ts';
 
 let passed = 0;
 let failed = 0;
@@ -307,6 +315,20 @@ section('formula chunk rendering');
     String(rendered[entries[0]!.key]?.slice(0, 80)),
   );
   assertEqual('formula chunk renders empty input', renderFormulaChunk([]), {});
+  const splitEntries = collectFormulaIndex(parseMarkdown('$a$ $b$ $c$ $d$ $e$\n'));
+  const chunks = splitFormulaChunks(splitEntries, 2);
+  assertEqual(
+    'formula chunk split preserves all entries',
+    chunks.flat().map((entry) => entry.key),
+    splitEntries.map((entry) => entry.key),
+  );
+  assertEqual('formula chunk split creates expected chunk count', chunks.length, 3);
+  const measuredItems = buildFormulaHeightMeasurementItems(splitEntries, renderFormulaChunk(splitEntries));
+  assertEqual(
+    'formula height measurement items mirror formula chunk keys',
+    measuredItems.length,
+    splitEntries.length,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -430,6 +452,72 @@ section('mermaid height cache');
 }
 
 // ---------------------------------------------------------------------------
+// Height measurer fallback without browser layout
+// ---------------------------------------------------------------------------
+section('height measurer no DOM');
+
+{
+  const empty = await measureFormulaHeights([]);
+  assertEqual('height measurer empty batch returns empty record', empty, {});
+
+  const fallback = await measureFormulaHeights([
+    { key: 'height-measurer-fallback-key', html: '<span>x</span>', display: 'yes' as const },
+  ]);
+  assertEqual('height measurer returns empty without real layout', fallback, {});
+}
+
+// ---------------------------------------------------------------------------
+// Hydration queue (drag-target priority and eviction)
+// ---------------------------------------------------------------------------
+section('hydration queue');
+
+{
+  const queue = createHydrationQueue();
+  queue.enqueue({ id: 'far', position: 500 });
+  queue.enqueue({ id: 'near', position: 90 });
+  queue.enqueue({ id: 'closest', position: 102 });
+  assertEqual('hydration queue returns closest to center first', queue.next(100)?.id, 'closest');
+  assertEqual('hydration queue returns next nearest', queue.next(100)?.id, 'near');
+  assertEqual('hydration queue returns remaining task', queue.next(100)?.id, 'far');
+  assertEqual('hydration queue empties after next', queue.size, 0);
+}
+
+{
+  const queue = createHydrationQueue();
+  queue.enqueue({ id: 'same-old', position: 50, priority: 0 });
+  queue.enqueue({ id: 'same-new', position: 50, priority: 0 });
+  assertEqual(
+    'hydration queue breaks distance ties with LIFO',
+    queue.next(0)?.id,
+    'same-new',
+  );
+}
+
+{
+  const queue = createHydrationQueue();
+  queue.enqueue({ id: 'low', position: 50, priority: 0 });
+  queue.enqueue({ id: 'high', position: 50, priority: 1 });
+  assertEqual(
+    'hydration queue breaks distance ties by priority',
+    queue.next(0)?.id,
+    'high',
+  );
+}
+
+{
+  const queue = createHydrationQueue();
+  queue.enqueue({ id: 'inside', position: 20 });
+  queue.enqueue({ id: 'edge', position: 50 });
+  queue.enqueue({ id: 'outside', position: 100 });
+  assertEqual('hydration queue evicts far tasks', queue.evictOutside(50, 0), 1);
+  assertEqual('hydration queue keeps in-range tasks', queue.size, 2);
+  queue.evictOutside(50, 0);
+  assertEqual('hydration queue evict is idempotent', queue.size, 2);
+  queue.clear();
+  assertEqual('hydration queue clear empties tasks', queue.size, 0);
+}
+
+// ---------------------------------------------------------------------------
 // Node height cache (LRU)
 // ---------------------------------------------------------------------------
 section('node height cache');
@@ -494,6 +582,25 @@ section('node height cache');
     'node height cache fully unsubscribed listeners are silent',
     invalidationEvents,
     ['first', 'second', 'second'],
+  );
+
+  const seededEvents: string[] = [];
+  const unsubscribeSeeded = subscribeNodeHeightCacheSeeded(() => {
+    seededEvents.push('seeded');
+  });
+  setCachedNodeHeight(keyA, 96);
+  notifyNodeHeightCacheSeeded();
+  assertEqual(
+    'node height cache seeded notification fires',
+    seededEvents,
+    ['seeded'],
+  );
+  unsubscribeSeeded();
+  notifyNodeHeightCacheSeeded();
+  assertEqual(
+    'node height cache seeded notification unsubscribes',
+    seededEvents,
+    ['seeded'],
   );
 
   clearNodeHeightCache();

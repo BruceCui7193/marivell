@@ -2,6 +2,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -46,7 +47,13 @@ import {
   type ScrollAnchor,
   type SourceScrollAnchor,
 } from '../editor/scroll-anchor';
-import { forceActivateViewport } from '../editor/virtualization/activation-controller';
+import {
+  forceActivateViewport,
+  hydrateVisibleAroundRatio,
+  resumeScrollAnchorProvider,
+  setScrollAnchorProvider,
+  suspendScrollAnchorProvider,
+} from '../editor/virtualization/activation-controller';
 import {
   coordsAtPos,
   forceActivateAtCoords,
@@ -60,10 +67,12 @@ import {
   getCachedFormulaHtml,
   seedFormulaHtmlCache,
 } from '../editor/math-render-cache';
+import { markdownOffsetToPmPos } from '../editor/position-map';
 import { replaceEditorContent } from '../editor/replace-editor-content';
-import type {
-  FormulaChunkResponse,
-  FormulaIndexEntry,
+import {
+  splitFormulaChunks,
+  type FormulaChunkResponse,
+  type FormulaIndexEntry,
 } from '../editor/markdown.worker';
 import {
   SELECTION_END_MARKER,
@@ -131,9 +140,7 @@ interface WorkerParseFailure {
 
 type WorkerParseResponse = WorkerParseSuccess | WorkerParseFailure;
 
-const FORMULA_CHUNK_ENTRIES_PER_REQUEST = 150;
 const FORMULA_CHUNK_MAX_IN_FLIGHT = 2;
-const FORMULA_CHUNK_VIEWPORT_WINDOW = 600;
 const FORMULA_CHUNK_REQUEST_ID_OFFSET = 0x4000_0000;
 
 function createEmptyDocument(): JSONContent {
@@ -268,6 +275,20 @@ function cancelIdleWork(handle: IdleHandle | null): void {
 function computeScrollRatio(element: { scrollTop: number; scrollHeight: number; clientHeight: number }): number {
   const maxScrollTop = Math.max(element.scrollHeight - element.clientHeight, 0);
   return maxScrollTop > 0 ? element.scrollTop / maxScrollTop : 0;
+}
+
+function getOrCreateEditorScrollSpacer(frame: HTMLElement): HTMLElement {
+  let spacer = frame.querySelector<HTMLElement>(':scope > .editor-scroll-spacer');
+  if (!spacer) {
+    spacer = document.createElement('div');
+    spacer.className = 'editor-scroll-spacer';
+    spacer.setAttribute('aria-hidden', 'true');
+    spacer.style.display = 'block';
+    spacer.style.height = '0px';
+    spacer.style.pointerEvents = 'none';
+    frame.appendChild(spacer);
+  }
+  return spacer;
 }
 
 
@@ -409,6 +430,22 @@ const EditorViewport = memo(function EditorViewport({
         </div>
       ) : null}
       {searchPanel}
+      <div
+        ref={editorHostRef}
+        onContextMenu={onVisualContextMenu}
+        style={
+          sourceMode
+            ? {
+                position: 'absolute',
+                inset: '0px',
+                visibility: 'hidden',
+                pointerEvents: 'none',
+              }
+            : undefined
+        }
+      >
+        <EditorContent editor={editor} />
+      </div>
       {sourceMode ? (
         <SourceEditor
           ref={sourceTextareaRef}
@@ -418,11 +455,7 @@ const EditorViewport = memo(function EditorViewport({
           onCursorChange={onSourceCursorChange}
           onContextMenu={onSourceContextMenu}
         />
-      ) : (
-        <div ref={editorHostRef} onContextMenu={onVisualContextMenu}>
-          <EditorContent editor={editor} />
-        </div>
-      )}
+      ) : null}
     </div>
   );
 });
@@ -590,6 +623,11 @@ export default function EditorShell({
   const pendingVisualDocumentSyncRef = useRef<IdleHandle | null>(null);
   const pendingModeSwitchScrollRatioRef = useRef<number | null>(null);
   const pendingSourceSelectionRef = useRef<SourceSearchMatch | null>(null);
+  const skipSourceDraftExternalSyncRef = useRef(false);
+  const suppressSourceSelectRef = useRef(false);
+  const lastVisualSelectionRef = useRef<{ from: number; to: number; kind: 'text' | 'node' } | null>(null);
+  const lastModeSwitchSourceSelectionRef = useRef<SourceSearchMatch | null>(null);
+  const sourceCaretMovedRef = useRef(false);
   const pendingVisualSelectionRestoreRef = useRef(false);
   const startupCaretPlacedRef = useRef(false);
   const scrollMemoryRef = useRef<Map<string, ScrollAnchor | SourceScrollAnchor | number>>(new Map());
@@ -608,13 +646,12 @@ export default function EditorShell({
   const sourcePreviewTimerRef = useRef<number | null>(null);
   const sourcePreviewRequestRef = useRef(0);
   const formulaHtmlCacheGenerationRef = useRef(0);
-  const formulaIndexRef = useRef<FormulaIndexEntry[] | null>(null);
   const formulaChunkRequestRef = useRef(0);
   const formulaChunkQueueRef = useRef<FormulaIndexEntry[][]>([]);
   const formulaChunkInFlightRef = useRef<Map<number, number>>(new Map());
-  const formulaChunkWindowStartRef = useRef(0);
-  const formulaChunkWindowEndRef = useRef(0);
   const heightCacheInvalidationFrameRef = useRef<number | null>(null);
+  const lastAnchorRestoredScrollTopRef = useRef<number | null>(null);
+  const keepAtBottomRef = useRef(false);
   const [toolbarVisible, setToolbarVisible] = useState(() => {
     return window.localStorage.getItem('markdown-editor-toolbar') !== 'hidden';
   });
@@ -708,6 +745,18 @@ export default function EditorShell({
   }, [sourceMode]);
 
   useEffect(() => {
+    if (sourceMode) {
+      keepAtBottomRef.current = false;
+      const frame = editorFrameRef.current;
+      frame?.querySelector(':scope > .editor-scroll-spacer')?.remove();
+      if (frame) {
+        frame.scrollTop = 0;
+        frame.scrollLeft = 0;
+      }
+    }
+  }, [sourceMode]);
+
+  useEffect(() => {
     sourceDraftRef.current = sourceDraft;
   }, [sourceDraft]);
 
@@ -748,7 +797,11 @@ export default function EditorShell({
           }
 
           input.focus();
+          suppressSourceSelectRef.current = true;
           input.setSelectionRange(selection.start, selection.end);
+          window.setTimeout(() => {
+            suppressSourceSelectRef.current = false;
+          }, 0);
         });
       }
     },
@@ -888,6 +941,14 @@ export default function EditorShell({
   // and also fought with the visual↔source selection restore path.
   useEffect(() => {
     if (!sourceMode) {
+      skipSourceDraftExternalSyncRef.current = false;
+      return;
+    }
+
+    // The parent may still hold the pre-flush document during this render;
+    // do not let that stale prop overwrite the visual-to-source draft.
+    if (skipSourceDraftExternalSyncRef.current) {
+      skipSourceDraftExternalSyncRef.current = false;
       return;
     }
 
@@ -1187,6 +1248,44 @@ export default function EditorShell({
       return;
     }
 
+    const frame = editorFrameRef.current;
+    if (!frame) {
+      return;
+    }
+
+    const provider = {
+      capture: () => {
+        const anchor = captureVisualScrollAnchor(frame, editor);
+        if (anchor === null) {
+          return null;
+        }
+        return { ...anchor, scrollTop: frame.scrollTop };
+      },
+      restore: (anchor: ScrollAnchor & { scrollTop?: number }) => {
+        restoreVisualScrollAnchor(frame, editor, anchor);
+        if (typeof anchor.scrollTop === 'number') {
+          const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+          const restoredScrollTop = Math.max(0, Math.min(anchor.scrollTop, maxScrollTop));
+          if (frame.scrollTop !== restoredScrollTop) {
+            frame.scrollTop = restoredScrollTop;
+          }
+          lastAnchorRestoredScrollTopRef.current = restoredScrollTop;
+        } else {
+          lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
+        }
+      },
+    };
+    setScrollAnchorProvider(provider);
+    return () => {
+      setScrollAnchorProvider(null);
+    };
+  }, [editor]);
+
+  useEffect(() => {
+    if (!editor) {
+      return;
+    }
+
     let disposed = false;
 
     const rehydrateViewport = () => {
@@ -1204,9 +1303,9 @@ export default function EditorShell({
     const invalidateHeightCache = () => {
       clearNodeHeightCache();
       if (heightCacheInvalidationFrameRef.current !== null) {
-        window.cancelAnimationFrame(heightCacheInvalidationFrameRef.current);
+        cancelAnimationFrame(heightCacheInvalidationFrameRef.current);
       }
-      heightCacheInvalidationFrameRef.current = window.requestAnimationFrame(rehydrateViewport);
+      heightCacheInvalidationFrameRef.current = requestAnimationFrame(rehydrateViewport);
     };
 
     window.addEventListener('resize', invalidateHeightCache);
@@ -1250,9 +1349,136 @@ export default function EditorShell({
       zoomQuery?.removeEventListener?.('change', invalidateHeightCache);
       themeObserver?.disconnect();
       if (heightCacheInvalidationFrameRef.current !== null) {
-        window.cancelAnimationFrame(heightCacheInvalidationFrameRef.current);
+        cancelAnimationFrame(heightCacheInvalidationFrameRef.current);
         heightCacheInvalidationFrameRef.current = null;
       }
+    };
+  }, [editor]);
+
+  useEffect(() => {
+    if (!editor) {
+      return;
+    }
+
+    const frame = editorFrameRef.current;
+    if (!frame) {
+      return;
+    }
+
+    let hydrationFrame: number | null = null;
+    let lastSyncHydrateScrollTop = frame.scrollTop;
+
+    const hydrateScrollTarget = () => {
+      if (
+        hydrationFrame !== null ||
+        (lastAnchorRestoredScrollTopRef.current !== null &&
+          Math.abs(frame.scrollTop - lastAnchorRestoredScrollTopRef.current) < 0.01)
+      ) {
+        return;
+      }
+
+      if (!sourceModeRef.current) {
+        const scrollDelta = Math.abs(frame.scrollTop - lastSyncHydrateScrollTop);
+        const jumpThreshold = Math.max(frame.clientHeight * 0.5, 400);
+        if (scrollDelta > jumpThreshold) {
+          const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+          hydrateVisibleAroundRatio(frame, frame.scrollTop, maxScrollTop);
+          lastSyncHydrateScrollTop = frame.scrollTop;
+        }
+      }
+
+      hydrationFrame = requestAnimationFrame(() => {
+        hydrationFrame = null;
+        const currentEditor = editorRef.current;
+        if (!currentEditor || sourceModeRef.current) {
+          return;
+        }
+
+        const timingStart = performance.now();
+        const scrollTopBeforeHydrate = frame.scrollTop;
+        const scrollHeightBeforeHydrate = frame.scrollHeight;
+        const oldMaxScrollTop = Math.max(scrollHeightBeforeHydrate - frame.clientHeight, 0);
+        const wasAtBottom = scrollTopBeforeHydrate >= oldMaxScrollTop - 1;
+        keepAtBottomRef.current = wasAtBottom;
+        const posAtCoordsMs = 0;
+        const activateMs = 0;
+
+        const stabilizeScrollHeight = (attempt: number): void => {
+          const lostScrollHeight = scrollHeightBeforeHydrate - frame.scrollHeight;
+          if (lostScrollHeight > 0 && attempt < 6) {
+            const spacer = getOrCreateEditorScrollSpacer(frame);
+            const currentSpacerHeight = Number.parseFloat(spacer.style.height) || 0;
+            spacer.style.height = `${currentSpacerHeight + lostScrollHeight}px`;
+            const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+            frame.scrollTop = wasAtBottom
+              ? Math.round(maxScrollTop)
+              : Math.min(scrollTopBeforeHydrate, maxScrollTop);
+            lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
+            requestAnimationFrame(() => stabilizeScrollHeight(attempt + 1));
+            return;
+          }
+
+          const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+          frame.scrollTop = wasAtBottom ? Math.round(maxScrollTop) : Math.min(scrollTopBeforeHydrate, maxScrollTop);
+          lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
+        };
+
+        stabilizeScrollHeight(0);
+
+        requestAnimationFrame(() => {
+          let remainingFrames = 12;
+          const followBottomIfAtBottom = (): void => {
+            const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+            const bottomThreshold = Math.max(64, frame.clientHeight * 0.15);
+            if (frame.scrollTop >= maxScrollTop - bottomThreshold) {
+              frame.scrollTop = Math.round(maxScrollTop);
+              lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
+              keepAtBottomRef.current = true;
+              remainingFrames -= 1;
+              if (remainingFrames > 0) {
+                requestAnimationFrame(followBottomIfAtBottom);
+              }
+            } else {
+              keepAtBottomRef.current = false;
+            }
+          };
+          followBottomIfAtBottom();
+        });
+        (window as unknown as Record<string, unknown>).__marivellPhase4Timings = {
+          totalMs: performance.now() - timingStart,
+          posAtCoordsMs,
+          activateMs,
+        };
+      });
+    };
+
+    frame.addEventListener('scroll', hydrateScrollTarget, { passive: true });
+    return () => {
+      frame.removeEventListener('scroll', hydrateScrollTarget);
+      if (hydrationFrame !== null) {
+        cancelAnimationFrame(hydrationFrame);
+        hydrationFrame = null;
+      }
+    };
+  }, [editor]);
+
+  useEffect(() => {
+    const frame = editorFrameRef.current;
+    if (!frame || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => {
+      if (!keepAtBottomRef.current) {
+        return;
+      }
+      const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+      frame.scrollTop = Math.round(maxScrollTop);
+      lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
+    });
+    observer.observe(frame);
+    return () => {
+      observer.disconnect();
     };
   }, [editor]);
 
@@ -1482,12 +1708,13 @@ export default function EditorShell({
     }
 
     let cancelled = false;
+    let finished = false;
     const loadId = latestExternalLoadRef.current + 1;
     latestExternalLoadRef.current = loadId;
     const formulaCacheGeneration = ++formulaHtmlCacheGenerationRef.current;
     clearFormulaHtmlCache();
-    formulaIndexRef.current = null;
     formulaChunkQueueRef.current = [];
+    formulaChunkInFlightRef.current.clear();
     setLoadingExternalDocument(true);
     startupCaretPlacedRef.current = false;
     editor.setEditable(false);
@@ -1495,11 +1722,17 @@ export default function EditorShell({
 
     const isActiveLoad = () =>
       !cancelled && latestExternalLoadRef.current === loadId && !editor.isDestroyed;
+    // Formula pre-rendering is allowed to outlive a cancelled renderer effect
+    // when the same document/generation is still current. Only a new document
+    // load or editor teardown must invalidate it.
+    const isActivePrefetch = () =>
+      formulaHtmlCacheGenerationRef.current === formulaCacheGeneration && !editor.isDestroyed;
 
     const finishLoad = () => {
       if (!isActiveLoad()) {
         return;
       }
+      finished = true;
       editor.setEditable(true);
       setLoadingExternalDocument(false);
       if (window.markdownEditor.getBenchmarkEnabled?.()) {
@@ -1519,7 +1752,6 @@ export default function EditorShell({
           }
         }
       });
-      attachViewportPrefetchScroll();
     };
 
     const applyParsedContent = (content: JSONContent, outlineItems: OutlineItem[] | null) => {
@@ -1566,10 +1798,18 @@ export default function EditorShell({
       setVisualSearchRevision((current) => current + 1);
     };
 
+    const scheduleFormulaHeightMeasurement = (
+      _entries: FormulaIndexEntry[] | null | undefined,
+      _formulaHtml: Record<string, string>,
+    ): void => {
+      // Background DOM measurement of every unique KaTeX string is too heavy for
+      // this huge-file path. Activated formulas keep a stable default height and
+      // the scroll stabilizer handles the small remaining drift.
+    };
+
     const pumpFormulaChunks = (): void => {
       if (
-        !isActiveLoad() ||
-        formulaHtmlCacheGenerationRef.current !== formulaCacheGeneration ||
+        !isActivePrefetch() ||
         formulaChunkQueueRef.current.length === 0
       ) {
         return;
@@ -1620,12 +1860,9 @@ export default function EditorShell({
           worker.removeEventListener('message', handleMessage);
           worker.removeEventListener('error', handleError);
           formulaChunkInFlightRef.current.delete(requestId);
-          if (
-            event.data.ok &&
-            isActiveLoad() &&
-            formulaHtmlCacheGenerationRef.current === formulaCacheGeneration
-          ) {
+          if (event.data.ok && isActivePrefetch()) {
             seedFormulaHtmlCache(event.data.formulaHtml);
+            scheduleFormulaHeightMeasurement(missingEntries, event.data.formulaHtml);
           }
           pumpFormulaChunks();
         };
@@ -1640,90 +1877,13 @@ export default function EditorShell({
       }
     };
 
-    const queueFormulaChunkEntries = (entries: FormulaIndexEntry[]): void => {
-      for (let index = 0; index < entries.length; index += FORMULA_CHUNK_ENTRIES_PER_REQUEST) {
-        formulaChunkQueueRef.current.push(
-          entries.slice(index, index + FORMULA_CHUNK_ENTRIES_PER_REQUEST),
-        );
-      }
-    };
-
     const startFormulaChunkPrefetch = (entries: FormulaIndexEntry[] | null | undefined): void => {
-      if (
-        !isActiveLoad() ||
-        formulaHtmlCacheGenerationRef.current !== formulaCacheGeneration ||
-        !entries ||
-        entries.length === 0
-      ) {
+      if (!isActivePrefetch() || !entries || entries.length === 0) {
         return;
       }
 
-      formulaChunkWindowStartRef.current = 0;
-      formulaChunkWindowEndRef.current = Math.min(
-        entries.length,
-        FORMULA_CHUNK_VIEWPORT_WINDOW,
-      );
-      queueFormulaChunkEntries(
-        entries.slice(
-          formulaChunkWindowStartRef.current,
-          formulaChunkWindowEndRef.current,
-        ),
-      );
+      formulaChunkQueueRef.current = splitFormulaChunks(entries);
       pumpFormulaChunks();
-    };
-
-    let viewportPrefetchFrame: number | null = null;
-    let attachedScrollFrame: HTMLElement | null = null;
-
-    const scheduleViewportFormulaPrefetch = (): void => {
-      if (viewportPrefetchFrame !== null) {
-        return;
-      }
-
-      viewportPrefetchFrame = window.requestAnimationFrame(() => {
-        viewportPrefetchFrame = null;
-        if (
-          !isActiveLoad() ||
-          formulaHtmlCacheGenerationRef.current !== formulaCacheGeneration
-        ) {
-          return;
-        }
-
-        const frame = editorFrameRef.current;
-        const entries = formulaIndexRef.current;
-        if (!frame || !entries || entries.length === 0) {
-          return;
-        }
-
-        const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
-        const ratio =
-          maxScrollTop > 0 ? Math.min(1, Math.max(0, frame.scrollTop / maxScrollTop)) : 0;
-        const center = Math.floor(ratio * entries.length);
-        const halfWindow = Math.floor(FORMULA_CHUNK_VIEWPORT_WINDOW / 2);
-        const start = Math.max(0, center - halfWindow);
-        const end = Math.min(entries.length, start + FORMULA_CHUNK_VIEWPORT_WINDOW);
-
-        if (
-          start === formulaChunkWindowStartRef.current &&
-          end === formulaChunkWindowEndRef.current
-        ) {
-          return;
-        }
-
-        formulaChunkWindowStartRef.current = start;
-        formulaChunkWindowEndRef.current = end;
-        queueFormulaChunkEntries(entries.slice(start, end));
-        pumpFormulaChunks();
-      });
-    };
-
-    const attachViewportPrefetchScroll = (): void => {
-      const frame = editorFrameRef.current;
-      if (!frame || attachedScrollFrame === frame) {
-        return;
-      }
-      attachedScrollFrame = frame;
-      frame.addEventListener('scroll', scheduleViewportFormulaPrefetch, { passive: true });
     };
 
     if (document.markdown.length < LARGE_DOCUMENT_THRESHOLD) {
@@ -1740,14 +1900,14 @@ export default function EditorShell({
     } else {
       void parseMarkdownInWorker(document.markdown, true)
         .then((result) => {
-          if (
-            isActiveLoad() &&
-            formulaHtmlCacheGenerationRef.current === formulaCacheGeneration
-          ) {
+          if (isActivePrefetch()) {
             if (result.formulaHtml) {
               seedFormulaHtmlCache(result.formulaHtml);
+              scheduleFormulaHeightMeasurement(
+                result.formulaIndex ?? null,
+                result.formulaHtml,
+              );
             }
-            formulaIndexRef.current = result.formulaIndex ?? null;
           }
           startFormulaChunkPrefetch(result.formulaIndex ?? null);
           applyParsedContent(result.content, result.outline);
@@ -1769,17 +1929,11 @@ export default function EditorShell({
     }
 
     return () => {
+      if (finished) {
+        return;
+      }
       cancelled = true;
       formulaChunkQueueRef.current = [];
-      if (viewportPrefetchFrame !== null) {
-        window.cancelAnimationFrame(viewportPrefetchFrame);
-        viewportPrefetchFrame = null;
-      }
-      attachedScrollFrame?.removeEventListener(
-        'scroll',
-        scheduleViewportFormulaPrefetch,
-      );
-      attachedScrollFrame = null;
       // If this load is still the latest owner, unlock so a cancelled/re-run path
       // cannot leave contenteditable=false. A newer load will lock again immediately.
       if (latestExternalLoadRef.current === loadId && !editor.isDestroyed) {
@@ -1787,7 +1941,7 @@ export default function EditorShell({
         setLoadingExternalDocument(false);
       }
     };
-  }, [document.markdown, document.path, document.dirty, editor, parseMarkdownInWorker, sourceMode]);
+  }, [document.markdown, document.path, editor, parseMarkdownInWorker, sourceMode]);
 
   useEffect(() => {
     if (sourceMode) {
@@ -1810,10 +1964,14 @@ export default function EditorShell({
 
         const selection = pendingSourceSelectionRef.current;
         if (selection) {
+          suppressSourceSelectRef.current = true;
           input.setSelectionRange(selection.start, selection.end);
           sourceSelectionRef.current = selection;
           queueSourcePreview(sourceDraftRef.current, selection);
-          pendingSourceSelectionRef.current = null;
+          window.setTimeout(() => {
+            pendingSourceSelectionRef.current = null;
+            suppressSourceSelectRef.current = false;
+          }, 120);
           startupCaretPlacedRef.current = true;
           return;
         }
@@ -1830,42 +1988,63 @@ export default function EditorShell({
     }
   }, [document.markdown, queueSourcePreview, sourceMode]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    if (sourceMode || !editor) {
+      return;
+    }
+
+    if (pendingVisualSelectionRestoreRef.current) {
+      sourceCaretMovedRef.current = false;
+      return;
+    }
+
+    const selection = editor.state.selection;
+    const coords = editor.view.coordsAtPos(selection.from);
+    const frame = editorFrameRef.current;
+    const frameRect = frame?.getBoundingClientRect();
+    const caretOutside =
+      coords === null ||
+      frameRect === undefined ||
+      coords.top < frameRect.top - 1 ||
+      coords.bottom > frameRect.bottom + 1;
+
+    if (sourceCaretMovedRef.current || caretOutside) {
+      pendingModeSwitchScrollRatioRef.current = null;
+      scrollPosIntoView(editor, selection.from);
+    }
+    sourceCaretMovedRef.current = false;
+  }, [editor, sourceMode]);
+
+  useLayoutEffect(() => {
     const ratio = pendingModeSwitchScrollRatioRef.current;
     if (ratio === null) {
       return;
     }
 
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const target = sourceMode ? sourceTextareaRef.current : editorFrameRef.current;
-        if (!target) {
-          pendingModeSwitchScrollRatioRef.current = null;
-          return;
-        }
+    const target = sourceMode ? sourceTextareaRef.current : editorFrameRef.current;
+    if (!target) {
+      pendingModeSwitchScrollRatioRef.current = null;
+      return;
+    }
 
-        const maxScrollTop = Math.max(target.scrollHeight - target.clientHeight, 0);
-        target.scrollTop = maxScrollTop * ratio;
-        pendingModeSwitchScrollRatioRef.current = null;
-      });
-    });
+    const maxScrollTop = Math.max(target.scrollHeight - target.clientHeight, 0);
+    target.scrollTop = maxScrollTop * ratio;
+    pendingModeSwitchScrollRatioRef.current = null;
   }, [document.markdown, sourceDraft, sourceMode]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (sourceMode || !editor || !pendingVisualSelectionRestoreRef.current) {
       return;
     }
 
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (sourceModeRef.current || !pendingVisualSelectionRestoreRef.current) {
-          return;
-        }
-
-        pendingVisualSelectionRestoreRef.current = false;
-        restoreSelectionMarkersFromEditorState(editor.state, editor.view);
-      });
-    });
+    pendingVisualSelectionRestoreRef.current = false;
+    externalUpdateRef.current = true;
+    armSkipNextDocChange();
+    visualDocEditedRef.current = false;
+    restoreSelectionMarkersFromEditorState(editor.state, editor.view);
+    scrollPosIntoView(editor, editor.state.selection.from);
+    sourceCaretMovedRef.current = false;
+    externalUpdateRef.current = false;
   }, [editor, sourceMode]);
 
   useEffect(() => {
@@ -2279,24 +2458,45 @@ export default function EditorShell({
 
   const toggleSourceModePreservingViewport = useCallback(() => {
     captureModeSwitchScrollRatio();
+    if (sourceModeRef.current && editor) {
+      const input = sourceTextareaRef.current;
+      const markdown = sourceDraftRef.current;
+      const nextSelection = clampSourceSelection(
+        {
+          start: input?.selectionStart ?? sourceSelectionRef.current.start,
+          end: input?.selectionEnd ?? sourceSelectionRef.current.end,
+        },
+        markdown,
+      );
+      const previousSelection = lastModeSwitchSourceSelectionRef.current;
+      sourceCaretMovedRef.current =
+        previousSelection !== null &&
+        (nextSelection.start !== previousSelection.start ||
+          nextSelection.end !== previousSelection.end);
+    }
     setSourceMode((current) => {
       if (!current) {
         pendingVisualSelectionRestoreRef.current = false;
         if (editor) {
-          const hadVisualEdits = visualDocEditedRef.current;
+          const currentVisualSelection = editor.state.selection;
+          lastVisualSelectionRef.current = {
+            from: currentVisualSelection.from,
+            to: currentVisualSelection.to,
+            kind: currentVisualSelection instanceof NodeSelection ? 'node' : 'text',
+          };
           const flushed = flushVisualSync(editor);
           // Marker pass is only used for caret mapping. Content prefers the
           // canonical flushed string so we do not rewrite unedited documents.
           const sourceState = buildSourceDraftFromVisualSelection(editor);
           const markdown = flushed?.markdown ?? sourceState.markdown;
-          const selection = clampSourceSelection(
-            !hadVisualEdits && sourceState.markdown !== markdown
-              ? { start: markdown.length, end: markdown.length }
-              : sourceState.selection,
-            markdown,
-          );
+          const selection = clampSourceSelection(sourceState.selection, markdown);
           pendingSourceSelectionRef.current = selection;
+          lastModeSwitchSourceSelectionRef.current = {
+            start: selection.start,
+            end: selection.end,
+          };
           sourceSelectionRef.current = selection;
+          skipSourceDraftExternalSyncRef.current = true;
           setSourceDraft(markdown);
           sourceDraftRef.current = markdown;
           const stats = computeSourceStats(markdown);
@@ -2311,6 +2511,7 @@ export default function EditorShell({
           end: fallbackMarkdown.length,
         };
         sourceSelectionRef.current = pendingSourceSelectionRef.current;
+        skipSourceDraftExternalSyncRef.current = true;
         setSourceDraft(fallbackMarkdown);
         sourceDraftRef.current = fallbackMarkdown;
         const stats = computeSourceStats(fallbackMarkdown);
@@ -2329,6 +2530,87 @@ export default function EditorShell({
           markdown,
         );
         sourceSelectionRef.current = selection;
+
+        const savedSourceSelection = lastModeSwitchSourceSelectionRef.current;
+        const selectionUnchanged =
+          savedSourceSelection !== null && !sourceCaretMovedRef.current;
+        const savedVisualSelection = lastVisualSelectionRef.current;
+        if (
+          markdown === lastEmittedMarkdownRef.current &&
+          selectionUnchanged &&
+          savedVisualSelection !== null
+        ) {
+          externalUpdateRef.current = true;
+          armSkipNextDocChange();
+          visualDocEditedRef.current = false;
+          const nextSelection =
+            savedVisualSelection.kind === 'node'
+              ? NodeSelection.create(editor.state.doc, savedVisualSelection.from)
+              : TextSelection.create(
+                  editor.state.doc,
+                  savedVisualSelection.from,
+                  savedVisualSelection.to,
+                );
+          editor.view.dispatch(editor.state.tr.setSelection(nextSelection));
+          externalUpdateRef.current = false;
+          pendingVisualSelectionRestoreRef.current = false;
+          pendingModeSwitchScrollRatioRef.current = null;
+          lastModeSwitchSourceSelectionRef.current = null;
+          lastVisualSelectionRef.current = null;
+          const stats = computeSourceStats(markdown);
+          onDocumentChange(markdown, stats);
+          onDocumentMetaChange(markdown !== document.savedMarkdown);
+          visualMarkdownRef.current = markdown;
+          visualStatsRef.current = stats;
+          lastEmittedMarkdownRef.current = markdown;
+          setLiveStats((currentStats) => (areStatsEqual(currentStats, stats) ? currentStats : stats));
+          setLiveDirty(markdown !== document.savedMarkdown);
+          const nextOutline = extractOutline(markdown);
+          setOutline((currentOutline) =>
+            areOutlinesEqual(currentOutline, nextOutline) ? currentOutline : nextOutline,
+          );
+          setVisualSearchRevision((currentRevision) => currentRevision + 1);
+          return false;
+        }
+
+        if (markdown === lastEmittedMarkdownRef.current && selection.start === selection.end) {
+          const mappedPos = markdownOffsetToPmPos(markdown, parseMarkdown(markdown), selection.start);
+          const visualEndPos = selection.start >= markdown.length
+            ? editor.state.doc.content.size
+            : null;
+          const effectivePos = mappedPos ?? visualEndPos;
+          if (effectivePos !== null) {
+            externalUpdateRef.current = true;
+            armSkipNextDocChange();
+            visualDocEditedRef.current = false;
+            editor.view.dispatch(
+              editor.state.tr.setSelection(TextSelection.create(editor.state.doc, effectivePos)),
+            );
+            pendingModeSwitchScrollRatioRef.current = null;
+            externalUpdateRef.current = false;
+            pendingVisualSelectionRestoreRef.current = false;
+            lastModeSwitchSourceSelectionRef.current = { start: selection.start, end: selection.end };
+            lastVisualSelectionRef.current = {
+              from: effectivePos,
+              to: effectivePos,
+              kind: 'text',
+            };
+            const stats = computeSourceStats(markdown);
+            onDocumentChange(markdown, stats);
+            onDocumentMetaChange(markdown !== document.savedMarkdown);
+            visualMarkdownRef.current = markdown;
+            visualStatsRef.current = stats;
+            lastEmittedMarkdownRef.current = markdown;
+            setLiveStats((currentStats) => (areStatsEqual(currentStats, stats) ? currentStats : stats));
+            setLiveDirty(markdown !== document.savedMarkdown);
+            const nextOutline = extractOutline(markdown);
+            setOutline((currentOutline) =>
+              areOutlinesEqual(currentOutline, nextOutline) ? currentOutline : nextOutline,
+            );
+            setVisualSearchRevision((currentRevision) => currentRevision + 1);
+            return false;
+          }
+        }
 
         const cachedPreview = sourcePreviewCacheRef.current;
         const cacheHit =
@@ -2886,6 +3168,9 @@ export default function EditorShell({
 
   const handleSourceSelect = useCallback(
     (event: SyntheticEvent<HTMLTextAreaElement>) => {
+      if (suppressSourceSelectRef.current || pendingSourceSelectionRef.current !== null) {
+        return;
+      }
       const target = event.currentTarget;
       const selection = {
         start: target.selectionStart ?? target.value.length,

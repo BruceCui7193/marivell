@@ -725,10 +725,6 @@ function flowToTiptap(
 
       const content = inlineChildrenToTiptap(node.children ?? [], context, mathPlaceholders);
 
-      if (content.length === 1 && content[0].type === 'image') {
-        return content;
-      }
-
       return [{ type: 'paragraph', content }];
     }
     case 'heading':

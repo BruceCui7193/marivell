@@ -57,7 +57,19 @@ export type FormulaChunkResponse = FormulaChunkSuccess | FormulaChunkFailure;
 
 type WorkerRequest = ParseMarkdownRequest | FormulaChunkRequest;
 
+export const FORMULA_CHUNK_SIZE = 150;
 const INITIAL_FORMULA_HTML_CHUNK_SIZE = 200;
+
+export function splitFormulaChunks(
+  entries: FormulaIndexEntry[],
+  chunkSize = FORMULA_CHUNK_SIZE,
+): FormulaIndexEntry[][] {
+  const chunks: FormulaIndexEntry[][] = [];
+  for (let index = 0; index < entries.length; index += chunkSize) {
+    chunks.push(entries.slice(index, index + chunkSize));
+  }
+  return chunks;
+}
 
 function getInlineMathLatex(node: JSONContent): string {
   if (!Array.isArray(node.content)) {

@@ -14,7 +14,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "test": "npm run test:unit && npm run test:fixtures",
-    "test:unit": "tsx scripts/tests/pure-logic.test.ts && tsx scripts/tests/build-assets.test.ts && tsx scripts/tests/editor-mode-switch.test.ts && tsx scripts/tests/editor-history.test.ts && tsx scripts/tests/mode-edit.test.ts && tsx scripts/tests/math-clipboard.test.ts && tsx scripts/tests/workflow-stress.test.ts && tsx scripts/tests/workflow-deep.test.ts && tsx scripts/tests/logic-edge.test.ts && tsx scripts/tests/layout-regression.test.ts && tsx scripts/tests/render-interaction.test.ts",
+    "test:unit": "tsx scripts/tests/pure-logic.test.ts && tsx scripts/tests/build-assets.test.ts && tsx scripts/tests/editor-mode-switch.test.ts && tsx scripts/tests/editor-history.test.ts && tsx scripts/tests/mode-edit.test.ts && tsx scripts/tests/math-clipboard.test.ts && tsx scripts/tests/workflow-stress.test.ts && tsx scripts/tests/workflow-deep.test.ts && tsx scripts/tests/logic-edge.test.ts && tsx scripts/tests/layout-regression.test.ts && tsx scripts/tests/render-interaction.test.ts && tsx scripts/tests/mode-switch-violence.test.ts && tsx scripts/tests/feature-violence.test.ts",
     "test:fixtures": "tsx scripts/tests/markdown-fixtures.test.ts",
     "benchmark": "tsx scripts/benchmark/performance.ts",
     "build": "electron-vite build && electron-builder --config electron-builder.config.mjs",
@@ -23,7 +23,8 @@
     "build:win": "electron-vite build && electron-builder --win --config electron-builder.config.mjs --publish never",
     "build:dir": "electron-vite build && electron-builder --dir --config electron-builder.config.mjs --publish never",
     "preview": "electron-vite preview",
-    "install:linux": "npm run build:linux:dir && bash scripts/install-linux.sh"
+    "install:linux": "npm run build:linux:dir && bash scripts/install-linux.sh",
+    "test:e2e": "tsx scripts/tests/mode-switch-scroll.e2e.test.ts && tsx scripts/tests/caret-alignment.e2e.test.ts"
   },
   "dependencies": {
     "@aarkue/tiptap-math-extension": "^1.4.0",

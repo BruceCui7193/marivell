@@ -1,6 +1,7 @@
 const nodeHeightCache = new Map<string, number>();
 const NODE_HEIGHT_CACHE_LIMIT = 5000;
 const nodeHeightCacheInvalidationListeners = new Set<() => void>();
+const nodeHeightCacheSeededListeners = new Set<() => void>();
 
 export function getHeightCacheKey(
   nodeType: string,
@@ -38,6 +39,23 @@ export function setCachedNodeHeight(key: string, height: number): void {
   if (typeof oldestKey === 'string') {
     nodeHeightCache.delete(oldestKey);
   }
+}
+
+export function notifyNodeHeightCacheSeeded(): void {
+  for (const listener of nodeHeightCacheSeededListeners) {
+    try {
+      listener();
+    } catch {
+      // Seeded-height listeners are lifecycle hooks and must not break caching.
+    }
+  }
+}
+
+export function subscribeNodeHeightCacheSeeded(listener: () => void): () => void {
+  nodeHeightCacheSeededListeners.add(listener);
+  return () => {
+    nodeHeightCacheSeededListeners.delete(listener);
+  };
 }
 
 export function clearNodeHeightCache(): void {

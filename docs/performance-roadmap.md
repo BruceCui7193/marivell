@@ -576,9 +576,60 @@ ProseMirror 依赖 `coordsAtPos` / `posAtCoords`。为了避免 `content-visibil
 
 预期：大文件在完整可视化模式下首屏可用，滚动任意位置时目标节点已经 ready。
 
-### Phase 4：性能预算和回归门禁
+### Phase 4：真实高度 + 拖拽目标补水 + 零漂移
 
-1. 扩展现有 benchmark，加入性能预算文件。
+目标不再是“帧率数字好看”，而是满足两个使用约束：
+
+- 软约束：用户把滚动条拖到任意位置后，目标视口应尽快 ready；延迟越短越好。
+- 硬约束：无论 placeholder 补水、节点激活/降级、公式高度变化，都不能让用户视口跳走；`scrollTop` / 视口顶部锚点漂移必须为 0。
+
+明确禁止“静态 AST 高度预测”。字体、行高、margin collapse、宽度折行、DPR 会造成每节点 1-5px 偏差，2400+ 公式会累积成数千像素，直接违反硬约束。高度只能来自真实 DOM 测量。
+
+#### 4A：真实 DOM 高度测量与公式 HTML 全量后台就绪
+
+1. 新建隐藏测量层，不使用 Shadow DOM；必须复用 `.editor-surface` 的字体、CSS 变量、宽度、缩放和 KaTeX 样式。
+2. Worker 打开大文件后，在后台渲染全部唯一公式 HTML，并分块回传；主线程只负责缓存，不阻塞 render-ready。
+3. 测量采用批量写-读分离：
+   - 一个 rAF 内批量写入 50 个待测节点；
+   - 下一帧/微任务批量读取 `getBoundingClientRect().height`；
+   - 写入高度缓存并清空测量层，避免 Layout Thrashing。
+4. 图片高度来自预加载后的自然尺寸/宽高比；Mermaid 高度来自后台渲染 SVG 后的真实测量；HTML block、code block 也纳入同一真实测量路径。
+5. 高度缓存 key 继续包含 nodeType、内容 hash、宽度 bucket、theme、zoom、fontVersion；resize、zoom、theme、`document.fonts.ready` 后重测当前视口。
+6. 在测量完成前，NodeView 不能假装 placeholder 高度可靠；目标视口内的节点必须等测量完成或直接 active。
+
+#### 4B：拖拽目标补水、任务撤销与零漂移锚定
+
+1. 新建 LIFO 距离优先 hydration 队列：
+   - 任务权重按到当前视口中心的距离排序；
+   - 滚动目标变化后，P0 始终是当前目标视口 ±1 屏；
+   - 距离超过 2 屏的旧任务立即取消/evict，不再浪费 worker 和主线程。
+2. 双缓冲补水：
+   - 目标视口内的公式先在 `DocumentFragment` 中完成 KaTeX HTML 注入；
+   - 当前帧 paint 前同步替换 placeholder；
+   - 用户看到的第一个 Paint 帧必须是最终渲染，不允许“空白 → 公式”FOUC。
+3. 滚动条拖动期间：
+   - 显式关闭浏览器原生 `overflow-anchor`，避免与自定义补水逻辑冲突；
+   - 如仍有未测量高度窗口，可用 PM 模型外的顶部/底部 spacer 暂时锁定总 `scrollHeight`，松手后释放并校正；spacer 不能进入 PM 模型，不能污染坐标。
+4. 锚点校正：
+   - 任何激活/降级/高度变化前，先用 PM 位置记录当前视口顶部锚点；
+   - DOM 更新后在同一帧恢复锚点；
+   - 不做 smooth scroll 补偿，确保零漂移。
+5. 搜索、大纲、脚注跳转继续走两阶段：先强制激活目标区域，再按真实 `getBoundingClientRect()` 定位。
+
+#### 4C：按需处理剩余 DOM 热点
+
+如果 4A/4B 后仍无法满足拖拽帧率/零空白，瓶颈大概率在未虚拟化的 inline math、表格或普通文本 DOM。届时增加轻量行内渲染/视口化小阶段，不在 4A/4B 里强行塞入复杂改造。
+
+#### Phase 4 验收
+
+- `scroll-jump-bottom`：一次性拖到底部，停止后第一帧视口内复杂节点不能是 placeholder。
+- `scroll-jump-middle`：从底部拖回 50%，停止后第一帧目标视口 ready。
+- `scroll-drag-sequence`：Top → Bottom → Middle 连续拖拽，最终目标视口 ready，`scrollTop` 漂移为 0px。
+- 拖拽过程中主线程不出现 >50ms Long Task 是目标；若被 inline math 等剩余 DOM 卡住，转入 4C，不能降低“零空白/零漂移”硬约束。
+
+### Phase 5：性能预算和发布回归门禁
+
+1. 扩展现有 benchmark，加入性能预算文件与 Phase 4 新滚动场景。
 2. `npm test` 继续跑暴力渲染交互回归。
 3. 新增 trace/profile 测试：长任务、layout、paint、worker 时间。
 4. 大文件不通过预算就禁止 release。

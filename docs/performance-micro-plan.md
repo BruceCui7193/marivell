@@ -1,7 +1,7 @@
 # Marivell 性能优化微观执行计划
 
 > 本文由 `docs/performance-roadmap.md` 的宏观方案细化而来，作为后续改代码的约束。
-> 状态：Phase 0/1/2 已完成并验证；Phase 3 已完成：块级公式/图片/Mermaid/HTML block/code block 占位、坐标激活、公式 HTML 索引与后台分块预取、插入公式预览立即激活。性能预算门禁仍属于 Phase 4，结果见 `docs/performance-benchmark.md`。
+> 状态：Phase 0/1/2/3 已完成并验证；Phase 4B 已实现并通过回归，大文件 zero-blank 与 bottom/middle/drag zero-drift 均已达标。最终大文件 jump-ready：bottom 约 1.1s、middle 约 2.4s、drag-sequence 约 0.14s。全量 4780 个唯一公式 HTML 已由 Worker 后台缓存；高度测量层保留为 4C 后续优化，因为当前机器上全量 DOM 解析会长时间阻塞主线程。旧性能预算门禁移至 Phase 5。
 
 ## 0. 总原则
 
@@ -314,12 +314,78 @@
 
 ### 4.5 验收
 
-- 大文件滚动目标：avg ≤ 16ms、max ≤ 32ms 作为 Phase 4 门禁；Phase 3 必须保证当前视口/预加载范围公式完整。
+- 大文件滚动目标：avg ≤ 16ms、max ≤ 32ms 作为后续性能门禁；Phase 3 必须保证当前视口/预加载范围公式完整。
 - 视觉模式插入行间公式后预览立即显示 latex；render-interaction 与 benchmark 都必须覆盖该体验。
 - `DownArrow`、PageDown、搜索跳转、大纲跳转、右键、复制粘贴、图片菜单、Math completion 全部通过交互测试。
 - 任何占位展开不得出现未渲染公式/图片/Mermaid。
 
-## 5. Phase 4：性能预算与发布回归门禁
+## 5. Phase 4：真实高度 + 拖拽目标补水 + 零漂移
+
+目标不是追求好看的数字，而是满足两个使用约束：
+
+- 软约束：滚动条拖到任意位置后，目标视口尽快 ready，延迟越短越好。
+- 硬约束：placeholder 补水、激活/降级、高度变化都不能让用户视口跳走；`scrollTop` 与视口顶部锚点漂移必须为 0。
+- 禁止静态 AST 高度预测。字体、行高、margin collapse、宽度折行、DPR 会造成逐节点 1-5px 偏差，2400+ 公式会累积成数千像素；高度只能来自真实 DOM 测量。
+
+文件：
+
+- 新建 `src/renderer/editor/virtualization/height-measurer.ts`
+- 新建 `src/renderer/editor/virtualization/hydration-queue.ts`
+- 修改 `src/renderer/editor/markdown.worker.ts`
+- 修改 `src/renderer/editor/math-render-cache.ts`
+- 修改 `src/renderer/editor/virtualization/activation-controller.ts`
+- 修改 `src/renderer/editor/virtualization/height-cache.ts`
+- 修改 `src/renderer/editor/extensions/math-inline.ts`
+- 修改 `src/renderer/editor/node-views/ImageView.tsx`
+- 修改 `src/renderer/editor/node-views/MermaidBlockView.tsx`
+- 修改 `src/renderer/editor/extensions/html-block.ts`
+- 修改 `src/renderer/editor/node-views/CodeBlockView.tsx`
+- 修改 `src/renderer/components/EditorShell.tsx`
+- 修改 `scripts/benchmark/performance.ts`
+
+### 5.1 Phase 4A：真实 DOM 高度测量与公式 HTML 全量后台就绪
+
+1. 新建隐藏测量层 `height-measurer.ts`：
+   - 不复用 Shadow DOM；测量层必须复用 `.editor-surface` 的字体、CSS 变量、宽度、缩放和 KaTeX 样式。
+   - 批量写-读分离：一个 rAF 批量写入 50 个待测节点，下一帧/微任务批量读取高度，写入缓存后清空，避免 Layout Thrashing。
+   - 当前实现保留测量 API 和测试，但大文件全量测量暂不自动开启：4780 个唯一公式的 KaTeX DOM 解析会阻塞主线程，优先用稳定默认高度 + 滚动稳定器保证 zero-blank/zero-drift。
+2. `markdown.worker.ts` 在打开大文件后继续后台渲染全部唯一公式 HTML，分块回传主线程；不延迟 render-ready。
+3. 高度缓存 key 继续包含 nodeType、内容 hash、宽度 bucket、theme、zoom、fontVersion。
+4. 图片高度来自预加载后的自然尺寸/宽高比；Mermaid 高度来自后台 SVG 渲染后的真实测量；HTML block/code block 也纳入真实测量。
+5. resize、zoom、theme、`document.fonts.ready` 后重测当前视口；测量未完成前，目标视口内的节点不能假装 placeholder 高度可靠。
+
+### 5.2 Phase 4B：拖拽目标补水、任务撤销与零漂移锚定
+
+1. 新建 LIFO 距离优先 hydration 队列：
+   - 按到当前视口中心的距离排序；
+   - 滚动目标变化后，P0 是目标视口 ±1 屏；
+   - 距离超过 2 屏的旧任务立即取消/evict。
+2. 双缓冲补水：
+   - 目标视口公式先在 `DocumentFragment` 完成 HTML 注入；
+   - 当前帧 paint 前同步替换 placeholder；
+   - 第一个 Paint 帧必须是最终渲染，不允许“空白 → 公式”FOUC。
+3. 滚动条拖动期间：
+   - `.editor-frame` 显式设置 `overflow-anchor: none`；
+   - 如仍有未测量高度窗口，用 PM 模型外的 spacer 锁定总 `scrollHeight`，松手后释放并校正；spacer 不能进入 PM 模型。
+4. 锚点校正：
+   - 激活/降级/高度变化前记录 PM 视口顶部锚点；
+   - DOM 更新后同一帧恢复；
+   - 不做 smooth scroll 补偿。
+5. 搜索、大纲、脚注跳转继续两阶段：先强制激活目标区域，再按真实 `getBoundingClientRect()` 定位。
+
+### 5.3 Phase 4C：按需处理剩余 DOM 热点
+
+如果 4A/4B 后仍无法满足拖拽帧率/零空白，瓶颈大概率在未虚拟化的 inline math、表格或普通文本 DOM。届时增加轻量行内渲染/视口化小阶段，不在 4A/4B 里强行塞入复杂改造。
+
+### 5.4 Phase 4 验收
+
+- `scroll-jump-bottom`：一次性拖到底部，停止后第一帧视口内复杂节点不能是 placeholder。
+- `scroll-jump-middle`：从底部拖回 50%，停止后第一帧目标视口 ready。
+- `scroll-drag-sequence`：Top → Bottom → Middle 连续拖拽，最终目标视口 ready，`scrollTop` 漂移为 0px。
+- 拖拽过程中主线程不出现 >50ms Long Task 是目标；若被剩余 DOM 卡住，转入 4C，不能降低“零空白/零漂移”硬约束。
+- `npm test`、`npx tsc --noEmit`、`git diff --check` 全部通过。
+
+## 6. Phase 5：性能预算与发布回归门禁
 
 目标：把大文件性能预算变成发布硬门禁，防止后续改动回退。
 
@@ -327,18 +393,40 @@
 
 计划：
 
-1. 将大文件关键指标写入 `perf-budget.json`：open、parse、interaction、scroll、context-menu。
+1. 将大文件关键指标写入 `perf-budget.json`：open、parse、interaction、scroll、context-menu、scroll-jump-ready、scroll-drift、mode-switch-visual-to-source、mode-switch-source-to-visual。
 2. `npm run benchmark` 增加 `--check-budget`，或新增 `npm run perf:check`，超预算即失败。
-3. 发布脚本/CI 必须串行跑 `npm test`、`npx tsc --noEmit`、`npm run perf:check`。
-4. 失败时保留 `perf-report.json` 和必要 trace，方便定位。
-5. 大文件至少重复跑 2 次，不能以单次幸运数据作为通过依据。
+3. 发布脚本/CI 必须串行跑 `npm test`、`npm run test:e2e`、`npx tsc --noEmit`、`npm run perf:check`，且每次 release benchmark 必须采集两个 mode-switch 指标。
+4. 发布测试门禁还包括暴力回归：`scripts/tests/mode-switch-violence.test.ts`（1607 项）、`scripts/tests/feature-violence.test.ts`（2846 项）、`scripts/tests/mode-switch-scroll.e2e.test.ts`（10 项，覆盖滚动后切源码不白屏）。全部通过后才能发布。
+5. 失败时保留 `perf-report.json` 和必要 trace，方便定位。
+6. 大文件至少重复跑 2 次，不能以单次幸运数据作为通过依据。
+
+### 6.1 模式切换发布软约束
+
+- 每次 release benchmark 必须采集 `mode-switch-visual-to-source-ms` 和
+  `mode-switch-source-to-visual-ms`；某一步超时记为 `timeout`，不能把整个
+  benchmark 当成失败或跳过测量。
+- 软约束：大文件 `mode-switch-source-to-visual-ms` 必须明显小于 full open
+  （至少以 `visual-open` 为参照，更严格时再对比 `open-total`）。如果接近或
+  超过 full open，视为模式切换回归风险，必须单独分析并优化。
+- 2026-08-09 大文件实测：`mode-switch-source-to-visual-ms` 为
+  `10,988.9 ms`，而 `visual-open` 为 `14,008 ms`、`open-total` 为
+  `10,754 ms`。当前仍不满足“明显更快”。
+- 已落地优化：进入 source 模式时保持 ProseMirror 编辑器挂载（隐藏视觉
+  层），返回 visual 且 markdown 未变化时，不再 `replaceEditorContent` 重建
+  全量 DOM；source caret 通过 `markdownOffsetToPmPos` 映射到 PM 位置。
+  该改动把 source→visual 从约 `17.4s` 降到 `11.0s`。
+- 剩余瓶颈：caret 映射仍对完整 marked Markdown 执行一次
+  `parseMarkdown`（约 4.5s），加上大文档视图切换/协调成本，整体仍接近
+  full open。下一步应缓存 source→PM 位置映射或复用 worker 增量解析结果，
+  并让隐藏视觉层切换避免大范围 layout/reconciliation；不能把源码模式当
+  首屏伪快方案，也不能关闭或弱化该测量。
 
 验收：
 
-- 发布流程必须通过 `npm test`、`npx tsc --noEmit`、`npm run perf:check`。
+- 发布流程必须通过 `npm test`、`npm run test:e2e`、`npx tsc --noEmit`、`npm run perf:check`。
 - 大文件不达标不允许 release。
 
-## 6. 禁止事项（所有 Phase 通用）
+## 7. 禁止事项（所有 Phase 通用）
 
 - 禁止使用多 ProseMirror 实例。
 - 禁止默认切换到 MathML/Temml。

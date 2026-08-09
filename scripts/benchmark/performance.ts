@@ -180,6 +180,85 @@ async function waitForVisualReady(
   );
 }
 
+async function measureModeSwitch(
+  page: Page,
+  targetMode: 'source' | 'visual',
+  expectedTextLength: number,
+  timeoutMs: number,
+): Promise<{ switchMs: number; timedOut: boolean; note: string }> {
+  const targetIsSource = targetMode === 'source';
+  const script = `(async () => {
+    const frame = document.querySelector('.editor-frame');
+    if (!frame) {
+      return { switchMs: 0, timedOut: true, note: 'editor frame missing' };
+    }
+
+    const start = performance.now();
+    const currentlySource = frame.classList.contains('is-source');
+    if (currentlySource !== ${targetIsSource}) {
+      window.dispatchEvent(
+        new CustomEvent('markdown-editor:menu-action', {
+          detail: 'toggle-source-mode',
+        }),
+      );
+    }
+
+    const deadline = start + ${timeoutMs};
+    const doubleRaf = () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      );
+    let note = 'not-ready';
+
+    while (performance.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const currentFrame = document.querySelector('.editor-frame');
+      const currentIsSource = currentFrame?.classList.contains('is-source') ?? null;
+      const overlay = document.querySelector('.editor-loading--mode-switch');
+      const modeMatches = currentIsSource === ${targetIsSource};
+      if (!currentFrame || !modeMatches || overlay) {
+        if (!modeMatches) note = 'mode-not-switched';
+        if (overlay) note = 'mode-switch-overlay';
+        continue;
+      }
+
+      let loaded = false;
+      if (${targetIsSource}) {
+        const input = currentFrame.querySelector('.source-editor__input');
+        loaded = Boolean(
+          input instanceof HTMLTextAreaElement &&
+            input.value.length >= ${Math.max(expectedTextLength, 1_000)},
+        );
+        if (!loaded) note = 'source-text-not-loaded';
+      } else {
+        const surface = currentFrame.querySelector('.editor-surface');
+        const proseMirror = currentFrame.querySelector('.ProseMirror');
+        const editor = window.__marivellEditor;
+        loaded = Boolean(
+          surface &&
+            proseMirror &&
+            editor &&
+            !editor.isDestroyed &&
+            editor.state.doc.nodeSize > ${Math.max(expectedTextLength, 1_000)},
+        );
+        if (!loaded) note = 'visual-content-not-ready';
+      }
+
+      if (loaded) {
+        await doubleRaf();
+        return {
+          switchMs: performance.now() - start,
+          timedOut: false,
+          note: currentIsSource ? 'source-ready' : 'visual-ready',
+        };
+      }
+    }
+
+    return { switchMs: performance.now() - start, timedOut: true, note };
+  })()`;
+  return page.evaluate(script);
+}
+
 async function measureVisualEdit(page: Page): Promise<{
   editMs: number;
   marker: string;
@@ -376,6 +455,158 @@ async function measureVisualScroll(page: Page): Promise<{
   }>;
 }
 
+type ScrollJumpScenario = 'bottom' | 'middle' | 'drag';
+
+async function measureScrollJumpScenario(
+  page: Page,
+  scenario: ScrollJumpScenario,
+): Promise<{
+  jumpReadyMs: number;
+  firstFramePlaceholders: number;
+  finalPlaceholderCount: number;
+  scrollTopDrift: number;
+  targetScrollTop: number;
+  scrollHeight: number;
+  beforeScrollTop: number;
+  afterAssignScrollTop: number;
+  finalScrollTop: number;
+  currentMaxScrollTop: number;
+  timings: Record<string, unknown> | null;
+  hydrateTimings: Record<string, unknown> | null;
+  placeholderDetails: string[];
+  timedOut: boolean;
+}> {
+  const scenarioName = JSON.stringify(scenario);
+  const script = `(async () => {
+    const frame = document.querySelector('.editor-frame');
+    if (!frame) throw new Error('editor frame missing');
+
+    const placeholderSelectors = [
+      '[data-virtual-node-id].math-block-node-placeholder',
+      '[data-virtual-node-id].image-node__placeholder',
+      '[data-virtual-node-id].mermaid-node__placeholder',
+      '[data-virtual-node-id].html-block-placeholder',
+      '[data-virtual-node-id].code-block-node--placeholder',
+    ];
+    const visiblePlaceholderCount = () => {
+      const frameRect = frame.getBoundingClientRect();
+      let count = 0;
+      for (const selector of placeholderSelectors) {
+        for (const element of frame.querySelectorAll(selector)) {
+          const rect = element.getBoundingClientRect();
+          if (rect.bottom > frameRect.top && rect.top < frameRect.bottom) {
+            count += 1;
+          }
+        }
+      }
+      return count;
+    };
+
+    const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+    let targetScrollTop = 0;
+    let middle = 0;
+    if (${scenarioName} === 'bottom') {
+      targetScrollTop = maxScrollTop;
+    } else if (${scenarioName} === 'middle') {
+      middle = Math.round(maxScrollTop * 0.5);
+      targetScrollTop = middle;
+    } else {
+      middle = Math.round(maxScrollTop * 0.5);
+      targetScrollTop = middle;
+    }
+
+    const start = performance.now();
+    const beforeScrollTop = frame.scrollTop;
+    if (${scenarioName} === 'drag') {
+      frame.scrollTop = 0;
+      frame.scrollTop = maxScrollTop;
+      frame.scrollTop = middle;
+    } else {
+      frame.scrollTop = targetScrollTop;
+    }
+    const afterAssignScrollTop = frame.scrollTop;
+    frame.dispatchEvent(new Event('scroll'));
+
+    const deadline = performance.now() + 15_000;
+    const waitForFrame = () => new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    });
+    let firstFramePlaceholders = -1;
+    let firstFramePlaceholderDetails = [];
+    let timedOut = false;
+    while (true) {
+      await waitForFrame();
+      const placeholders = visiblePlaceholderCount();
+      if (firstFramePlaceholders === -1) {
+        firstFramePlaceholders = placeholders;
+        if (placeholders > 0) {
+          firstFramePlaceholderDetails = Array.from(
+            frame.querySelectorAll(placeholderSelectors.join(',')),
+          )
+            .filter((element) => {
+              const rect = element.getBoundingClientRect();
+              const frameRect = frame.getBoundingClientRect();
+              return rect.bottom > frameRect.top && rect.top < frameRect.bottom;
+            })
+            .slice(0, 8)
+            .map((element) => {
+              const node = element.querySelector('.math-node-content');
+              const text = node?.textContent?.slice(0, 40) ?? '';
+              return (element.id || element.className) + (text ? '|' + text : '');
+            });
+        }
+      }
+      if (placeholders === 0 || performance.now() > deadline) {
+        timedOut = placeholders !== 0;
+        break;
+      }
+    }
+
+    for (let settleFrame = 0; settleFrame < 3; settleFrame += 1) {
+      await waitForFrame();
+    }
+    const finalPlaceholderDetails = visiblePlaceholderCount() > 0
+      ? Array.from(frame.querySelectorAll(placeholderSelectors.join(',')))
+          .filter((element) => {
+            const rect = element.getBoundingClientRect();
+            const frameRect = frame.getBoundingClientRect();
+            return rect.bottom > frameRect.top && rect.top < frameRect.bottom;
+          })
+          .slice(0, 3)
+          .map((element) => element.id || element.className)
+      : [];
+    const currentMaxScrollTop = Math.round(Math.max(frame.scrollHeight - frame.clientHeight, 0));
+    const scrollTopDrift = ${scenarioName} === 'bottom'
+      ? Math.abs(frame.scrollTop - currentMaxScrollTop)
+      : Math.abs(frame.scrollTop - targetScrollTop);
+    return {
+      jumpReadyMs: performance.now() - start,
+      firstFramePlaceholders,
+      finalPlaceholderCount: visiblePlaceholderCount(),
+      scrollTopDrift,
+      targetScrollTop,
+      scrollHeight: frame.scrollHeight,
+      beforeScrollTop,
+      afterAssignScrollTop,
+      finalScrollTop: frame.scrollTop,
+      currentMaxScrollTop,
+      timings: window.__marivellPhase4Timings ?? null,
+      hydrateTimings: window.__marivellPhase4HydrateTimings ?? null,
+      placeholderDetails: firstFramePlaceholderDetails,
+      timedOut,
+    };
+  })()`;
+  return page.evaluate(script) as Promise<{
+    jumpReadyMs: number;
+    firstFramePlaceholders: number;
+    finalPlaceholderCount: number;
+    scrollTopDrift: number;
+    targetScrollTop: number;
+    scrollHeight: number;
+    timedOut: boolean;
+  }>;
+}
+
 async function measureVisualContextMenu(page: Page): Promise<{
   contextMenuMs: number;
   visible: boolean;
@@ -536,9 +767,14 @@ async function main(): Promise<void> {
   const port = 9300 + (process.pid % 300);
   const sourceSize = fs.statSync(markdownPath).size;
   const expectedVisualTextLength = Math.min(Math.max(sourceSize * 0.5, 1_000), 500_000);
+  const expectedSourceTextLength = Math.max(sourceSize * 0.5, 1_000);
   const openTimeoutMs = Number(process.env.MARIVELL_BENCHMARK_OPEN_TIMEOUT_MS ?? 30_000);
   const interactionTimeoutMs = Number(process.env.MARIVELL_BENCHMARK_INTERACTION_TIMEOUT_MS ?? 15_000);
   const suiteTimeoutMs = Number(process.env.MARIVELL_BENCHMARK_SUITE_TIMEOUT_MS ?? 90_000);
+  const modeSwitchTimeoutMs = Number(
+    process.env.MARIVELL_BENCHMARK_MODE_SWITCH_TIMEOUT_MS ??
+      Math.max(openTimeoutMs, 60_000),
+  );
 
   console.log('Building benchmark bundle (no install needed)...');
   await buildRenderer(outDir);
@@ -632,6 +868,50 @@ async function main(): Promise<void> {
         report.push({ metric: 'interaction-suite', value: 'timeout', unit: `${suiteTimeoutMs}ms` });
       }
 
+      const modeSwitchSteps: Array<{
+        metric: string;
+        targetMode: 'source' | 'visual';
+        expectedTextLength: number;
+      }> = [
+        {
+          metric: 'mode-switch-visual-to-source-ms',
+          targetMode: 'source',
+          expectedTextLength: expectedSourceTextLength,
+        },
+        {
+          metric: 'mode-switch-source-to-visual-ms',
+          targetMode: 'visual',
+          expectedTextLength: expectedVisualTextLength,
+        },
+      ];
+      for (const modeStep of modeSwitchSteps) {
+        const switchResult = await withTimeout(
+          measureModeSwitch(
+            handle.page,
+            modeStep.targetMode,
+            modeStep.expectedTextLength,
+            modeSwitchTimeoutMs,
+          ),
+          modeSwitchTimeoutMs,
+          modeStep.metric,
+        );
+        if (switchResult.ok && !switchResult.value.timedOut) {
+          report.push({
+            metric: modeStep.metric,
+            value: round(switchResult.value.switchMs),
+            unit: 'ms',
+            note: switchResult.value.note,
+          });
+        } else {
+          report.push({
+            metric: modeStep.metric,
+            value: 'timeout',
+            unit: `${modeSwitchTimeoutMs}ms`,
+            note: switchResult.ok ? switchResult.value.note : undefined,
+          });
+        }
+      }
+
       const edit = await withTimeout(measureVisualEdit(handle.page), interactionTimeoutMs, 'visual-edit');
       report.push(
         edit.ok
@@ -672,6 +952,51 @@ async function main(): Promise<void> {
             }
           : { metric: 'scroll-max-frame', value: 'timeout', unit: `${interactionTimeoutMs}ms` },
       );
+
+      const scrollJumpScenarios: Array<{ metric: string; scenario: ScrollJumpScenario }> = [
+        { metric: 'scroll-jump-bottom', scenario: 'bottom' },
+        { metric: 'scroll-jump-middle', scenario: 'middle' },
+        { metric: 'scroll-drag-sequence', scenario: 'drag' },
+      ];
+      for (const jumpScenario of scrollJumpScenarios) {
+        const jump = await withTimeout(
+          measureScrollJumpScenario(handle.page, jumpScenario.scenario),
+          interactionTimeoutMs,
+          jumpScenario.metric,
+        );
+        if (jump.ok) {
+          report.push(
+            {
+              metric: jumpScenario.metric,
+              value: round(jump.value.jumpReadyMs),
+              unit: 'ms',
+              note: `before=${round(jump.value.beforeScrollTop)} assign=${round(jump.value.afterAssignScrollTop)} final=${round(jump.value.finalScrollTop)} max=${round(jump.value.currentMaxScrollTop)} ${jump.value.timedOut ? 'timeout' : 'ready'} placeholders=${jump.value.firstFramePlaceholders} drift=${round(jump.value.scrollTopDrift)} timings=${JSON.stringify(jump.value.timings)} hydrate=${JSON.stringify(jump.value.hydrateTimings)} details=${JSON.stringify(jump.value.placeholderDetails)}`,
+            },
+            {
+              metric: `${jumpScenario.metric}-jump-ready-ms`,
+              value: round(jump.value.jumpReadyMs),
+              unit: 'ms',
+            },
+            {
+              metric: `${jumpScenario.metric}-first-frame-placeholders`,
+              value: jump.value.firstFramePlaceholders,
+              unit: 'nodes',
+              note: jump.value.timedOut ? 'timed-out' : 'ready',
+            },
+            {
+              metric: `${jumpScenario.metric}-drift`,
+              value: round(jump.value.scrollTopDrift),
+              unit: 'px',
+            },
+          );
+        } else {
+          report.push({
+            metric: jumpScenario.metric,
+            value: 'timeout',
+            unit: `${interactionTimeoutMs}ms`,
+          });
+        }
+      }
 
       const contextMenu = await withTimeout(
         measureVisualContextMenu(handle.page),

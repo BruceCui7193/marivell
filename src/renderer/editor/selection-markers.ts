@@ -14,6 +14,17 @@ const sourceParser = unified()
 
 type SourceNode = Record<string, any>;
 
+// A marker before an HTML block tag changes how remark classifies the line.
+// Keep HTML markers inside the raw block, just after its opening tag.
+const HTML_OPENING_TAG_RE = /^<[^>]*>/i;
+
+function htmlMarkerStart(value: string): number {
+  const firstLineEnd = value.search(/[\r\n]/);
+  const firstLine = firstLineEnd === -1 ? value : value.slice(0, firstLineEnd);
+  const match = firstLine.match(HTML_OPENING_TAG_RE);
+  return match ? match[0].length : 0;
+}
+
 function findNearestTextOffset(markdown: string, requested: number): number {
   let best = requested;
   let bestDistance = Number.POSITIVE_INFINITY;
@@ -34,7 +45,10 @@ function findNearestTextOffset(markdown: string, requested: number): number {
           end = valueIndex + node.value.length;
         }
       }
-      if (end > start) {
+      if (node.type === 'html') {
+        start += htmlMarkerStart(node.value);
+      }
+      if (end > start || (node.type === 'html' && end >= start)) {
         const clamped = Math.min(end, Math.max(start, requested));
         const distance = Math.abs(clamped - requested);
         if (distance < bestDistance || (distance === bestDistance && clamped < best)) {
@@ -63,12 +77,93 @@ export interface SourceSearchMatch {
   end: number;
 }
 
-function removeSelectionMarkers(value: string): string {
-  return value
+const RAW_WHITESPACE_ATTRS = new Set(['code', 'html']);
+
+function removeSelectionMarkers(value: string, preserveWhitespace = false): string {
+  const cleaned = value
     .replaceAll(SELECTION_START_MARKER, '')
-    .replaceAll(SELECTION_END_MARKER, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
+    .replaceAll(SELECTION_END_MARKER, '');
+  if (preserveWhitespace) {
+    return cleaned;
+  }
+  if (
+    !value.includes(SELECTION_START_MARKER) &&
+    !value.includes(SELECTION_END_MARKER)
+  ) {
+    return cleaned;
+  }
+
+  let placeholder = '\uE000';
+  while (value.includes(placeholder)) {
+    placeholder = String.fromCharCode(placeholder.charCodeAt(0) + 1);
+  }
+
+  const withPlaceholders = value
+    .split(SELECTION_START_MARKER)
+    .join(placeholder)
+    .split(SELECTION_END_MARKER)
+    .join(placeholder);
+  const touchedWhitespace = new Array<boolean>(withPlaceholders.length).fill(false);
+
+  for (let index = 0; index < withPlaceholders.length; index += 1) {
+    if (withPlaceholders[index] !== placeholder) {
+      continue;
+    }
+
+    let before = index - 1;
+    while (before >= 0 && /\s/.test(withPlaceholders[before])) {
+      touchedWhitespace[before] = true;
+      before -= 1;
+    }
+
+    let after = index + 1;
+    while (after < withPlaceholders.length && /\s/.test(withPlaceholders[after])) {
+      touchedWhitespace[after] = true;
+      after += 1;
+    }
+  }
+
+  let result = '';
+  const resultTouched: boolean[] = [];
+  for (let index = 0; index < withPlaceholders.length; index += 1) {
+    const char = withPlaceholders[index];
+    if (char === placeholder) {
+      continue;
+    }
+    result += char;
+    resultTouched.push(/\s/.test(char) && touchedWhitespace[index]);
+  }
+
+  let normalized = '';
+  let cursor = 0;
+  while (cursor < result.length) {
+    const char = result[cursor];
+    if (!/\s/.test(char)) {
+      normalized += char;
+      cursor += 1;
+      continue;
+    }
+
+    const runStart = cursor;
+    while (cursor < result.length && /\s/.test(result[cursor])) {
+      cursor += 1;
+    }
+
+    const touched = resultTouched.slice(runStart, cursor).some(Boolean);
+    const run = result.slice(runStart, cursor);
+    if (!touched || /[\r\n]/.test(run)) {
+      normalized += run;
+      continue;
+    }
+
+    const hasContentBefore = runStart > 0 && !/\s/.test(result[runStart - 1]);
+    const hasContentAfter = cursor < result.length && !/\s/.test(result[cursor]);
+    if (hasContentBefore && hasContentAfter) {
+      normalized += ' ';
+    }
+  }
+
+  return normalized;
 }
 
 function cleanAttrs(
@@ -82,7 +177,7 @@ function cleanAttrs(
   for (const key of Object.keys(cleaned)) {
     const value = cleaned[key];
     if (typeof value === 'string') {
-      cleaned[key] = removeSelectionMarkers(value);
+      cleaned[key] = removeSelectionMarkers(value, RAW_WHITESPACE_ATTRS.has(key));
     }
   }
   return cleaned;
@@ -95,7 +190,7 @@ export function cleanSelectionMarkersFromJsonContent(content: JSONContent): JSON
 
   const next: JSONContent = { ...content };
   if (typeof next.text === 'string') {
-    next.text = removeSelectionMarkers(next.text);
+    next.text = removeSelectionMarkers(next.text, true);
   }
   next.attrs = cleanAttrs(next.attrs);
   if (Array.isArray(next.marks)) {
@@ -131,8 +226,17 @@ export function insertSelectionMarkersIntoMarkdown(
   );
 
   // Caret/range at document end after a block whose closing syntax has no text
-  // node (for example a code fence) still needs a separate paragraph line so
-  // the marker cannot be swallowed by the previous block.
+  // node (for example a code fence or an image) still needs a separate
+  // paragraph line so the marker cannot be swallowed by the previous block.
+  if (
+    clampedStart === clampedEnd &&
+    clampedStart === markdown.length &&
+    (markdown.endsWith('\r\n') || markdown.endsWith('\n')) &&
+    /!\[[^\]]*\]\([^)\n]*\)[ \t]*$/.test(markdown.trimEnd())
+  ) {
+    return `${markdown}\n${SELECTION_START_MARKER}${SELECTION_END_MARKER}`;
+  }
+
   if (
     selectionEnd === markdown.length &&
     (markdown.endsWith('\r\n') || markdown.endsWith('\n'))
@@ -162,7 +266,8 @@ export function extractSelectionMarkersFromMarkdown(markdown: string): {
         ? 0
         : startIndex
       : endIndex - (startIndex !== -1 && startIndex < endIndex ? SELECTION_START_MARKER.length : 0);
-  const cleanMarkdown = withoutStart.replace(SELECTION_END_MARKER, '');
+  const rawCleanMarkdown = withoutStart.replace(SELECTION_END_MARKER, '');
+  const cleanMarkdown = rawCleanMarkdown.trim() === '' ? '' : rawCleanMarkdown;
   const selectionStart = startIndex === -1 ? Math.min(normalizedEndIndex, cleanMarkdown.length) : startIndex;
   const selectionEnd = Math.max(selectionStart, Math.min(normalizedEndIndex, cleanMarkdown.length));
 
@@ -232,23 +337,123 @@ function cleanNode(
   };
 }
 
+interface BlockSelectionInfo {
+  start: number | null;
+  end: number | null;
+  math: { pos: number; start: number; end: number } | null;
+}
+
+const EMPTY_BLOCK_SELECTION_INFO: BlockSelectionInfo = {
+  start: null,
+  end: null,
+  math: null,
+};
+
+function markerCharCount(text: string): number {
+  let count = 0;
+  let cursor = 0;
+  while (cursor < text.length) {
+    const startIndex = text.indexOf(SELECTION_START_MARKER, cursor);
+    const endIndex = text.indexOf(SELECTION_END_MARKER, cursor);
+    if (startIndex === -1 && endIndex === -1) {
+      break;
+    }
+    if (startIndex !== -1 && (endIndex === -1 || startIndex < endIndex)) {
+      count += SELECTION_START_MARKER.length;
+      cursor = startIndex + SELECTION_START_MARKER.length;
+    } else {
+      count += SELECTION_END_MARKER.length;
+      cursor = endIndex + SELECTION_END_MARKER.length;
+    }
+  }
+  return count;
+}
+
+function cleanMarkerIndex(text: string, markerIndex: number): number {
+  let removed = 0;
+  let cursor = 0;
+  while (cursor < text.length) {
+    const startIndex = text.indexOf(SELECTION_START_MARKER, cursor);
+    const endIndex = text.indexOf(SELECTION_END_MARKER, cursor);
+    if (startIndex === -1 && endIndex === -1) {
+      break;
+    }
+
+    const useStart = startIndex !== -1 && (endIndex === -1 || startIndex < endIndex);
+    const nextIndex = useStart ? startIndex : endIndex;
+    if (nextIndex >= markerIndex) {
+      break;
+    }
+    removed += useStart ? SELECTION_START_MARKER.length : SELECTION_END_MARKER.length;
+    cursor = nextIndex + (useStart ? SELECTION_START_MARKER.length : SELECTION_END_MARKER.length);
+  }
+  return markerIndex - removed;
+}
+
+function collectBlockSelectionInfo(block: ProseMirrorNode): BlockSelectionInfo {
+  const info: BlockSelectionInfo = { ...EMPTY_BLOCK_SELECTION_INFO };
+  let removedBeforeText = 0;
+
+  block.descendants((node, pos) => {
+    if (!node.isText) {
+      return true;
+    }
+
+    const text = node.text ?? '';
+    const startIndex = text.indexOf(SELECTION_START_MARKER);
+    const endIndex = text.indexOf(SELECTION_END_MARKER);
+    if (startIndex === -1 && endIndex === -1) {
+      return true;
+    }
+
+    if (startIndex !== -1) {
+      const cleanStart = pos - removedBeforeText + cleanMarkerIndex(text, startIndex);
+      info.start = info.start === null ? cleanStart : Math.min(info.start, cleanStart);
+    }
+    if (endIndex !== -1) {
+      const cleanEnd = pos - removedBeforeText + cleanMarkerIndex(text, endIndex);
+      info.end = info.end === null ? cleanEnd : Math.max(info.end, cleanEnd);
+    }
+
+    const $pos = block.resolve(pos);
+    for (let depth = $pos.depth; depth > 0; depth -= 1) {
+      if ($pos.node(depth).type.name === 'inlineMath') {
+        info.math = {
+          pos: $pos.before(depth) - removedBeforeText,
+          start: cleanMarkerIndex(text, startIndex),
+          end: cleanMarkerIndex(text, endIndex),
+        };
+        break;
+      }
+    }
+
+    removedBeforeText += markerCharCount(text);
+    return true;
+  });
+
+  return info;
+}
+
 export function restoreSelectionMarkersFromEditorState(
   state: EditorState,
   view: EditorView,
 ): boolean {
   const schema = state.schema;
   const sourceState = view.state;
-  const blockEntries: Array<{ from: number; to: number; node: ProseMirrorNode | null }> = [];
-
-  let startPos: number | null = null;
-  let endPos: number | null = null;
-  let mathSelection: { pos: number; start: number; end: number } | null = null;
+  const blockEntries: Array<{
+    from: number;
+    to: number;
+    node: ProseMirrorNode | null;
+    selection: BlockSelectionInfo;
+    originalIndex: number;
+  }> = [];
 
   const topLevel: ProseMirrorNode[] = [];
   sourceState.doc.content.forEach((child) => topLevel.push(child));
 
   let blockFrom = 0;
-  for (const block of topLevel) {
+  for (let blockIndex = 0; blockIndex < topLevel.length; blockIndex += 1) {
+    const block = topLevel[blockIndex]!;
     const blockStart = blockFrom;
     const blockEnd = blockStart + block.nodeSize;
     blockFrom = blockEnd;
@@ -264,44 +469,16 @@ export function restoreSelectionMarkersFromEditorState(
     } else {
       replacement = cleaned.node;
     }
-    blockEntries.push({ from: blockStart, to: blockEnd, node: replacement });
+    blockEntries.push({
+      from: blockStart,
+      to: blockEnd,
+      node: replacement,
+      selection: collectBlockSelectionInfo(block),
+      originalIndex: blockIndex,
+    });
   }
 
-  sourceState.doc.descendants((node, pos) => {
-    if (!node.isText || !node.text || !node.text.includes('MDEDITORSELECTION')) {
-      return true;
-    }
-    const text = node.text;
-    const startIndex = text.indexOf(SELECTION_START_MARKER);
-    const endIndex = text.indexOf(SELECTION_END_MARKER);
-    if (startIndex !== -1) {
-      startPos = pos + startIndex;
-    }
-    if (endIndex !== -1) {
-      startPos = startPos ?? pos + endIndex;
-      endPos = pos + endIndex;
-    }
-
-    const $pos = sourceState.doc.resolve(pos);
-    for (let depth = $pos.depth; depth > 0; depth -= 1) {
-      if ($pos.node(depth).type.name === 'inlineMath') {
-        const inner = $pos.node(depth).textContent;
-        const s = inner.indexOf(SELECTION_START_MARKER);
-        const e = inner.indexOf(SELECTION_END_MARKER);
-        if (s !== -1 || e !== -1) {
-          mathSelection = {
-            pos: $pos.before(depth),
-            start: s === -1 ? 0 : s,
-            end: e === -1 ? inner.length : e,
-          };
-        }
-        break;
-      }
-    }
-    return true;
-  });
-
-  if (blockEntries.length === 0 && startPos === null && endPos === null && mathSelection === null) {
+  if (blockEntries.length === 0) {
     return false;
   }
 
@@ -317,13 +494,62 @@ export function restoreSelectionMarkersFromEditorState(
     }
   }
 
+  const entryByOriginalIndex = new Map(
+    blockEntries.map((entry) => [entry.originalIndex, entry]),
+  );
+  let finalBlockStart = 0;
+  let startPos: number | null = null;
+  let endPos: number | null = null;
+  let mathSelection: { pos: number; start: number; end: number } | null = null;
+  for (let blockIndex = 0; blockIndex < topLevel.length; blockIndex += 1) {
+    const entry = entryByOriginalIndex.get(blockIndex);
+    if (!entry) {
+      finalBlockStart += topLevel[blockIndex]!.nodeSize;
+      continue;
+    }
+    if (!entry.node) {
+      if (entry.selection.start !== null || entry.selection.end !== null) {
+        const candidate = finalBlockStart;
+        startPos = startPos === null ? candidate : Math.min(startPos, candidate);
+        endPos = endPos === null ? candidate : Math.max(endPos, candidate);
+      }
+      continue;
+    }
+    if (entry.selection.start !== null) {
+      const candidate = finalBlockStart + entry.selection.start + 1;
+      startPos = startPos === null ? candidate : Math.min(startPos, candidate);
+    }
+    if (entry.selection.end !== null) {
+      const candidate = finalBlockStart + entry.selection.end + 1;
+      endPos = endPos === null ? candidate : Math.max(endPos, candidate);
+    }
+    if (entry.selection.math) {
+      mathSelection = {
+        pos: finalBlockStart + entry.selection.math.pos + 1,
+        start: entry.selection.math.start,
+        end: entry.selection.math.end,
+      };
+    }
+    finalBlockStart += entry.node.nodeSize;
+  }
+
   if (mathSelection) {
-    const mathSelectionInfo = mathSelection as { pos: number; start: number; end: number };
-    const mathPos = tr.mapping.map(mathSelectionInfo.pos);
+    const mathSelectionInfo = mathSelection;
+    const mathPos = mathSelectionInfo.pos;
+    const mathNode = tr.doc.nodeAt(mathPos);
+    const mathTextLength = mathNode?.textContent.length ?? 0;
+    const mathStart = Math.max(0, Math.min(mathSelectionInfo.start, mathTextLength));
+    const mathEnd = Math.max(mathStart, Math.min(mathSelectionInfo.end, mathTextLength));
     try {
-      tr = tr.setSelection(NodeSelection.create(tr.doc, mathPos));
+      tr = tr.setSelection(
+        TextSelection.create(tr.doc, mathPos + 1 + mathStart, mathPos + 1 + mathEnd),
+      );
     } catch {
-      tr = tr.setSelection(TextSelection.near(tr.doc.resolve(mathPos)));
+      try {
+        tr = tr.setSelection(NodeSelection.create(tr.doc, mathPos));
+      } catch {
+        tr = tr.setSelection(TextSelection.near(tr.doc.resolve(mathPos)));
+      }
     }
     view.dispatch(tr);
     view.focus();
@@ -341,24 +567,20 @@ export function restoreSelectionMarkersFromEditorState(
 
   if (startPos !== null || endPos !== null) {
     try {
-      const mappedStart = startPos === null ? null : tr.mapping.map(startPos);
-      const mappedEnd = endPos === null ? null : tr.mapping.map(endPos);
       const safeStart = Math.max(
         1,
-        Math.min(mappedStart ?? mappedEnd ?? 1, tr.doc.content.size),
+        Math.min(startPos ?? endPos ?? 1, tr.doc.content.size),
       );
       const safeEnd = Math.max(
         safeStart,
-        Math.min(mappedEnd ?? mappedStart ?? 1, tr.doc.content.size),
+        Math.min(endPos ?? startPos ?? 1, tr.doc.content.size),
       );
-      tr = tr.setSelection(TextSelection.create(tr.doc, safeStart, safeEnd));
+      tr = tr.setSelection(TextSelection.between(tr.doc.resolve(safeStart), tr.doc.resolve(safeEnd)));
     } catch {
       try {
-        const mappedStart = startPos === null ? null : tr.mapping.map(startPos);
-        const mappedEnd = endPos === null ? null : tr.mapping.map(endPos);
         tr = tr.setSelection(
           TextSelection.near(
-            tr.doc.resolve(Math.min(mappedEnd ?? mappedStart ?? 1, tr.doc.content.size)),
+            tr.doc.resolve(Math.min(endPos ?? startPos ?? 1, tr.doc.content.size)),
           ),
         );
       } catch {

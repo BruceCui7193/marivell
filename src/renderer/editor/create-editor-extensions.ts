@@ -105,7 +105,19 @@ export function createEditorExtensions({
       },
     }),
     Underline,
-    Link.configure({
+    Link.extend({
+      addAttributes() {
+        return {
+          ...this.parent?.(),
+          title: {
+            default: null,
+            parseHTML: (element) => element.getAttribute('title'),
+            renderHTML: (attributes) =>
+              attributes.title ? { title: attributes.title } : {},
+          },
+        };
+      },
+    }).configure({
       autolink: true,
       linkOnPaste: true,
       openOnClick: false,
@@ -151,7 +163,7 @@ export function createEditorExtensions({
       },
     }),
     EditableImage.configure({
-      inline: false,
+      inline: true,
       allowBase64: true,
       resolveImageSource: onResolveImageSource,
     }),

@@ -17,22 +17,28 @@ function stableTextHash(text: string): string {
 }
 
 export function buildBlockModelFromEditor(editor: Editor): BlockModelItem[] {
-  const blocks: BlockModelItem[] = [];
-  let blockIndex = 0;
-
+  const candidates: Array<{ node: NonNullable<ReturnType<typeof editor.state.doc.nodeAt>>; pos: number }> = [];
   editor.state.doc.forEach((node, offset) => {
+    candidates.push({ node, pos: offset });
+  });
+  editor.state.doc.descendants((node, pos) => {
+    if (node.type.name === "image") {
+      candidates.push({ node, pos });
+    }
+    return true;
+  });
+  candidates.sort((left, right) => left.pos - right.pos);
+
+  return candidates.map(({ node, pos }, blockIndex) => {
     const text = node.textContent;
-    blocks.push({
+    return {
       id: `block-${blockIndex}-${node.type.name}-${stableTextHash(text)}`,
       type: node.type.name,
-      pmPos: offset,
+      pmPos: pos,
       line: blockIndex,
       text,
-    });
-    blockIndex += 1;
+    };
   });
-
-  return blocks;
 }
 
 export function getBlockAtPos(model: BlockModelItem[], pos: number): BlockModelItem | null {

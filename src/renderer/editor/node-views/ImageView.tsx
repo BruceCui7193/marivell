@@ -4,6 +4,8 @@ import type { NodeViewProps } from '@tiptap/react';
 import { handleBlockEditorBoundaryNavigation } from '../node-view-navigation';
 import { preloadImageSource } from '../image-preload';
 import { registerVirtualNodeView } from '../virtualization/activation-controller';
+import { getCachedNodeHeight, setCachedNodeHeight } from '../virtualization/height-cache';
+import { getNodeHeightKey } from '../virtualization/height-measurer';
 
 interface ParsedImageMarkdown {
   alt: string;
@@ -156,7 +158,50 @@ function ImageView({ editor, extension, getPos, node, selected, updateAttributes
     title: node.attrs.title ? String(node.attrs.title) : null,
   };
   const resolvedSource = extension.options.resolveImageSource(String(previewSource.src ?? ''));
+  const heightCacheContent = resolvedSource || String(node.attrs.src ?? '');
   const imageRef = useRef<HTMLImageElement | null>(null);
+  const cachedPlaceholderHeight = getCachedNodeHeight(
+    getNodeHeightKey('image', heightCacheContent, wrapperRef.current),
+  );
+
+  useEffect(() => {
+    if (!isActive || editing) {
+      return;
+    }
+
+    const image = imageRef.current;
+    const wrapper = wrapperRef.current;
+    if (!image || !wrapper) {
+      return;
+    }
+
+    const storeHeight = () => {
+      try {
+        const height =
+          image.getBoundingClientRect().height || wrapper.getBoundingClientRect().height;
+        if (height > 0) {
+          setCachedNodeHeight(
+            getNodeHeightKey('image', heightCacheContent, wrapper),
+            height,
+          );
+        }
+      } catch {
+        // jsdom and failed image loads can skip layout measurement.
+      }
+    };
+
+    if (image.complete && image.naturalWidth > 0) {
+      storeHeight();
+      return;
+    }
+
+    image.addEventListener('load', storeHeight);
+    image.addEventListener('error', storeHeight);
+    return () => {
+      image.removeEventListener('load', storeHeight);
+      image.removeEventListener('error', storeHeight);
+    };
+  }, [editing, heightCacheContent, isActive]);
 
   useEffect(() => {
     if (!isActive) {
@@ -219,7 +264,10 @@ function ImageView({ editor, extension, getPos, node, selected, updateAttributes
       }}
     >
       {!isActive ? (
-        <div className="image-node__placeholder">
+        <div
+          className="image-node__placeholder"
+          style={cachedPlaceholderHeight !== null ? { minHeight: `${cachedPlaceholderHeight}px` } : undefined}
+        >
           <span className="image-node__placeholder-label">
             {String(node.attrs.alt ?? '') || 'Image'}
           </span>

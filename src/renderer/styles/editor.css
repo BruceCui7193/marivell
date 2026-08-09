@@ -1512,6 +1512,7 @@
   position: relative;
   height: 100%;
   overflow: auto;
+  overflow-anchor: none;
   border: 1px solid var(--ui-border);
   border-radius: 30px;
   background-color: var(--ui-editor-bg);
@@ -2882,6 +2883,8 @@
 /* ========== Source editor (highlighted) ========== */
 
 .source-editor {
+  position: relative;
+  z-index: 1;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: stretch;

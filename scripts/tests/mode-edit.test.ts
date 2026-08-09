@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { JSDOM } from 'jsdom';
 
-const dom = new JSDOM('<!doctype html><html><body><div id="editor"></div></body></html>');
+const dom = new JSDOM('<!doctype html><html><body><div id="editor"></div></body></html>', { url: 'http://localhost' });
 const g = globalThis as Record<string, unknown>;
 g.window = dom.window;
 g.document = dom.window.document;
@@ -22,6 +22,36 @@ g.Node = dom.window.Node;
 g.Element = dom.window.Element;
 g.HTMLElement = dom.window.HTMLElement;
 g.HTMLCanvasElement = dom.window.HTMLCanvasElement;
+g.localStorage = dom.window.localStorage;
+
+class FakeEditorWorker {
+  addEventListener(): void {}
+  removeEventListener(): void {}
+  postMessage(): void {}
+  terminate(): void {}
+}
+class FakeResizeObserver {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
+dom.window.Worker = FakeEditorWorker as unknown as typeof Worker;
+g.Worker = FakeEditorWorker;
+dom.window.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver;
+g.ResizeObserver = FakeResizeObserver;
+(dom.window as unknown as { matchMedia: (query: string) => unknown }).matchMedia = (query: string) => ({
+  matches: false,
+  media: query,
+  addEventListener: () => {},
+  removeEventListener: () => {},
+  addListener: () => {},
+  removeListener: () => {},
+  onchange: null,
+  dispatchEvent: () => false,
+});
+(dom.window.HTMLElement.prototype as unknown as { scrollTo: () => void }).scrollTo = () => {};
+(dom.window.Element.prototype as unknown as { attachEvent: () => void }).attachEvent = () => {};
+(dom.window.Element.prototype as unknown as { detachEvent: () => void }).detachEvent = () => {};
 
 dom.window.Range.prototype.getClientRects = () => [];
 dom.window.Range.prototype.getBoundingClientRect = () => ({
@@ -44,6 +74,9 @@ import {
   insertSelectionMarkersIntoMarkdown,
   restoreSelectionMarkersFromEditorState,
 } from '../../src/renderer/editor/selection-markers';
+import { createElement } from 'react';
+import { createRoot } from 'react-dom/client';
+import EditorShell from '../../src/renderer/components/EditorShell';
 
 const fixturesDir = fileURLToPath(new URL('../../tests/fixtures/markdown/', import.meta.url));
 
@@ -271,6 +304,201 @@ console.log('\n## tricky mode-switch edit flows');
     );
   } finally {
     editor.destroy();
+  }
+}
+
+
+console.log('\n## EditorShell no-edit mode switches stay clean');
+
+interface EditorShellFixture {
+  name: string;
+  source: string;
+}
+
+const editorShellFixtures: EditorShellFixture[] = [
+  { name: 'math', source: '# Math\n\n$x^2$\n\n$$\na+b\n$$\n' },
+  { name: 'code-block', source: '```js\nconst x = 1;\n```\n' },
+  { name: 'image', source: 'Before\n\n![alt](../images/dora.png)\n\nAfter\n' },
+  { name: 'table', source: '| A | B |\n| --- | --- |\n| 1 | 2 |\n' },
+  { name: 'footnote', source: 'Text[^1]\n\n[^1]: Note\n' },
+  { name: 'crlf', source: 'Line one\r\nLine two\r\n' },
+  { name: 'literal-tokens', source: '@@MARKDOWN_EDITOR_MATH_0@@ $x$ @@MARKDOWN_EDITOR_TOKEN_0@@\n' },
+  { name: 'empty', source: '' },
+  { name: 'repeated', source: '# Title\n\nbody\n' },
+];
+
+function createMarkdownEditorApi(): Record<string, unknown> {
+  return {
+    newWindow: async () => {},
+    openDocumentDialog: async () => null,
+    openDocumentDialogInNewWindow: async () => false,
+    openDocumentPath: async () => { throw new Error('not used'); },
+    openFolderDialog: async () => null,
+    openFolderDialogInNewWindow: async () => false,
+    readFolder: async () => ({ path: '', name: '', entries: [] }),
+    saveDocument: async () => null,
+    saveDocumentAs: async () => null,
+    saveImage: async () => ({ path: 'x', markdownPath: 'x', base64: '' }),
+    chooseImageDirectory: async () => null,
+    openExternal: async () => {},
+    exportClipboardDebug: async () => null,
+    exportAsPdf: async () => true,
+    exportAsImage: async () => true,
+    exportWithPandoc: async () => true,
+    getExportCapabilities: async () => ({}),
+    getPandocTemplates: async () => ({}),
+    setPandocTemplate: async () => ({}),
+    choosePandocTemplate: async () => null,
+    getAppInfo: async () => ({}),
+    checkForUpdates: async () => ({ hasUpdate: false, latestVersion: '', releaseUrl: null }),
+    reportBenchmarkMetric: () => {},
+    getBenchmarkTimeline: async () => [],
+    getBenchmarkEnabled: () => true,
+    setTheme: async () => {},
+    zoomIn: async () => {},
+    zoomOut: async () => {},
+    zoomReset: async () => {},
+    setWindowDirty: async () => {},
+    setWindowDocumentState: async () => {},
+    respondSaveBeforeClose: () => {},
+    acknowledgeExternalFileChange: async () => {},
+    onDocumentOpened: () => () => {},
+    onFolderOpened: () => () => {},
+    onExportStatus: () => () => {},
+    onRequestSaveBeforeClose: () => () => {},
+    onMenuAction: () => () => {},
+    onExternalFileChange: () => () => {},
+    onExportPandocRequest: () => () => {},
+    getPathForFile: () => 'x',
+  };
+}
+
+interface MountedEditorShell {
+  root: ReturnType<typeof createRoot>;
+  container: HTMLDivElement;
+  editor: Editor;
+  dirty: boolean;
+  emitted: string;
+  sourceTextarea: HTMLTextAreaElement | null;
+  toggle: () => Promise<void>;
+}
+
+async function mountEditorShell(source: string): Promise<MountedEditorShell> {
+  (window as unknown as { markdownEditor: unknown }).markdownEditor = createMarkdownEditorApi();
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const state = {
+    path: '/tmp/mode-edit.md',
+    title: 'mode-edit',
+    markdown: source,
+    savedMarkdown: source,
+    dirty: false,
+    lastSavedAt: Date.now(),
+    stats: { words: 0, characters: 0, lines: 1 },
+  };
+  let dirty = false;
+  let emitted = source;
+  const handleDocumentChange = (markdown: string): void => {
+    emitted = markdown;
+    dirty = markdown !== state.savedMarkdown;
+  };
+  const handleDocumentMetaChange = (nextDirty: boolean): void => {
+    dirty = nextDirty;
+  };
+  const root = createRoot(container);
+  root.render(
+    createElement(
+      EditorShell,
+      {
+        document: state,
+        folder: null,
+        theme: 'light',
+        themePalette: 'natural',
+        glassEffect: 'frosted',
+        resolvedTheme: 'light',
+        onDocumentChange: handleDocumentChange,
+        onDocumentMetaChange: handleDocumentMetaChange,
+        onOpenDocument: async () => {},
+        onOpenDocumentPath: async () => {},
+        onReloadDocumentPath: async () => {},
+        onOpenFolder: async () => {},
+        onSaveDocument: async () => true,
+        onSaveDocumentAs: async () => null,
+        onCreateDocument: async () => {},
+        onSetTheme: () => {},
+        onSetThemePalette: () => {},
+        onSetGlassEffect: () => {},
+        onOpenSettings: () => {},
+      } as any,
+    ),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const editor = (window as unknown as Record<string, unknown>).__marivellEditor as Editor | undefined;
+  if (!editor) {
+    throw new Error('EditorShell did not mount an editor');
+  }
+
+  return {
+    root,
+    container,
+    editor,
+    get dirty() {
+      return dirty;
+    },
+    get emitted() {
+      return emitted;
+    },
+    get sourceTextarea() {
+      return container.querySelector<HTMLTextAreaElement>('.source-editor__input');
+    },
+    async toggle() {
+      window.dispatchEvent(
+        new CustomEvent('markdown-editor:menu-action', {
+          detail: 'toggle-source-mode',
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    },
+  };
+}
+
+for (const fixture of editorShellFixtures) {
+  const shell = await mountEditorShell(fixture.source);
+  try {
+    assert(
+      `${fixture.name}: opened clean`,
+      !shell.dirty && shell.emitted === fixture.source,
+      `dirty=${shell.dirty} emitted=${JSON.stringify(shell.emitted)}`,
+    );
+
+    for (let round = 0; round < 4; round += 1) {
+      await shell.toggle();
+      const inSourceMode = Boolean(shell.sourceTextarea);
+      assert(
+        `${fixture.name}: toggle ${round + 1} reaches expected mode`,
+        (round % 2 === 0) === inSourceMode,
+        `round=${round} source=${inSourceMode}`,
+      );
+      if (inSourceMode) {
+        const expectedSourceValue = fixture.source.replace(/\r\n/g, '\n');
+        assert(
+          `${fixture.name}: source mode preserves markdown`,
+          shell.sourceTextarea?.value === expectedSourceValue,
+          JSON.stringify(shell.sourceTextarea?.value),
+        );
+      }
+      assert(
+        `${fixture.name}: toggle ${round + 1} stays clean`,
+        !shell.dirty &&
+          shell.emitted === fixture.source &&
+          !shell.container.innerHTML.includes('MDEDITORSELECTION'),
+        `dirty=${shell.dirty} emitted=${JSON.stringify(shell.emitted)}`,
+      );
+    }
+  } finally {
+    shell.root.unmount();
+    shell.container.remove();
+    (window as unknown as Record<string, unknown>).__marivellEditor = undefined;
   }
 }
 

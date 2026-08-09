@@ -11,6 +11,8 @@ import {
   setCachedMermaidHeight,
 } from '../mermaid-cache';
 import { registerVirtualNodeView } from '../virtualization/activation-controller';
+import { getCachedNodeHeight, setCachedNodeHeight } from '../virtualization/height-cache';
+import { getNodeHeightKey } from '../virtualization/height-measurer';
 
 let renderIndex = 0;
 let mermaidLoader: Promise<typeof import('mermaid')> | null = null;
@@ -82,8 +84,16 @@ function MermaidBlockView({ editor, getPos, node, selected, updateAttributes }: 
   const highlightedDraft = highlightMermaid(draft);
   const source = String(editing ? draft : node.attrs.code ?? '');
   const cachedHeight = getCachedMermaidHeight(theme, source);
-  const previewStyle = cachedHeight !== null ? { minHeight: `${cachedHeight}px` } : undefined;
-  const placeholderStyle = { minHeight: `${cachedHeight ?? MERMAID_DEFAULT_PLACEHOLDER_HEIGHT}px` };
+  const cachedNodeHeight = getCachedNodeHeight(
+    getNodeHeightKey('mermaidBlock', source, wrapperRef.current),
+  );
+  const preferredCachedHeight = cachedNodeHeight ?? cachedHeight;
+  const previewStyle = preferredCachedHeight !== null
+    ? { minHeight: `${preferredCachedHeight}px` }
+    : undefined;
+  const placeholderStyle = {
+    minHeight: `${preferredCachedHeight ?? MERMAID_DEFAULT_PLACEHOLDER_HEIGHT}px`,
+  };
 
   useEffect(() => {
     const updateTheme = () => setTheme(isDarkTheme() ? 'dark' : 'base');
@@ -196,6 +206,7 @@ function MermaidBlockView({ editor, getPos, node, selected, updateAttributes }: 
     const height = preview.getBoundingClientRect().height;
     if (height > 0) {
       setCachedMermaidHeight(theme, source, height);
+      setCachedNodeHeight(getNodeHeightKey('mermaidBlock', source, preview), height);
     }
   }, [source, svg, theme]);
 
