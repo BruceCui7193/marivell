@@ -8,9 +8,14 @@ import HighlightedTextarea from './HighlightedTextarea';
 
 let renderIndex = 0;
 let mermaidLoader: Promise<typeof import('mermaid')> | null = null;
+const mermaidRenderCache = new Map<string, Promise<string>>();
 
 function isDarkTheme(): boolean {
   return document.documentElement.dataset.theme === 'dark';
+}
+
+function getMermaidCacheKey(theme: string, code: string): string {
+  return `${theme}\u0000${code}`;
 }
 
 function loadMermaid() {
@@ -18,16 +23,57 @@ function loadMermaid() {
   return mermaidLoader;
 }
 
+async function renderMermaid(source: string, theme: 'dark' | 'base'): Promise<string> {
+  const key = getMermaidCacheKey(theme, source);
+  const cached = mermaidRenderCache.get(key);
+  if (cached) {
+    return cached;
+  }
+
+  const renderPromise = (async () => {
+    const mermaid = await loadMermaid();
+
+    mermaid.default.initialize({
+      startOnLoad: false,
+      securityLevel: 'loose',
+      theme,
+      fontFamily: 'inherit',
+    });
+    const id = `mermaid-editor-${renderIndex++}`;
+    const result = await mermaid.default.render(id, source);
+    return result.svg;
+  })();
+
+  mermaidRenderCache.set(key, renderPromise);
+  try {
+    return await renderPromise;
+  } catch (error) {
+    mermaidRenderCache.delete(key);
+    throw error;
+  }
+}
+
 function MermaidBlockView({ editor, getPos, node, selected, updateAttributes }: NodeViewProps) {
   const [editing, setEditing] = useState(!node.attrs.code);
   const [draft, setDraft] = useState(String(node.attrs.code ?? ''));
   const [svg, setSvg] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [theme, setTheme] = useState<'dark' | 'base'>(() => (isDarkTheme() ? 'dark' : 'base'));
   const highlightedDraft = highlightMermaid(draft);
 
   useEffect(() => {
-    setDraft(String(node.attrs.code ?? ''));
-  }, [node.attrs.code]);
+    const updateTheme = () => setTheme(isDarkTheme() ? 'dark' : 'base');
+    updateTheme();
+    if (typeof MutationObserver === 'undefined') {
+      return;
+    }
+    const observer = new MutationObserver(updateTheme);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+    });
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -43,18 +89,9 @@ function MermaidBlockView({ editor, getPos, node, selected, updateAttributes }: 
 
     const renderDiagram = async () => {
       try {
-        const mermaid = await loadMermaid();
-
-        mermaid.default.initialize({
-          startOnLoad: false,
-          securityLevel: 'loose',
-          theme: isDarkTheme() ? 'dark' : 'base',
-          fontFamily: 'inherit',
-        });
-        const id = `mermaid-editor-${renderIndex++}`;
-        const result = await mermaid.default.render(id, source);
+        const nextSvg = await renderMermaid(source, theme);
         if (!cancelled) {
-          setSvg(result.svg);
+          setSvg(nextSvg);
           setError(null);
         }
       } catch (nextError) {
@@ -73,7 +110,7 @@ function MermaidBlockView({ editor, getPos, node, selected, updateAttributes }: 
     return () => {
       cancelled = true;
     };
-  }, [draft, editing, node.attrs.code]);
+  }, [draft, editing, node.attrs.code, theme]);
 
   return (
     <NodeViewWrapper

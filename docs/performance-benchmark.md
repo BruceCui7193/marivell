@@ -148,6 +148,45 @@ Interpretation:
 - Incremental decorations remove part of the per-keystroke cost, but they cannot fix the still-mounted full formula DOM.
 - The next meaningful win is the Phase 3 placeholder NodeView; Phase 1/2 can reduce parse/preload work but should not be treated as the replacement for DOM reduction.
 
+## Phase 1 First Result (Worker Formula HTML Cache, 2026-08-09)
+
+| Metric | Phase 0 first run | Phase 1 first run | Delta |
+| --- | ---: | ---: | ---: |
+| visual-open | 32,406 ms | 25,128 ms | -7,278 ms |
+| open-total | 20,977 ms | 17,580 ms | -3,397 ms |
+| renderer-render-to-ready | 20,969 ms | 17,570 ms | -3,399 ms |
+| interaction typing | 1,559 ms | 1,221 ms | -338 ms |
+| interaction combined | 9,333 ms | 7,661 ms | -1,672 ms |
+| visual-edit | 863 ms | 437 ms | -426 ms |
+| scroll-avg-frame | 187 ms | 131 ms | -56 ms |
+| scroll-max-frame | 359 ms | 410 ms | slower |
+| context-menu-open | 713 ms | 956 ms | slower |
+
+Interpretation:
+
+- Worker pre-renders unique formula HTML and the NodeView reuses it, reducing `renderer-render-to-ready` by about 3.4 s.
+- Parse remains about 2.8 s; the full 720k+ DOM still dominates remaining open/interaction time.
+- Image/Mermaid preload and viewport placeholder are the next Phase 1/3 targets; this batch does not implement virtualization.
+
+## Phase 1 Second Result (Mermaid Cache + LRU + Metrics, 2026-08-09)
+
+The second batch adds bounded formula cache, Mermaid render cache, and new benchmark metrics. It keeps the same DOM-heavy renderer.
+
+| Metric | Phase 1 first run | Phase 1 second run |
+| --- | ---: | ---: |
+| visual-open | 25,128 ms | 24,733 ms |
+| renderer-render-to-ready | 17,570 ms | 17,376 ms |
+| formula-html-unique | n/a | 4,780 |
+| image-node-count | n/a | 110 |
+| mermaid-node-count | n/a | 0 |
+| interaction-combined | 7,661 ms | 7,727 ms |
+| visual-edit | 437 ms | 430 ms |
+
+Interpretation:
+
+- The second batch did not change the renderer's fundamental cost; it mainly prevents repeated Mermaid renders and adds lifecycle/measurement infrastructure.
+- The remaining Phase 1 item is real viewport-oriented image preloading and chunked/indexed formula cache transfer; the next large win still depends on Phase 3 placeholder NodeViews.
+
 ## Test Effectiveness Cross-Check
 
 The render interaction suite was cross-validated by temporarily making

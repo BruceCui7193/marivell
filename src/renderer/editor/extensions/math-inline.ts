@@ -1,6 +1,7 @@
 import { InputRule, Node, mergeAttributes } from '@tiptap/core';
 import { TextSelection } from '@tiptap/pm/state';
 import katex from 'katex';
+import { getCachedFormulaHtml, getFormulaCacheKey, seedFormulaHtmlCache } from '../math-render-cache';
 import { translate } from '../../i18n';
 
 declare module '@tiptap/core' {
@@ -139,10 +140,22 @@ export const MathInline = Node.create({
           return;
         }
         try {
-          katex.render(text, previewDOM, {
+          const display = isBlock ? 'yes' : 'no';
+          const cachedHtml = getCachedFormulaHtml(text, display);
+          if (cachedHtml !== null) {
+            previewDOM.innerHTML = cachedHtml;
+            mathLog('cached:', text, 'children:', previewDOM.childNodes.length);
+            return;
+          }
+          const html = katex.renderToString(text, {
             displayMode: isBlock,
             throwOnError: false,
             strict: 'ignore',
+            output: 'html',
+          });
+          previewDOM.innerHTML = html;
+          seedFormulaHtmlCache({
+            [getFormulaCacheKey(text, display)]: html,
           });
           mathLog('rendered:', text, 'children:', previewDOM.childNodes.length);
         } catch (err) {

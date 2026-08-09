@@ -46,6 +46,12 @@ import {
   rgbToHex,
 } from '../../src/renderer/settings.ts';
 import { setAppLanguage, translate } from '../../src/renderer/i18n.ts';
+import {
+  clearFormulaHtmlCache,
+  getCachedFormulaHtml,
+  getFormulaCacheKey,
+  seedFormulaHtmlCache,
+} from '../../src/renderer/editor/math-render-cache.ts';
 
 let passed = 0;
 let failed = 0;
@@ -177,6 +183,44 @@ a+b
     { type: 'paragraph', content: [{ type: 'text', text: 'fragment-hi' }] },
   ]);
   assert('serializeMarkdownFragment includes text', frag.includes('fragment-hi'));
+}
+
+// ---------------------------------------------------------------------------
+// Math render cache LRU lifecycle
+// ---------------------------------------------------------------------------
+section('math render cache LRU');
+
+{
+  clearFormulaHtmlCache();
+  const lruEntries: Record<string, string> = {};
+  for (let index = 0; index < 10_005; index += 1) {
+    const display = index % 2 === 0 ? 'no' : 'yes';
+    lruEntries[getFormulaCacheKey(`formula-${index}`, display)] = `<span>${index}</span>`;
+  }
+
+  assertEqual('math cache LRU seed count', seedFormulaHtmlCache(lruEntries), 10_005);
+  assert(
+    'math cache LRU evicts oldest entries after overflow',
+    getCachedFormulaHtml('formula-0', 'no') === null &&
+      getCachedFormulaHtml('formula-10004', 'no') === '<span>10004</span>',
+    `oldest=${String(getCachedFormulaHtml('formula-0', 'no'))} newest=${String(getCachedFormulaHtml('formula-10004', 'no'))}`,
+  );
+  assert(
+    'math cache LRU get promotes recently used entry',
+    getCachedFormulaHtml('formula-5', 'yes') === '<span>5</span>',
+    String(getCachedFormulaHtml('formula-5', 'yes')),
+  );
+  seedFormulaHtmlCache({
+    [getFormulaCacheKey('formula-10005', 'yes')]: '<span>10005</span>',
+  });
+  assert(
+    'math cache LRU evicts oldest after promoted hit',
+    getCachedFormulaHtml('formula-5', 'yes') === '<span>5</span>' &&
+      getCachedFormulaHtml('formula-6', 'no') === null &&
+      getCachedFormulaHtml('formula-10005', 'yes') === '<span>10005</span>',
+    `promoted=${String(getCachedFormulaHtml('formula-5', 'yes'))} nextOldest=${String(getCachedFormulaHtml('formula-6', 'no'))} newest=${String(getCachedFormulaHtml('formula-10005', 'yes'))}`,
+  );
+  clearFormulaHtmlCache();
 }
 
 // ---------------------------------------------------------------------------

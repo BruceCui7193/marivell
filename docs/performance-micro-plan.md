@@ -1,7 +1,7 @@
 # Marivell 性能优化微观执行计划
 
 > 本文由 `docs/performance-roadmap.md` 的宏观方案细化而来，作为后续改代码的约束。
-> 状态：Phase 0 首批改动已完成并验证；Phase 1-4 仍按本文案规划，不做提前承诺。首批大文件结果见 `docs/performance-benchmark.md`。
+> 状态：Phase 0 已完成并提交；Phase 1 前两批已完成并验证：Worker 公式 HTML 缓存、公式缓存 LRU、Mermaid 渲染缓存、benchmark 指标。剩余 Phase 1 项为视口图片预加载与公式 HTML 分块/索引传输，随后进入 Phase 2。结果见 `docs/performance-benchmark.md`。
 
 ## 0. 总原则
 
@@ -119,6 +119,39 @@
 - 本 Phase 不实现 placeholder，因此不触碰导出、搜索跳转、拖拽选区等 3.11 风险面。
 
 ## 2. Phase 1：Worker 预渲染、公式缓存与节点预加载
+
+### 2.1 首批实现：Worker 公式 HTML 预渲染缓存
+
+本批只做“公式渲染从主线程移动到 Worker 预生成 + 主线程缓存复用”，不做占位节点。
+
+1. 新建 `src/renderer/editor/math-render-cache.ts`，维护 `Record<key, html>` 内存缓存。
+   - key = `display + '\u0000' + latex`，display 只区分 `'yes'` / `'no'`。
+   - 提供 `getFormulaCacheKey`、`seedFormulaHtmlCache`、`getCachedFormulaHtml`、`clearFormulaHtmlCache`。
+2. 扩展 `src/renderer/editor/markdown.worker.ts`：
+   - 请求增加 `includeFormulaHtml?: boolean`。
+   - 仅当需要时遍历解析后的 JSON，收集唯一公式 key，用 `katex.renderToString` 生成 HTML。
+   - 响应增加 `formulaHtml?: Record<string, string>`。
+   - 单个公式渲染失败时跳过该项，主线程保留同步 fallback。
+3. `EditorShell.tsx`：
+   - 打开/重载大文件时先 `clearFormulaHtmlCache()`，worker 返回后只在 active load 内 `seedFormulaHtmlCache`。
+   - source preview 请求默认不预渲染公式 HTML，避免 stale 结果污染缓存。
+4. `math-inline.ts`：
+   - NodeView 渲染前先查缓存；命中则直接 `innerHTML = cachedHtml`。
+   - 未命中仍同步 `katex.renderToString` 并写回缓存，绝不显示空白。
+5. 新增测试：
+   - 缓存模块 get/seed/clear。
+   - 预置缓存 HTML 后，编辑器加载对应公式，DOM 中出现该 HTML 标记。
+6. 验证：`npm test`、`npx tsc --noEmit`、`git diff --check`，并跑大文件 benchmark 对比 `renderer-render-to-ready`。
+
+## 2. Phase 1：Worker 预渲染、公式缓存与节点预加载
+
+### 2.2 第二批实现：图片/Mermaid 预加载与缓存生命周期
+
+1. 图片预加载：在 ImageView 挂载前先创建 `Image` 对象预加载 resolved source；只有 `complete` 或 `load` 后再显示当前视口图片，失败保留错误态。
+2. Mermaid 预加载：维护模块级 `Map<codeHash, Promise<svg>>`，避免相同代码重复渲染；编辑/主题/窗口大小变化时使缓存失效。
+3. 公式缓存生命周期：`clearFormulaHtmlCache` 在 active visual load 时调用；新增按文件 key 和 LRU 上限，避免长期会话里不同文件之间缓存膨胀。
+4. 版本号：worker 返回的公式 HTML 必须携带请求/会话版本，只有 active load 且版本匹配时才 seed，旧结果不得覆盖。
+5. 新 benchmark 指标：`formula-html-count`、`formula-html-bytes`、`image-preload-count`、`mermaid-cache-hit-rate`（能采集时加入 `scripts/benchmark/performance.ts`）。
 
 目标：把解析、公式 HTML 生成移出主线程，建立完整公式 HTML 缓存，但不做 DOM 占位。
 

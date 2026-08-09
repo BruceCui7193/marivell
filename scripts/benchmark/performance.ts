@@ -403,6 +403,52 @@ async function measureVisualContextMenu(page: Page): Promise<{
   return result;
 }
 
+function countNodePipelineMetrics(content: any): {
+  formulaHtmlUnique: number;
+  imageNodeCount: number;
+  mermaidNodeCount: number;
+} {
+  const formulaKeys = new Set<string>();
+  let imageNodeCount = 0;
+  let mermaidNodeCount = 0;
+
+  const visit = (node: any): void => {
+    if (!node || typeof node !== 'object') {
+      return;
+    }
+
+    if (node.type === 'inlineMath') {
+      const display = node.attrs?.display === 'yes' ? 'yes' : 'no';
+      const latex =
+        typeof node.attrs?.latex === 'string'
+          ? node.attrs.latex
+          : Array.isArray(node.content)
+            ? node.content
+                .map((child: any) => (typeof child.text === 'string' ? child.text : ''))
+                .join('')
+            : '';
+      formulaKeys.add(`${display}\u0000${latex}`);
+    } else if (node.type === 'image') {
+      imageNodeCount += 1;
+    } else if (node.type === 'mermaidBlock') {
+      mermaidNodeCount += 1;
+    }
+
+    if (Array.isArray(node.content)) {
+      for (const child of node.content) {
+        visit(child);
+      }
+    }
+  };
+
+  visit(content);
+  return {
+    formulaHtmlUnique: formulaKeys.size,
+    imageNodeCount,
+    mermaidNodeCount,
+  };
+}
+
 async function measureNodePipeline(markdownPath: string): Promise<ReportEntry[]> {
   const [{ parseMarkdown, serializeMarkdown }, { highlightMarkdownSource }, { extractOutline }] =
     await Promise.all([
@@ -434,6 +480,7 @@ async function measureNodePipeline(markdownPath: string): Promise<ReportEntry[]>
   const outlineStart = performance.now();
   const outline = extractOutline(source);
   const outlineMs = performance.now() - outlineStart;
+  const nodeMetrics = countNodePipelineMetrics(json);
 
   return [
     { metric: 'source-size', value: sourceBytes, unit: 'bytes' },
@@ -445,6 +492,9 @@ async function measureNodePipeline(markdownPath: string): Promise<ReportEntry[]>
     { metric: 'block-formula-count', value: blockFormulaCount, unit: 'blocks' },
     { metric: 'inline-formula-estimate', value: inlineFormulaEstimate, unit: 'inline' },
     { metric: 'heading-count', value: outline.length, unit: 'headings' },
+    { metric: 'formula-html-unique', value: nodeMetrics.formulaHtmlUnique, unit: 'unique' },
+    { metric: 'image-node-count', value: nodeMetrics.imageNodeCount, unit: 'nodes' },
+    { metric: 'mermaid-node-count', value: nodeMetrics.mermaidNodeCount, unit: 'nodes' },
   ];
 }
 

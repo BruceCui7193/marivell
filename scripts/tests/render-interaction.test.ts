@@ -35,6 +35,12 @@ import { createEditorExtensions } from '../../src/renderer/editor/create-editor-
 import { parseMarkdown, serializeMarkdown } from '../../src/renderer/editor/markdown';
 import { replaceEditorContent } from '../../src/renderer/editor/replace-editor-content';
 import {
+  clearFormulaHtmlCache,
+  getCachedFormulaHtml,
+  getFormulaCacheKey,
+  seedFormulaHtmlCache,
+} from '../../src/renderer/editor/math-render-cache';
+import {
   insertSelectionMarkersIntoMarkdown,
   restoreSelectionMarkersFromEditorState,
 } from '../../src/renderer/editor/selection-markers';
@@ -256,6 +262,40 @@ console.log('\n## visual render interaction matrix');
     editor.destroy();
   }
 }
+
+{
+  clearFormulaHtmlCache();
+  assert('math cache starts empty', getCachedFormulaHtml('x', 'no') === null, getCachedFormulaHtml('x', 'no') ?? '');
+  assert('math cache key uses display prefix', getFormulaCacheKey('x', 'yes') === 'block\u0000x' && getFormulaCacheKey('x', 'no') === 'inline\u0000x', getFormulaCacheKey('x', 'yes'));
+  const seededHtml = '<span class="cached-formula">x</span>';
+  const seeded = seedFormulaHtmlCache({
+    [getFormulaCacheKey('x', 'no')]: seededHtml,
+  });
+  assert('math cache seeds html', seeded === 1 && getCachedFormulaHtml('x', 'no') === seededHtml, `seeded=${seeded}`);
+
+  const cachedEditor = makeEditor('Initial');
+  try {
+    load(cachedEditor, '$x$');
+    assert('math node view uses seeded formula html cache', cachedEditor.view.dom.querySelector('.cached-formula') !== null, html(cachedEditor));
+    assert('cached formula keeps markdown source', md(cachedEditor).includes('$x$'), md(cachedEditor));
+  } finally {
+    cachedEditor.destroy();
+  }
+
+  clearFormulaHtmlCache();
+  assert('math cache clears', getCachedFormulaHtml('x', 'no') === null);
+
+  const fallbackEditor = makeEditor('Initial');
+  try {
+    load(fallbackEditor, '$x$');
+    const preview = fallbackEditor.view.dom.querySelector('.math-node-preview');
+    assert('math node view renders after cache clear', preview !== null && preview.querySelector('.katex') !== null, html(fallbackEditor));
+    assert('cleared cache render keeps markdown source', md(fallbackEditor).includes('$x$'), md(fallbackEditor));
+  } finally {
+    fallbackEditor.destroy();
+  }
+}
+
 
 {
   const editor = makeEditor('Initial');

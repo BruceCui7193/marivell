@@ -37,6 +37,10 @@ import {
   buildVisualContextMenu,
 } from '../editor/context-menu-actions';
 import { parseMarkdown, serializeMarkdown } from '../editor/markdown';
+import {
+  clearFormulaHtmlCache,
+  seedFormulaHtmlCache,
+} from '../editor/math-render-cache';
 import { replaceEditorContent } from '../editor/replace-editor-content';
 import {
   SELECTION_END_MARKER,
@@ -92,6 +96,7 @@ interface WorkerParseSuccess {
   ok: true;
   content: JSONContent;
   outline: OutlineItem[];
+  formulaHtml?: Record<string, string>;
 }
 
 interface WorkerParseFailure {
@@ -746,7 +751,7 @@ export default function EditorShell({
   );
 
 
-  const parseMarkdownInWorker = useCallback((markdown: string) => {
+  const parseMarkdownInWorker = useCallback((markdown: string, includeFormulaHtml = false) => {
     if (!markdownWorkerRef.current) {
       markdownWorkerRef.current = createMarkdownWorker();
     }
@@ -779,7 +784,7 @@ export default function EditorShell({
 
       worker.addEventListener('message', handleMessage);
       worker.addEventListener('error', handleError, { once: true });
-      worker.postMessage({ id: requestId, markdown });
+      worker.postMessage({ id: requestId, markdown, includeFormulaHtml });
     });
   }, []);
 
@@ -1350,6 +1355,7 @@ export default function EditorShell({
     let cancelled = false;
     const loadId = latestExternalLoadRef.current + 1;
     latestExternalLoadRef.current = loadId;
+    clearFormulaHtmlCache();
     setLoadingExternalDocument(true);
     startupCaretPlacedRef.current = false;
     editor.setEditable(false);
@@ -1445,8 +1451,11 @@ export default function EditorShell({
           finishLoad();
         });
     } else {
-      void parseMarkdownInWorker(document.markdown)
+      void parseMarkdownInWorker(document.markdown, true)
         .then((result) => {
+          if (isActiveLoad() && result.formulaHtml) {
+            seedFormulaHtmlCache(result.formulaHtml);
+          }
           applyParsedContent(result.content, result.outline);
         })
         .catch(async () => {
