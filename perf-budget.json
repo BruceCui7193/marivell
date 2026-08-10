@@ -9,5 +9,6 @@
   "scrollMaxFrameMs": 33,
   "scrollJumpReadyMs": 200,
   "scrollDriftPx": 0,
-  "viewportPlaceholders": 0
+  "viewportPlaceholders": 0,
+  "inlineMathActivateReadyMs": 50
 }

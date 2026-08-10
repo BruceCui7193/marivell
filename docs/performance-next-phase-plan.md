@@ -422,3 +422,18 @@ interface ModeSwitchCache {
    - `git diff --check`
    - `npm run benchmark`
 5. 3 次 benchmark 达到预算后，才允许进入发布流程。
+
+
+## 补充约束：行内公式渲染成功与渲染时间
+
+已有覆盖：
+
+- `inline-math-lazy.e2e.test.ts` 断言初始视口存在已渲染 `.katex`、离屏占位不丢 contentDOM、选中后激活。
+- `render-interaction.test.ts` 断言行内公式保持已渲染状态。
+- benchmark 已输出 `inline-math-preview-active`、`inline-math-preview-placeholder`、`interaction-inline-math`。
+
+缺口：没有专门约束“激活/替换渲染耗时”。本阶段补充：
+
+1. `perf-budget.json` 新增 `inlineMathActivateReadyMs: 50`，对应 plan 2.2.4 的 fallback 替换上限。
+2. benchmark 新增 `inline-math-activate-ready-ms`：快速滚动/跳转到含行内公式区域后，从触发到视口内最后一个 placeholder 被 KaTeX 替换的耗时；以及 `inline-math-activate-budget-ms` 单帧激活预算 <= 4ms。
+3. e2e 新增断言：视口内公式激活后 `.math-node-preview .katex` 必须存在；若发生 fallback，从 raw-placeholder 到 KaTeX 的替换必须在 50ms 内完成；单次激活批处理不能阻塞主线程超过 4ms。
