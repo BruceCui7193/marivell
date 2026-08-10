@@ -404,3 +404,43 @@ On the large file, the measured cost is not concentrated in one place:
 
 These numbers are the baseline for future performance work. This document does
 not include any optimization.
+
+
+## Phase E Result (2026-08-10)
+
+Phase E fixed the scroll/hydration hot path:
+
+- Viewport radius is derived from real PM coordinates instead of treating
+  clientHeight pixels as PM positions.
+- Scroll events are coalesced into one rAF with stale-task eviction.
+- Block/image/mermaid/html/code placeholder wrappers use `contain` +
+  `content-visibility`, cutting block math activation from 300-520ms per node
+  to about 0.6-2.4ms.
+- Inline math placeholders use measured height/width and identical box model,
+  and activation compensates the viewport top anchor.
+- Benchmark and e2e now gate real cache-miss fallback: raw placeholder to KaTeX
+  <=50ms, single activation frame <=4ms, top-anchor drift 0px.
+
+Verified large-file run:
+
+| Metric | Phase C/D | Phase E |
+| --- | ---: | ---: |
+| visual-open | 21,164 ms | 10,446 ms |
+| renderer-render-to-ready | 9,475 ms | 7,278 ms |
+| interaction-combined | 5,088 ms | 2,451 ms |
+| scroll-response | 99.6 ms | 13.6 ms |
+| scroll-avg-frame | 540 ms | 143 ms |
+| scroll-max-frame | 7,242 ms | 408 ms |
+| scroll-jump-bottom | 3,970 ms | 1,621 ms, placeholders=0, drift=0 |
+| scroll-jump-middle | 8,722 ms | 1,141 ms, placeholders=0, drift=0 |
+| scroll-drag-sequence | 1,083 ms | 1,577 ms, placeholders=0, drift=0 |
+| inline-height-drift | 58 px | 0 px |
+| inline-math-activate-ready-ms | not measured | 2.5 ms |
+| inline-math-activate-max-frame-ms | not measured | 2.6 ms |
+| context-menu-open | 189 ms | 123 ms |
+
+Status: the Phase E hard gates for zero anchor drift, first-frame zero
+placeholders, 50ms fallback replacement, and 4ms single-frame activation now
+pass in both e2e and the large-file benchmark. Overall scroll frame time and
+jump-ready latency are still above the final budget, so the release gate is not
+complete yet.
