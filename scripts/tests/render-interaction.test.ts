@@ -97,6 +97,16 @@ import {
   measureFormulaHeights,
   resetHeightMeasurerForTest,
 } from '../../src/renderer/editor/virtualization/height-measurer';
+import {
+  getInlineMathGroupCountForTest,
+  getInlineMathGroupIndexTestCountersForTest,
+  hydrateInlineMathGroupsAroundPosition,
+  resetInlineMathGroupRegistryForTest,
+} from '../../src/renderer/editor/virtualization/inline-math-group-registry';
+import {
+  getVirtualNodePositionIndexSizeForTest,
+  getVirtualNodePositionIndexTestCountersForTest,
+} from '../../src/renderer/editor/virtualization/activation-controller';
 
 const fixturesDir = fileURLToPath(new URL('../../tests/fixtures/markdown/', import.meta.url));
 
@@ -1840,6 +1850,151 @@ for (const chain of chainSources) {
     const output = html(editor);
     assert(`${chain.name}: final HTML includes expected needle`, output.includes(chain.htmlNeedle), output.slice(0, 500));
     assert(`${chain.name}: final source includes marker`, md(editor).includes(chain.marker), md(editor).slice(0, 500));
+  } finally {
+    editor.destroy();
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Virtual node hydration: binary-search range instead of full scan
+// ---------------------------------------------------------------------------
+{
+  const globals = globalThis as Record<string, unknown>;
+  const previousIntersectionObserver = globals.IntersectionObserver;
+  const previousRaf = globals.requestAnimationFrame;
+  const previousCancelRaf = globals.cancelAnimationFrame;
+  const rafCallbacks: FrameRequestCallback[] = [];
+  class FakeIntersectionObserver {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+  globals.IntersectionObserver = FakeIntersectionObserver as unknown as typeof IntersectionObserver;
+  globals.requestAnimationFrame = (callback: FrameRequestCallback) => {
+    rafCallbacks.push(callback);
+    return rafCallbacks.length;
+  };
+  globals.cancelAnimationFrame = () => {};
+  resetActivationControllerForTest();
+
+  const unregisters: Array<() => void> = [];
+  try {
+    for (let index = 0; index < 1000; index += 1) {
+      const element = document.createElement('div');
+      element.className = 'virtual-position-test';
+      unregisters.push(
+        registerVirtualNodeView(`hydrate-range-${index}`, element, {
+          activate: () => {},
+          deactivate: () => {},
+        }, { getPosition: () => index * 10 }),
+      );
+    }
+    hydrateTargetRange(
+      document.createElement('div'),
+      5_000,
+      1_000,
+    );
+    // Drain any follow-up hydration frames synchronously before the group tests.
+    while (true) {
+      const next = rafCallbacks.shift();
+      if (!next) break;
+      next(0);
+    }
+    assert(
+      'hydrateTargetRange uses cached position index',
+      getVirtualNodePositionIndexSizeForTest() === 1000,
+      `after=${getVirtualNodePositionIndexSizeForTest()}`,
+    );
+    const countersAfterHydrate = getVirtualNodePositionIndexTestCountersForTest();
+    assert(
+      'hydrateTargetRange range query does not full-scan the map',
+      countersAfterHydrate.fullScans === 0 &&
+        countersAfterHydrate.rangeQueries > 0 &&
+        countersAfterHydrate.rangeQueries < 1000,
+      JSON.stringify(countersAfterHydrate),
+    );
+    assert(
+      'hydrateTargetRange flush visits only dirty registrations',
+      countersAfterHydrate.dirtyFlushes === 1 &&
+        countersAfterHydrate.dirtyEntriesSeen === 1000,
+      JSON.stringify(countersAfterHydrate),
+    );
+
+    for (let index = 0; index < 250; index += 1) {
+      unregisters[index]!();
+    }
+    assert(
+      'unregister removes from the position index without a full scan',
+      getVirtualNodePositionIndexSizeForTest() === 750 &&
+        getVirtualNodePositionIndexTestCountersForTest().fullScans === 0 &&
+        getVirtualNodePositionIndexTestCountersForTest().unregisters === 250,
+      `size=${getVirtualNodePositionIndexSizeForTest()} counters=${JSON.stringify(getVirtualNodePositionIndexTestCountersForTest())}`,
+    );
+  } finally {
+    for (const unregister of unregisters) {
+      unregister();
+    }
+    resetActivationControllerForTest();
+    if (previousIntersectionObserver === undefined) {
+      delete globals.IntersectionObserver;
+    } else {
+      globals.IntersectionObserver = previousIntersectionObserver;
+    }
+    globals.requestAnimationFrame = previousRaf;
+    globals.cancelAnimationFrame = previousCancelRaf;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Inline math registry: interaction must not full-traverse/rebuild (Phase C)
+// ---------------------------------------------------------------------------
+{
+  const editor = makeEditor('Initial');
+  try {
+    resetInlineMathGroupRegistryForTest();
+    const manyMath: string[] = [];
+    for (let index = 0; index < 400; index += 1) {
+      manyMath.push(`$x_${index}$ math text for paragraph ${index}
+`);
+    }
+    load(editor, manyMath.join('\n'));
+    assert(
+      'inline math registry builds groups from live NodeViews',
+      getInlineMathGroupCountForTest() >= 100,
+      `groups=${getInlineMathGroupCountForTest()}`,
+    );
+
+    const frame = document.createElement('div');
+    frame.className = 'editor-frame';
+    hydrateInlineMathGroupsAroundPosition(frame, 10, 1);
+    hydrateInlineMathGroupsAroundPosition(frame, 10, 1);
+    hydrateInlineMathGroupsAroundPosition(frame, 10, 1);
+    const inlineIndexCounters = getInlineMathGroupIndexTestCountersForTest();
+    assert(
+      'inline math position queries do not re-sort the full group index',
+      inlineIndexCounters.sorts === 1 && inlineIndexCounters.rangeQueries >= 3,
+      JSON.stringify(inlineIndexCounters),
+    );
+
+    const groupCountBeforeTyping = getInlineMathGroupCountForTest();
+    editor.commands.setTextSelection(1);
+    editor.chain().focus().insertContent('typed text at start').run();
+    assert(
+      'typing does not rebuild the inline math group map',
+      getInlineMathGroupCountForTest() === groupCountBeforeTyping,
+      `before=${groupCountBeforeTyping} after=${getInlineMathGroupCountForTest()}`,
+    );
+
+    // Editing inside an existing inlineMath keeps the same group alive.
+    const groupCountBefore = getInlineMathGroupCountForTest();
+    editor.commands.setTextSelection(1);
+    editor.chain().focus().insertContent('A').run();
+    assert(
+      'typing preserves inline math group count',
+      getInlineMathGroupCountForTest() === groupCountBefore,
+      `before=${groupCountBefore} after=${getInlineMathGroupCountForTest()}`,
+    );
   } finally {
     editor.destroy();
   }

@@ -4,6 +4,7 @@ import {
   getCachedNodeHeight,
   notifyNodeHeightCacheSeeded,
   setCachedNodeHeight,
+  subscribeNodeHeightCacheInvalidation,
   subscribeNodeHeightCacheSeeded,
 } from './height-cache';
 import {
@@ -45,6 +46,7 @@ export interface InlineMathRegistration {
   prepared: boolean;
   groupId: string | null;
   destroyed: boolean;
+  placeholderHeightKey: string | null;
 }
 
 interface InlineMathGroup {
@@ -62,26 +64,105 @@ interface InlineMathGroup {
 }
 
 const groups = new Map<string, InlineMathGroup>();
-const registrations: InlineMathRegistration[] = [];
+const groupByParagraph = new WeakMap<HTMLElement, InlineMathGroup>();
 const paragraphGroupIds = new WeakMap<HTMLElement, number>();
+const placeholderRegistrationsByHeightKey = new Map<string, Set<InlineMathRegistration>>();
 const pendingHeightMeasurements = new Set<string>();
 const layoutRetryFrames = new WeakMap<HTMLElement, number>();
 
 let groupSeq = 0;
 let paragraphGroupSeq = 0;
-let registrationVersion = 0;
-let builtRegistrationVersion = -1;
+let sortedGroups: InlineMathGroup[] = [];
+let sortDirty = true;
 let prefetchRequester: ((entries: FormulaIndexEntry[]) => void) | null = null;
 let activatingGroupId: string | null = null;
+let pendingGroups = new Set<InlineMathGroup>();
 
-function refreshPlaceholderHeights(): void {
-  for (const group of getBuiltGroups().values()) {
-    for (const registration of group.formulas) {
-      if (registration.active) {
+interface InlineMathGroupIndexTestCounters {
+  sorts: number;
+  rangeQueries: number;
+  fullGroupScans: number;
+}
+
+const inlineMathGroupIndexTestCounters: InlineMathGroupIndexTestCounters = {
+  sorts: 0,
+  rangeQueries: 0,
+  fullGroupScans: 0,
+};
+
+function addPlaceholderRegistration(registration: InlineMathRegistration): void {
+  if (registration.active || registration.destroyed) {
+    registration.placeholderHeightKey = null;
+    return;
+  }
+  const key = registration.heightKey();
+  let registrations = placeholderRegistrationsByHeightKey.get(key);
+  if (!registrations) {
+    registrations = new Set();
+    placeholderRegistrationsByHeightKey.set(key, registrations);
+  }
+  registrations.add(registration);
+  registration.placeholderHeightKey = key;
+}
+
+function removePlaceholderRegistration(registration: InlineMathRegistration): void {
+  const key = registration.placeholderHeightKey;
+  registration.placeholderHeightKey = null;
+  if (!key) {
+    return;
+  }
+  const registrations = placeholderRegistrationsByHeightKey.get(key);
+  if (!registrations) {
+    return;
+  }
+  registrations.delete(registration);
+  if (registrations.size === 0) {
+    placeholderRegistrationsByHeightKey.delete(key);
+  }
+}
+
+export function syncInlineMathPlaceholderKey(registration: InlineMathRegistration): void {
+  if (registration.active || registration.destroyed) {
+    removePlaceholderRegistration(registration);
+    return;
+  }
+  const key = registration.heightKey();
+  if (registration.placeholderHeightKey === key) {
+    return;
+  }
+  removePlaceholderRegistration(registration);
+  addPlaceholderRegistration(registration);
+}
+
+function refreshPlaceholderHeights(seededKeys: string[] | null): void {
+  if (seededKeys !== null && seededKeys.length > 0) {
+    for (const key of seededKeys) {
+      const registrations = placeholderRegistrationsByHeightKey.get(key);
+      if (!registrations) {
         continue;
       }
-      const height = getCachedNodeHeight(registration.heightKey());
-      if (height === null) {
+      for (const registration of registrations) {
+        if (registration.active || registration.destroyed) {
+          continue;
+        }
+        const height = getCachedNodeHeight(key);
+        if (height === null) {
+          continue;
+        }
+        registration.preview.style.minHeight = `${height}px`;
+        registration.preview.style.lineHeight = `${height}px`;
+      }
+    }
+    return;
+  }
+
+  for (const [key, registrations] of placeholderRegistrationsByHeightKey) {
+    const height = getCachedNodeHeight(key);
+    if (height === null) {
+      continue;
+    }
+    for (const registration of registrations) {
+      if (registration.active || registration.destroyed) {
         continue;
       }
       registration.preview.style.minHeight = `${height}px`;
@@ -91,26 +172,50 @@ function refreshPlaceholderHeights(): void {
 }
 
 let unsubscribeHeightCacheSeeded = subscribeNodeHeightCacheSeeded(refreshPlaceholderHeights);
-
-function getRegistrationKey(registration: InlineMathRegistration): string {
-  const paragraphElement = getParagraphElement(registration);
-  if (paragraphElement) {
-    let paragraphId = paragraphGroupIds.get(paragraphElement);
-    if (paragraphId === undefined) {
-      paragraphId = ++paragraphGroupSeq;
-      paragraphGroupIds.set(paragraphElement, paragraphId);
+let unsubscribeHeightCacheInvalidation = subscribeNodeHeightCacheInvalidation(() => {
+  placeholderRegistrationsByHeightKey.clear();
+  for (const group of groups.values()) {
+    for (const registration of group.formulas) {
+      addPlaceholderRegistration(registration);
     }
-    return `el:${paragraphId}`;
   }
-  return `node:${registration.id}`;
-}
+});
 
-function getParagraphElement(registration: InlineMathRegistration): HTMLElement | null {
-  const element = registration.element;
+function getParagraphElement(element: HTMLElement): HTMLElement | null {
   if (!element.isConnected) {
     return null;
   }
   return element.closest<HTMLElement>(TEXTBLOCK_SELECTOR) ?? element.parentElement;
+}
+
+function getRegistrationParagraphElement(registration: InlineMathRegistration): HTMLElement | null {
+  return getParagraphElement(registration.element);
+}
+
+function getKeyForParagraph(paragraph: HTMLElement): string {
+  let paragraphId = paragraphGroupIds.get(paragraph);
+  if (paragraphId === undefined) {
+    paragraphId = ++paragraphGroupSeq;
+    paragraphGroupIds.set(paragraph, paragraphId);
+  }
+  return `el:${paragraphId}`;
+}
+
+function markSortDirty(): void {
+  sortDirty = true;
+}
+
+function unregisterGroup(group: InlineMathGroup): void {
+  group.observedElement = null;
+  if (group.paragraph !== null) {
+    const current = groupByParagraph.get(group.paragraph);
+    if (current === group) {
+      groupByParagraph.delete(group.paragraph);
+    }
+  }
+  pendingGroups.delete(group);
+  groups.delete(group.key);
+  markSortDirty();
 }
 
 function refreshGroupBounds(group: InlineMathGroup): void {
@@ -146,62 +251,52 @@ function observeGroup(group: InlineMathGroup): void {
   // not pay for thousands of IntersectionObserver observe/unobserve calls.
 }
 
-function unobserveGroup(group: InlineMathGroup): void {
-  group.observedElement = null;
-}
-
-function unregisterGroup(group: InlineMathGroup): void {
-  unobserveGroup(group);
-  groups.delete(group.key);
-}
-
 function refreshGroupParagraph(group: InlineMathGroup): void {
-  const nextParagraph = Array.from(group.formulas).map(getParagraphElement).find(Boolean) ?? null;
+  const nextParagraph =
+    Array.from(group.formulas).map(getRegistrationParagraphElement).find(Boolean) ?? null;
   if (nextParagraph === group.paragraph) {
     return;
+  }
+  if (group.paragraph !== null) {
+    const current = groupByParagraph.get(group.paragraph);
+    if (current === group) {
+      groupByParagraph.delete(group.paragraph);
+    }
+    pendingGroups.delete(group);
   }
   group.paragraph = nextParagraph;
   if (nextParagraph !== null) {
     group.element = nextParagraph;
+    groupByParagraph.set(nextParagraph, group);
+    observeGroup(group);
+  } else {
+    pendingGroups.add(group);
   }
-  observeGroup(group);
+  markSortDirty();
 }
 
-function addRegistrationToGroup(registration: InlineMathRegistration): InlineMathGroup {
-  const key = getRegistrationKey(registration);
-  let group = groups.get(key);
-  if (!group) {
-    group = {
-      id: `inline-math-group-${++groupSeq}`,
-      key,
-      element: registration.element,
-      paragraph: getParagraphElement(registration),
-      formulas: new Set(),
-      firstPmPos: Number.POSITIVE_INFINITY,
-      lastPmPos: Number.NEGATIVE_INFINITY,
-      active: false,
-      requested: false,
-      heightKnown: false,
-      observedElement: null,
-    };
-    groups.set(key, group);
-    if (group.paragraph !== null) {
-      group.element = group.paragraph;
-    }
-  } else if (group.paragraph === null) {
-    group.paragraph = getParagraphElement(registration);
-    if (group.paragraph !== null) {
-      group.element = group.paragraph;
-    }
+function createGroup(key: string, registration: InlineMathRegistration): InlineMathGroup {
+  const paragraph = getRegistrationParagraphElement(registration);
+  const group: InlineMathGroup = {
+    id: `inline-math-group-${++groupSeq}`,
+    key,
+    element: registration.element,
+    paragraph,
+    formulas: new Set(),
+    firstPmPos: Number.POSITIVE_INFINITY,
+    lastPmPos: Number.NEGATIVE_INFINITY,
+    active: registration.active,
+    requested: registration.requested,
+    heightKnown: false,
+    observedElement: null,
+  };
+  if (paragraph !== null) {
+    group.element = paragraph;
+    groupByParagraph.set(paragraph, group);
+  } else {
+    pendingGroups.add(group);
   }
-
-  registration.groupId = group.key;
-  group.formulas.add(registration);
-  updateGroupPosition(group, registration);
-
-  if (group.paragraph === null) {
-    refreshGroupParagraph(group);
-  }
+  groups.set(key, group);
   return group;
 }
 
@@ -216,13 +311,13 @@ function removeRegistrationFromGroup(registration: InlineMathRegistration): void
   }
 
   group.formulas.delete(registration);
+  removePlaceholderRegistration(registration);
   if (group.formulas.size === 0) {
     unregisterGroup(group);
     return;
   }
 
-  const removed = registration;
-  const removedPos = removed.getPos();
+  const removedPos = registration.getPos();
   if (
     removedPos !== null &&
     (removedPos === group.firstPmPos || removedPos === group.lastPmPos)
@@ -230,6 +325,89 @@ function removeRegistrationFromGroup(registration: InlineMathRegistration): void
     refreshGroupBounds(group);
   }
   refreshGroupParagraph(group);
+  markSortDirty();
+}
+
+function assignRegistrationToGroup(registration: InlineMathRegistration): InlineMathGroup | null {
+  const paragraph = getRegistrationParagraphElement(registration);
+  const key = paragraph ? getKeyForParagraph(paragraph) : `node:${registration.id}`;
+  const previousKey = registration.groupId;
+  if (previousKey === key) {
+    const existing = groups.get(key);
+    if (existing) {
+      existing.formulas.add(registration);
+      updateGroupPosition(existing, registration);
+      return existing;
+    }
+  } else if (previousKey) {
+    removeRegistrationFromGroup(registration);
+  }
+
+  let group = groups.get(key);
+  if (!group) {
+    group = createGroup(key, registration);
+  } else if (group.paragraph === null && paragraph !== null) {
+    group.paragraph = paragraph;
+    group.element = paragraph;
+    groupByParagraph.set(paragraph, group);
+    pendingGroups.delete(group);
+  }
+
+  registration.groupId = group.key;
+  group.formulas.add(registration);
+  updateGroupPosition(group, registration);
+  if (group.paragraph === null) {
+    refreshGroupParagraph(group);
+  }
+  markSortDirty();
+  return group;
+}
+
+function reconcilePendingGroups(): void {
+  if (pendingGroups.size === 0) {
+    return;
+  }
+  for (const group of Array.from(pendingGroups)) {
+    if (group.paragraph !== null || group.formulas.size === 0) {
+      pendingGroups.delete(group);
+      continue;
+    }
+    const first = Array.from(group.formulas)[0];
+    const paragraph = first ? getRegistrationParagraphElement(first) : null;
+    if (!paragraph) {
+      continue;
+    }
+    const key = getKeyForParagraph(paragraph);
+    if (key === group.key) {
+      group.paragraph = paragraph;
+      group.element = paragraph;
+      groupByParagraph.set(paragraph, group);
+      pendingGroups.delete(group);
+      continue;
+    }
+    const moved = Array.from(group.formulas);
+    for (const registration of moved) {
+      registration.groupId = null;
+      group.formulas.delete(registration);
+      assignRegistrationToGroup(registration);
+    }
+    if (group.formulas.size === 0) {
+      unregisterGroup(group);
+    }
+  }
+}
+
+function getSortedGroups(): InlineMathGroup[] {
+  reconcilePendingGroups();
+  if (sortDirty) {
+    inlineMathGroupIndexTestCounters.sorts += 1;
+    sortedGroups = Array.from(groups.values()).sort((left, right) => {
+      const byPos = left.firstPmPos - right.firstPmPos;
+      return byPos !== 0 ? byPos : left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+    });
+    sortDirty = false;
+  }
+  return sortedGroups;
 }
 
 function requestPrefetch(entries: FormulaIndexEntry[]): void {
@@ -286,6 +464,7 @@ function activateGroup(group: InlineMathGroup): void {
     for (const registration of group.formulas) {
       if (!registration.active) {
         registration.active = true;
+        removePlaceholderRegistration(registration);
         registration.activate();
       }
       registration.requested = true;
@@ -318,64 +497,10 @@ function getGroupViewportRelation(
   return 'none';
 }
 
-function markRegistrationGroupsStale(): void {
-  registrationVersion += 1;
-  groups.clear();
-}
-
-function getBuiltGroups(): Map<string, InlineMathGroup> {
-  if (builtRegistrationVersion === registrationVersion) {
-    return groups;
-  }
-
-  groups.clear();
-  groupSeq = 0;
-  for (const registration of registrations) {
-    if (!registration.destroyed) {
-      const key = getRegistrationKey(registration);
-      let group = groups.get(key);
-      if (!group) {
-        group = {
-          id: `inline-math-group-${++groupSeq}`,
-          key,
-          element: registration.element,
-          paragraph: getParagraphElement(registration),
-          formulas: new Set(),
-          firstPmPos: Number.POSITIVE_INFINITY,
-          lastPmPos: Number.NEGATIVE_INFINITY,
-          active: registration.active,
-          requested: registration.requested,
-          heightKnown: false,
-          observedElement: null,
-        };
-        groups.set(key, group);
-        if (group.paragraph !== null) {
-          group.element = group.paragraph;
-        }
-      } else if (group.paragraph === null) {
-        group.paragraph = getParagraphElement(registration);
-        if (group.paragraph !== null) {
-          group.element = group.paragraph;
-        }
-      }
-      registration.groupId = group.key;
-      group.formulas.add(registration);
-      updateGroupPosition(group, registration);
-    }
-  }
-  builtRegistrationVersion = registrationVersion;
-  return groups;
-}
-
-function getSortedGroups(): InlineMathGroup[] {
-  return Array.from(getBuiltGroups().values()).sort(
-    (left, right) => left.firstPmPos - right.firstPmPos,
-  );
-}
-
 export function registerInlineMathNode(registration: InlineMathRegistration): () => void {
-  registrations.push(registration);
-  markRegistrationGroupsStale();
+  assignRegistrationToGroup(registration);
+  syncInlineMathPlaceholderKey(registration);
+  markSortDirty();
 
   let removed = false;
   return () => {
@@ -384,40 +509,16 @@ export function registerInlineMathNode(registration: InlineMathRegistration): ()
     }
     removed = true;
     registration.destroyed = true;
-    markRegistrationGroupsStale();
+    removeRegistrationFromGroup(registration);
   };
-}
-
-interface InlineMathEditorLike {
-  state: {
-    doc: {
-      descendants: (fn: (node: { type: { name: string }; attrs?: { display?: string } }, pos: number) => boolean | void) => void;
-    };
-  };
-  view: { nodeDOM: (pos: number) => Node | null };
-}
-
-export function registerInlineMathGroupsFromEditor(editor: InlineMathEditorLike): void {
-  registrations.length = 0;
-  editor.state.doc.descendants((node, pos) => {
-    if (node.type.name !== 'inlineMath' || node.attrs?.display === 'yes') {
-      return true;
-    }
-    const dom = editor.view.nodeDOM(pos);
-    const registration = dom instanceof HTMLElement
-      ? (dom as HTMLElement & { __marivellInlineMathRegistration?: InlineMathRegistration })
-          .__marivellInlineMathRegistration
-      : undefined;
-    if (registration) {
-      registrations.push(registration);
-    }
-    return true;
-  });
-  markRegistrationGroupsStale();
 }
 
 export function updateInlineMathRegistration(registration: InlineMathRegistration): void {
-  markRegistrationGroupsStale();
+  if (registration.destroyed) {
+    return;
+  }
+  assignRegistrationToGroup(registration);
+  syncInlineMathPlaceholderKey(registration);
 
   if (registration.active) {
     registration.requested = true;
@@ -439,6 +540,7 @@ export function activateInlineMathNode(registration: InlineMathRegistration): vo
   }
 
   registration.active = true;
+  removePlaceholderRegistration(registration);
   registration.requested = true;
   registration.activate();
   requestPrefetch([
@@ -470,6 +572,7 @@ export function isInlineMathNodeInViewport(
 export function activateInlineMathGroupsInViewport(
   frame: HTMLElement,
   margin = 1600,
+  centerPosition?: number,
 ): number {
   const sorted = getSortedGroups();
   if (!frame || typeof IntersectionObserver === 'undefined') {
@@ -501,7 +604,17 @@ export function activateInlineMathGroupsInViewport(
   const frameRect = frame.getBoundingClientRect();
   const prefetchTop = frameRect.top - margin;
   const prefetchBottom = frameRect.bottom + margin;
-  for (const group of sorted) {
+  let groupsToScan = sorted;
+  if (centerPosition !== undefined && Number.isFinite(centerPosition)) {
+    const viewportRadius = Math.max(frame.clientHeight || 1, 1);
+    groupsToScan = getInlineMathGroupsInPositionRange(
+      centerPosition,
+      viewportRadius * 4 + margin,
+    );
+  } else {
+    inlineMathGroupIndexTestCounters.fullGroupScans += 1;
+  }
+  for (const group of groupsToScan) {
     const element = getGroupElement(group);
     if (!element.isConnected) {
       continue;
@@ -535,29 +648,54 @@ export function activateInlineMathGroupsInViewport(
   return activated;
 }
 
-export function hydrateInlineMathGroupsAroundScrollRatio(
+function getInlineMathGroupsInPositionRange(
+  centerPosition: number,
+  maxDistance: number,
+): InlineMathGroup[] {
+  inlineMathGroupIndexTestCounters.rangeQueries += 1;
+  const sorted = getSortedGroups();
+  if (sorted.length === 0) {
+    return [];
+  }
+  const low = centerPosition - maxDistance;
+  const high = centerPosition + maxDistance;
+  let from = 0;
+  let to = sorted.length;
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (sorted[mid]!.lastPmPos < low) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  from = lo;
+  lo = 0;
+  hi = sorted.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (sorted[mid]!.firstPmPos <= high) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  to = lo;
+  return sorted.slice(from, to);
+}
+
+export function hydrateInlineMathGroupsAroundPosition(
   frame: HTMLElement,
-  scrollTop: number,
-  maxScrollTop: number,
+  centerPosition: number,
+  viewportRadius: number,
   margin = 1600,
 ): number {
-  const sorted = getSortedGroups();
-  if (sorted.length === 0 || !frame || typeof IntersectionObserver === 'undefined') {
-    for (const group of sorted) {
-      activateGroup(group);
-    }
-    return sorted.length;
-  }
-
-  const ratio = maxScrollTop > 0 ? Math.min(1, Math.max(0, scrollTop / maxScrollTop)) : 0;
-  const centerIndex = Math.floor((sorted.length - 1) * ratio);
-  const radius = Math.max(120, Math.floor(sorted.length * 0.22));
-  const from = Math.max(0, centerIndex - radius);
-  const to = Math.min(sorted.length, centerIndex + radius + 1);
+  const groupsInRange = getInlineMathGroupsInPositionRange(centerPosition, viewportRadius * 4);
   let activated = 0;
 
-  for (let index = from; index < to; index += 1) {
-    const group = sorted[index];
+  for (const group of groupsInRange) {
     if (!group || group.active) {
       continue;
     }
@@ -574,7 +712,7 @@ export function hydrateInlineMathGroupsAroundScrollRatio(
 }
 
 export function prepareInlineMathForFormulaHtml(htmlByKey: Record<string, string>): void {
-  for (const group of getBuiltGroups().values()) {
+  for (const group of groups.values()) {
     for (const registration of group.formulas) {
       const key = getFormulaCacheKey(registration.getLatex(), registration.display);
       const html = htmlByKey[key];
@@ -619,10 +757,11 @@ export function scheduleInlineMathHeightMeasurement(
 
   void measureFormulaHeights(items).then((heights) => {
     pendingHeightMeasurements.delete(heightKey);
-    for (const [key, height] of Object.entries(heights)) {
-      setCachedNodeHeight(key, height);
+    const heightKeys = Object.keys(heights);
+    for (const key of heightKeys) {
+      setCachedNodeHeight(key, heights[key]!);
     }
-    notifyNodeHeightCacheSeeded();
+    notifyNodeHeightCacheSeeded(heightKeys);
   });
 }
 
@@ -631,43 +770,62 @@ interface SelectionSyncEditor {
     selection: { from: number; to: number; empty: boolean };
     doc: { nodeAt: (pos: number) => { nodeSize: number } | null };
   };
+  view: { domAtPos: (pos: number) => { node: Node; offset: number } };
+}
+
+function findParagraphElementForPos(editor: SelectionSyncEditor, pos: number): HTMLElement | null {
+  let dom;
+  try {
+    dom = editor.view.domAtPos(pos);
+  } catch {
+    return null;
+  }
+  if (!dom) {
+    return null;
+  }
+  const node = dom.node;
+  const element = node instanceof Element ? node : (node.parentElement ?? null);
+  if (!element) {
+    return null;
+  }
+  return element.closest<HTMLElement>(TEXTBLOCK_SELECTOR);
 }
 
 export function syncInlineMathSelection(editor: SelectionSyncEditor): void {
   const { from, to, empty } = editor.state.selection;
-  const sorted = getSortedGroups();
-  if (sorted.length === 0) {
-    return;
-  }
+  reconcilePendingGroups();
 
-  let low = 0;
-  let high = sorted.length;
-  while (low < high) {
-    const mid = Math.floor((low + high) / 2);
-    if (sorted[mid]!.lastPmPos < from) {
-      low = mid + 1;
-    } else {
-      high = mid;
+  const startGroup = ((): InlineMathGroup | null => {
+    const paragraph = findParagraphElementForPos(editor, from);
+    return paragraph !== null ? (groupByParagraph.get(paragraph) ?? null) : null;
+  })();
+  const endGroup = ((): InlineMathGroup | null => {
+    if (empty || from === to) {
+      return null;
     }
-  }
+    const paragraph = findParagraphElementForPos(editor, to);
+    return paragraph !== null ? (groupByParagraph.get(paragraph) ?? null) : null;
+  })();
 
-  const group = sorted[low];
-  if (!group || group.firstPmPos > to) {
-    return;
-  }
-
-  activateGroup(group);
-  for (const registration of group.formulas) {
-    const position = registration.getPos();
-    if (position === null) {
+  const seen = new Set<string>();
+  for (const group of [startGroup, endGroup]) {
+    if (!group || seen.has(group.key)) {
       continue;
     }
-    const mathNode = editor.state.doc.nodeAt(position);
-    const end = mathNode ? position + mathNode.nodeSize : position + 1;
-    const selected = empty
-      ? from > position && from < end
-      : Math.max(from, position) < Math.min(to, end);
-    registration.editing = selected;
+    seen.add(group.key);
+    activateGroup(group);
+    for (const registration of group.formulas) {
+      const position = registration.getPos();
+      if (position === null) {
+        continue;
+      }
+      const mathNode = editor.state.doc.nodeAt(position);
+      const end = mathNode ? position + mathNode.nodeSize : position + 1;
+      const selected = empty
+        ? from > position && from < end
+        : Math.max(from, position) < Math.min(to, end);
+      registration.editing = selected;
+    }
   }
 }
 
@@ -679,18 +837,37 @@ export function setInlineMathPrefetchRequester(
 
 export function resetInlineMathGroupRegistryForTest(): void {
   for (const group of Array.from(groups.values())) {
-    unregisterGroup(group);
+    if (group.paragraph !== null) {
+      groupByParagraph.delete(group.paragraph);
+    }
   }
   groups.clear();
-  registrations.length = 0;
-  registrationVersion = 0;
-  builtRegistrationVersion = -1;
+  pendingGroups.clear();
+  sortedGroups = [];
+  sortDirty = true;
+  inlineMathGroupIndexTestCounters.sorts = 0;
+  inlineMathGroupIndexTestCounters.rangeQueries = 0;
+  inlineMathGroupIndexTestCounters.fullGroupScans = 0;
   pendingHeightMeasurements.clear();
+  placeholderRegistrationsByHeightKey.clear();
   unsubscribeHeightCacheSeeded();
   unsubscribeHeightCacheSeeded = subscribeNodeHeightCacheSeeded(refreshPlaceholderHeights);
+  unsubscribeHeightCacheInvalidation();
+  unsubscribeHeightCacheInvalidation = subscribeNodeHeightCacheInvalidation(() => {
+    placeholderRegistrationsByHeightKey.clear();
+    for (const group of groups.values()) {
+      for (const registration of group.formulas) {
+        addPlaceholderRegistration(registration);
+      }
+    }
+  });
   prefetchRequester = null;
 }
 
 export function getInlineMathGroupCountForTest(): number {
-  return getBuiltGroups().size;
+  return groups.size;
+}
+
+export function getInlineMathGroupIndexTestCountersForTest(): InlineMathGroupIndexTestCounters {
+  return { ...inlineMathGroupIndexTestCounters };
 }

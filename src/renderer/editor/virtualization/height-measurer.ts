@@ -57,44 +57,71 @@ export function getEditorWidthBucket(element?: HTMLElement | null): number {
   return bucket;
 }
 
+let cachedEditorThemeKey: string | null = null;
+let cachedEditorZoomKey: number | null = null;
+let cachedEditorFontVersionKey: string | null = null;
+
+export function resetEditorEnvironmentKeyCache(): void {
+  cachedEditorThemeKey = null;
+  cachedEditorZoomKey = null;
+  cachedEditorFontVersionKey = null;
+}
+
 export function getEditorThemeKey(): string {
+  if (cachedEditorThemeKey !== null) {
+    return cachedEditorThemeKey;
+  }
   if (typeof document === 'undefined') {
-    return 'light:default';
+    cachedEditorThemeKey = 'light:default';
+    return cachedEditorThemeKey;
   }
 
   const root = document.documentElement;
   const theme = root?.dataset.theme ?? 'light';
   const palette = root?.dataset.colorScheme ?? 'default';
-  return `${theme}:${palette}`;
+  cachedEditorThemeKey = `${theme}:${palette}`;
+  return cachedEditorThemeKey;
 }
 
 export function getEditorZoomKey(): number {
-  if (typeof window === 'undefined') {
-    return 1;
+  if (cachedEditorZoomKey !== null) {
+    return cachedEditorZoomKey;
   }
-  return window.devicePixelRatio || 1;
+  if (typeof window === 'undefined') {
+    cachedEditorZoomKey = 1;
+    return cachedEditorZoomKey;
+  }
+  cachedEditorZoomKey = window.devicePixelRatio || 1;
+  return cachedEditorZoomKey;
 }
 
 export function getEditorFontVersionKey(): string {
+  if (cachedEditorFontVersionKey !== null) {
+    return cachedEditorFontVersionKey;
+  }
   if (typeof document === 'undefined') {
-    return 'default';
+    cachedEditorFontVersionKey = 'default';
+    return cachedEditorFontVersionKey;
   }
 
   const root = document.documentElement;
   if (root?.dataset.fontVersion) {
-    return root.dataset.fontVersion;
+    cachedEditorFontVersionKey = root.dataset.fontVersion;
+    return cachedEditorFontVersionKey;
   }
 
   try {
     const font = getComputedStyle(root).getPropertyValue('--ui-font').trim();
     if (font) {
-      return font;
+      cachedEditorFontVersionKey = font;
+      return cachedEditorFontVersionKey;
     }
   } catch {
     // Some jsdom environments do not implement getComputedStyle fully.
   }
 
-  return 'default';
+  cachedEditorFontVersionKey = 'default';
+  return cachedEditorFontVersionKey;
 }
 
 export function getFormulaHeightKey(
@@ -380,6 +407,7 @@ export function measureFormulaHeights(
 }
 
 export function resetHeightMeasurerForTest(): void {
+  resetEditorEnvironmentKeyCache();
   editorSurfaceCache = null;
   editorSurfaceCacheWidth = -1;
   editorWidthBucketCache = null;

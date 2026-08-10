@@ -49,7 +49,7 @@ import {
 } from '../editor/scroll-anchor';
 import {
   forceActivateViewport,
-  hydrateVisibleAroundRatio,
+  hydrateTargetRange,
   resumeScrollAnchorProvider,
   setScrollAnchorProvider,
   suspendScrollAnchorProvider,
@@ -62,6 +62,7 @@ import {
   scrollPosIntoView,
 } from '../editor/virtualization/coordinate-service';
 import { clearNodeHeightCache } from '../editor/virtualization/height-cache';
+import { resetEditorEnvironmentKeyCache } from '../editor/virtualization/height-measurer';
 import {
   clearFormulaHtmlCache,
   getCachedFormulaHtml,
@@ -70,9 +71,8 @@ import {
 } from '../editor/math-render-cache';
 import {
   activateInlineMathGroupsInViewport,
-  hydrateInlineMathGroupsAroundScrollRatio,
+  hydrateInlineMathGroupsAroundPosition,
   prepareInlineMathForFormulaHtml,
-  registerInlineMathGroupsFromEditor,
   setInlineMathPrefetchRequester,
   syncInlineMathSelection,
 } from '../editor/virtualization/inline-math-group-registry';
@@ -1322,6 +1322,7 @@ export default function EditorShell({
     };
 
     const invalidateHeightCache = () => {
+      resetEditorEnvironmentKeyCache();
       clearNodeHeightCache();
       if (heightCacheInvalidationFrameRef.current !== null) {
         cancelAnimationFrame(heightCacheInvalidationFrameRef.current);
@@ -1389,6 +1390,35 @@ export default function EditorShell({
     let hydrationFrame: number | null = null;
     let lastSyncHydrateScrollTop = frame.scrollTop;
 
+    const getViewportCenterPosition = (): { pos: number } | null => {
+      const currentEditor = editorRef.current;
+      if (!currentEditor) {
+        return null;
+      }
+      const rect = frame.getBoundingClientRect();
+      if (rect.height <= 0) {
+        return null;
+      }
+      try {
+        const coords = posAtCoords(
+          currentEditor,
+          rect.left + rect.width / 2,
+          rect.top + rect.height / 2,
+        );
+        if (coords) {
+          return { pos: coords.pos };
+        }
+      } catch {
+        // Fall through to the ratio estimate below.
+      }
+      const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+      const ratio = maxScrollTop > 0
+        ? Math.min(1, Math.max(0, frame.scrollTop / maxScrollTop))
+        : 0;
+      const docSize = currentEditor.state.doc.content.size;
+      return { pos: Math.max(0, Math.min(docSize, Math.round(docSize * ratio))) };
+    };
+
     const hydrateScrollTarget = () => {
       if (
         hydrationFrame !== null ||
@@ -1402,9 +1432,11 @@ export default function EditorShell({
         const scrollDelta = Math.abs(frame.scrollTop - lastSyncHydrateScrollTop);
         const jumpThreshold = Math.max(frame.clientHeight * 0.5, 400);
         if (scrollDelta > jumpThreshold) {
-          const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
-          hydrateVisibleAroundRatio(frame, frame.scrollTop, maxScrollTop);
-          hydrateInlineMathGroupsAroundScrollRatio(frame, frame.scrollTop, maxScrollTop);
+          const viewportRadius = Math.max(frame.clientHeight || 1, 1);
+          const center = getViewportCenterPosition();
+          if (center !== null) {
+            hydrateTargetRange(frame, center.pos, viewportRadius);
+          }
           lastSyncHydrateScrollTop = frame.scrollTop;
         }
       }
@@ -1420,7 +1452,13 @@ export default function EditorShell({
         const scrollTopBeforeHydrate = frame.scrollTop;
         const scrollHeightBeforeHydrate = frame.scrollHeight;
         const oldMaxScrollTop = Math.max(scrollHeightBeforeHydrate - frame.clientHeight, 0);
-        hydrateInlineMathGroupsAroundScrollRatio(frame, frame.scrollTop, oldMaxScrollTop);
+        const viewportRadius = Math.max(frame.clientHeight || 1, 1);
+        const center = getViewportCenterPosition();
+        const centerPos = center?.pos ?? null;
+        if (centerPos !== null) {
+          hydrateTargetRange(frame, centerPos, viewportRadius);
+          hydrateInlineMathGroupsAroundPosition(frame, centerPos, viewportRadius);
+        }
         const wasAtBottom = scrollTopBeforeHydrate >= oldMaxScrollTop - 1;
         keepAtBottomRef.current = wasAtBottom;
         const posAtCoordsMs = 0;
@@ -1788,7 +1826,6 @@ export default function EditorShell({
       visualDocEditedRef.current = false;
       replaceEditorContent(editor, content);
       externalUpdateRef.current = false;
-      registerInlineMathGroupsFromEditor(editor);
       const frame = editorFrameRef.current;
       if (frame && !sourceModeRef.current) {
         requestAnimationFrame(() => {
@@ -1797,7 +1834,22 @@ export default function EditorShell({
           }
           const currentFrame = editorFrameRef.current;
           if (currentFrame) {
-            activateInlineMathGroupsInViewport(currentFrame);
+            const currentEditor = editorRef.current;
+            let centerPosition: number | undefined;
+            if (currentEditor) {
+              try {
+                const rect = currentFrame.getBoundingClientRect();
+                const coords = posAtCoords(
+                  currentEditor,
+                  rect.left + rect.width / 2,
+                  rect.top + rect.height / 2,
+                );
+                centerPosition = coords?.pos;
+              } catch {
+                // Full-viewport fallback below handles missing coordinates.
+              }
+            }
+            activateInlineMathGroupsInViewport(currentFrame, 1600, centerPosition);
           }
         });
       }

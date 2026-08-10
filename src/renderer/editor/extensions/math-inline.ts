@@ -12,7 +12,9 @@ import {
   registerVirtualNodeView,
 } from '../virtualization/activation-controller';
 import {
+  registerInlineMathNode,
   scheduleInlineMathHeightMeasurement,
+  syncInlineMathPlaceholderKey,
   type InlineMathRegistration,
 } from '../virtualization/inline-math-group-registry';
 import { translate } from '../../i18n';
@@ -332,6 +334,9 @@ export const MathInline = Node.create({
         inlinePreviewActive = false;
         lastRenderedText = null;
         dom.classList.add('math-inline-node--placeholder');
+        if (inlineRegistration) {
+          syncInlineMathPlaceholderKey(inlineRegistration);
+        }
         previewDOM.replaceChildren();
         const hint = document.createElement('span');
         hint.className = 'math-inline-placeholder-hint';
@@ -347,6 +352,9 @@ export const MathInline = Node.create({
       const activateInlinePreview = (): void => {
         inlinePreviewActive = true;
         dom.classList.remove('math-inline-node--placeholder');
+        if (inlineRegistration) {
+          syncInlineMathPlaceholderKey(inlineRegistration);
+        }
         renderPreview(node.textContent);
         const cachedHeight = getCachedNodeHeight(getInlineHeightKey());
         if (cachedHeight !== null) {
@@ -449,6 +457,7 @@ export const MathInline = Node.create({
           prepared: false,
           groupId: null,
           destroyed: false,
+          placeholderHeightKey: null,
         };
         const editingNow = isInlineEditing();
         inlineRegistration.editing = editingNow;
@@ -461,6 +470,7 @@ export const MathInline = Node.create({
         }
         (dom as HTMLElement & { __marivellInlineMathRegistration?: InlineMathRegistration }).__marivellInlineMathRegistration =
           inlineRegistration;
+        unregisterInlineGroup = registerInlineMathNode(inlineRegistration);
       }
 
       return {

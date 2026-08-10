@@ -38,6 +38,7 @@ export const VIRTUAL_ACTIVATION_BATCH_SIZE = 24;
 const HYDRATION_BATCH_SIZE = 64;
 
 const virtualNodes = new Map<string, VirtualNodeRegistration>();
+const virtualNodesByPositionDirty = new Set<string>();
 let virtualNodeElements = new WeakMap<HTMLElement, string>();
 const pendingActivations = new Map<string, VirtualNodeRegistration>();
 const hydrationQueue = createHydrationQueue();
@@ -66,7 +67,38 @@ export function resumeScrollAnchorProvider(): void {
   }
 }
 
+interface VirtualNodePositionEntry {
+  id: string;
+  position: number;
+  priority: number;
+  left: VirtualNodePositionEntry | null;
+  right: VirtualNodePositionEntry | null;
+  size: number;
+}
 
+let virtualNodePositionTree: VirtualNodePositionEntry | null = null;
+const virtualNodePositionIndex = new Map<string, VirtualNodePositionEntry>();
+let virtualNodePositionCount = 0;
+
+interface VirtualNodePositionIndexTestCounters {
+  registers: number;
+  unregisters: number;
+  dirtyFlushes: number;
+  dirtyEntriesSeen: number;
+  rangeQueries: number;
+  fullScans: number;
+  hydrateTargetRangeCalls: number;
+}
+
+const virtualNodePositionIndexTestCounters: VirtualNodePositionIndexTestCounters = {
+  registers: 0,
+  unregisters: 0,
+  dirtyFlushes: 0,
+  dirtyEntriesSeen: 0,
+  rangeQueries: 0,
+  fullScans: 0,
+  hydrateTargetRangeCalls: 0,
+};
 
 function withScrollAnchorRestore<T>(operation: () => T): T {
   const anchor = scrollAnchorProvider?.capture() ?? null;
@@ -79,8 +111,221 @@ function withScrollAnchorRestore<T>(operation: () => T): T {
   }
 }
 
+function getVirtualNodePositionPriority(id: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < id.length; index += 1) {
+    hash ^= id.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) / 4294967296;
+}
+
+function updateVirtualNodePositionEntrySize(entry: VirtualNodePositionEntry): void {
+  entry.size = 1 + (entry.left?.size ?? 0) + (entry.right?.size ?? 0);
+}
+
+function compareVirtualNodePositionEntries(
+  left: VirtualNodePositionEntry,
+  right: VirtualNodePositionEntry,
+): number {
+  if (left.position !== right.position) {
+    return left.position - right.position;
+  }
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
+
+function rotateVirtualNodePositionRight(root: VirtualNodePositionEntry): VirtualNodePositionEntry {
+  const pivot = root.left!;
+  root.left = pivot.right;
+  pivot.right = root;
+  updateVirtualNodePositionEntrySize(root);
+  updateVirtualNodePositionEntrySize(pivot);
+  return pivot;
+}
+
+function rotateVirtualNodePositionLeft(root: VirtualNodePositionEntry): VirtualNodePositionEntry {
+  const pivot = root.right!;
+  root.right = pivot.left;
+  pivot.left = root;
+  updateVirtualNodePositionEntrySize(root);
+  updateVirtualNodePositionEntrySize(pivot);
+  return pivot;
+}
+
+function insertVirtualNodePositionEntry(
+  root: VirtualNodePositionEntry | null,
+  entry: VirtualNodePositionEntry,
+): VirtualNodePositionEntry {
+  if (root === null) {
+    entry.left = null;
+    entry.right = null;
+    entry.size = 1;
+    return entry;
+  }
+
+  if (compareVirtualNodePositionEntries(entry, root) < 0) {
+    root.left = insertVirtualNodePositionEntry(root.left, entry);
+    if (root.left!.priority > root.priority) {
+      root = rotateVirtualNodePositionRight(root);
+    }
+  } else {
+    root.right = insertVirtualNodePositionEntry(root.right, entry);
+    if (root.right!.priority > root.priority) {
+      root = rotateVirtualNodePositionLeft(root);
+    }
+  }
+
+  updateVirtualNodePositionEntrySize(root);
+  return root;
+}
+
+function removeVirtualNodePositionEntry(
+  root: VirtualNodePositionEntry | null,
+  position: number,
+  id: string,
+): VirtualNodePositionEntry | null {
+  if (root === null) {
+    return null;
+  }
+
+  const comparison = position !== root.position
+    ? position - root.position
+    : id < root.id
+      ? -1
+      : id > root.id
+        ? 1
+        : 0;
+  if (comparison < 0) {
+    root.left = removeVirtualNodePositionEntry(root.left, position, id);
+  } else if (comparison > 0) {
+    root.right = removeVirtualNodePositionEntry(root.right, position, id);
+  } else {
+    return mergeVirtualNodePositionEntries(root.left, root.right);
+  }
+
+  updateVirtualNodePositionEntrySize(root);
+  return root;
+}
+
+function mergeVirtualNodePositionEntries(
+  left: VirtualNodePositionEntry | null,
+  right: VirtualNodePositionEntry | null,
+): VirtualNodePositionEntry | null {
+  if (left === null) {
+    return right;
+  }
+  if (right === null) {
+    return left;
+  }
+  if (left.priority > right.priority) {
+    left.right = mergeVirtualNodePositionEntries(left.right, right);
+    updateVirtualNodePositionEntrySize(left);
+    return left;
+  }
+  right.left = mergeVirtualNodePositionEntries(left, right.left);
+  updateVirtualNodePositionEntrySize(right);
+  return right;
+}
+
+function removeVirtualNodePosition(id: string): void {
+  const entry = virtualNodePositionIndex.get(id);
+  if (!entry) {
+    return;
+  }
+  virtualNodePositionIndex.delete(id);
+  virtualNodePositionTree = removeVirtualNodePositionEntry(
+    virtualNodePositionTree,
+    entry.position,
+    id,
+  );
+  virtualNodePositionCount -= 1;
+}
+
+function insertVirtualNodePosition(id: string, position: number): void {
+  const existing = virtualNodePositionIndex.get(id);
+  if (existing?.position === position) {
+    return;
+  }
+  if (existing) {
+    removeVirtualNodePosition(id);
+  }
+  const entry: VirtualNodePositionEntry = {
+    id,
+    position,
+    priority: getVirtualNodePositionPriority(id),
+    left: null,
+    right: null,
+    size: 1,
+  };
+  virtualNodePositionIndex.set(id, entry);
+  virtualNodePositionTree = insertVirtualNodePositionEntry(virtualNodePositionTree, entry);
+  virtualNodePositionCount += 1;
+}
+
+function refreshVirtualNodePosition(id: string): void {
+  const registration = virtualNodes.get(id);
+  virtualNodesByPositionDirty.delete(id);
+  if (!registration) {
+    removeVirtualNodePosition(id);
+    return;
+  }
+  const position = registration.getPosition?.() ?? null;
+  if (position === null) {
+    removeVirtualNodePosition(id);
+    return;
+  }
+  insertVirtualNodePosition(id, position);
+}
+
+function collectVirtualNodePositionRange(
+  root: VirtualNodePositionEntry | null,
+  low: number,
+  high: number,
+  entries: Array<{ id: string; position: number }>,
+): void {
+  if (root === null) {
+    return;
+  }
+  if (root.position > low) {
+    collectVirtualNodePositionRange(root.left, low, high, entries);
+  }
+  if (root.position >= low && root.position <= high) {
+    entries.push({ id: root.id, position: root.position });
+  }
+  if (root.position < high) {
+    collectVirtualNodePositionRange(root.right, low, high, entries);
+  }
+}
+
+function getVirtualNodePositionEntriesInRange(
+  centerPosition: number,
+  maxDistance: number,
+): Array<{ id: string; position: number }> {
+  virtualNodePositionIndexTestCounters.rangeQueries += 1;
+  if (virtualNodePositionTree === null) {
+    return [];
+  }
+  const low = centerPosition - maxDistance;
+  const high = centerPosition + maxDistance;
+  const entries: Array<{ id: string; position: number }> = [];
+  collectVirtualNodePositionRange(virtualNodePositionTree, low, high, entries);
+  return entries;
+}
+
+function flushVirtualNodePositionDirty(): void {
+  if (virtualNodesByPositionDirty.size === 0) {
+    return;
+  }
+  virtualNodePositionIndexTestCounters.dirtyFlushes += 1;
+  virtualNodePositionIndexTestCounters.dirtyEntriesSeen += virtualNodesByPositionDirty.size;
+  for (const id of Array.from(virtualNodesByPositionDirty)) {
+    refreshVirtualNodePosition(id);
+  }
+}
+
 function flushPendingActivations(): void {
   pendingActivationFrame = null;
+  flushVirtualNodePositionDirty();
   if (pendingActivations.size === 0) {
     return;
   }
@@ -199,12 +444,26 @@ function unregisterVirtualNodeView(id: string): void {
   virtualNodes.delete(id);
   virtualNodeElements.delete(registration.element);
   virtualNodeObserver?.unobserve(registration.element);
+  virtualNodesByPositionDirty.delete(id);
+  removeVirtualNodePosition(id);
+  virtualNodePositionIndexTestCounters.unregisters += 1;
 }
 
 export function resetActivationControllerForTest(): void {
   virtualNodeObserver?.disconnect();
   virtualNodeObserver = null;
   virtualNodes.clear();
+  virtualNodePositionTree = null;
+  virtualNodePositionIndex.clear();
+  virtualNodePositionCount = 0;
+  virtualNodesByPositionDirty.clear();
+  virtualNodePositionIndexTestCounters.registers = 0;
+  virtualNodePositionIndexTestCounters.unregisters = 0;
+  virtualNodePositionIndexTestCounters.dirtyFlushes = 0;
+  virtualNodePositionIndexTestCounters.dirtyEntriesSeen = 0;
+  virtualNodePositionIndexTestCounters.rangeQueries = 0;
+  virtualNodePositionIndexTestCounters.fullScans = 0;
+  virtualNodePositionIndexTestCounters.hydrateTargetRangeCalls = 0;
   virtualNodeElements = new WeakMap<HTMLElement, string>();
   pendingActivations.clear();
   hydrationQueue.clear();
@@ -230,27 +489,13 @@ export function registerVirtualNodeView(
   callbacks: VirtualNodeCallbacks,
   metadata: VirtualNodeMetadata = {},
 ): () => void {
-  for (const previous of Array.from(virtualNodes.values())) {
-    if (previous.element !== element) {
-      continue;
-    }
-    cancelPendingActivation(previous.id);
-    virtualNodeObserver?.unobserve(previous.element);
-    virtualNodeElements.delete(previous.element);
-    virtualNodes.delete(previous.id);
-    if (previous.element.dataset.virtualNodeId === previous.id) {
-      delete previous.element.dataset.virtualNodeId;
-    }
+  const previousElementId = virtualNodeElements.get(element);
+  if (previousElementId !== undefined) {
+    unregisterVirtualNodeView(previousElementId);
   }
-
   const previous = virtualNodes.get(id);
-  if (previous) {
-    cancelPendingActivation(id);
-    virtualNodeObserver?.unobserve(previous.element);
-    virtualNodeElements.delete(previous.element);
-    if (previous.element.dataset.virtualNodeId === id) {
-      delete previous.element.dataset.virtualNodeId;
-    }
+  if (previous && previous.element !== element) {
+    unregisterVirtualNodeView(id);
   }
 
   const registration: VirtualNodeRegistration = {
@@ -267,6 +512,8 @@ export function registerVirtualNodeView(
   virtualNodes.set(id, registration);
   virtualNodeElements.set(element, id);
   element.dataset.virtualNodeId = id;
+  virtualNodesByPositionDirty.add(id);
+  virtualNodePositionIndexTestCounters.registers += 1;
 
   if (typeof IntersectionObserver === 'undefined') {
     registration.active = true;
@@ -398,11 +645,31 @@ export function hydrateVisibleAroundRatio(
   return toActivate.length;
 }
 
+export function getVirtualNodePositionIndexSizeForTest(): number {
+  flushVirtualNodePositionDirty();
+  return virtualNodePositionCount;
+}
+
+export function getVirtualNodePositionIndexTestCountersForTest(): VirtualNodePositionIndexTestCounters {
+  return { ...virtualNodePositionIndexTestCounters };
+}
+
 export function hydrateTargetRange(
   frame: HTMLElement,
   centerPosition: number,
   radius: number,
 ): number {
+  virtualNodePositionIndexTestCounters.hydrateTargetRangeCalls += 1;
+  if (typeof window !== 'undefined') {
+    const benchmarkWindow = window as unknown as {
+      markdownEditor?: { getBenchmarkEnabled?: () => boolean };
+      __marivellHydrateTargetRangeCalls?: number;
+    };
+    if (benchmarkWindow.markdownEditor?.getBenchmarkEnabled?.()) {
+      benchmarkWindow.__marivellHydrateTargetRangeCalls =
+        (benchmarkWindow.__marivellHydrateTargetRangeCalls ?? 0) + 1;
+    }
+  }
   const viewportRadius = Number.isFinite(radius) && radius > 0
     ? radius
     : Math.max(frame.clientHeight || 1, 1);
@@ -410,15 +677,19 @@ export function hydrateTargetRange(
   const evictRadius = viewportRadius * 4;
 
   hydrationQueue.evictOutside(evictRadius, centerPosition);
+  flushVirtualNodePositionDirty();
   const scanStart = performance.now();
   let scanned = 0;
 
-  for (const registration of Array.from(virtualNodes.values())) {
-    const position = registration.getPosition?.() ?? null;
-    scanned += 1;
-    if (position === null) {
+  const candidates = getVirtualNodePositionEntriesInRange(centerPosition, evictRadius);
+
+  for (const candidate of candidates) {
+    const registration = virtualNodes.get(candidate.id);
+    if (!registration) {
       continue;
     }
+    const position = candidate.position;
+    scanned += 1;
 
     const distance = Math.abs(position - centerPosition);
     if (distance > evictRadius) {

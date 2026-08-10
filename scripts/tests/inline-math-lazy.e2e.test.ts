@@ -346,6 +346,128 @@ async function main(): Promise<void> {
       JSON.stringify(selectionResult),
     );
 
+    const scrollStart = await handle.page.evaluate(() => {
+      const frame = document.querySelector('.editor-frame');
+      if (!(frame instanceof HTMLElement)) throw new Error('editor frame missing');
+      const w: any = window;
+      const marivellEditor: any = w.__marivellEditor;
+      const frameRect = frame.getBoundingClientRect();
+      const candidates = Array.from(
+        frame.querySelectorAll('p, .math-inline-node'),
+      )
+        .map((element: HTMLElement) => {
+          const rect = element.getBoundingClientRect();
+          return { element, relativeTop: rect.top - frameRect.top, bottom: rect.bottom, top: rect.top };
+        })
+        .filter((candidate) => candidate.bottom > frameRect.top && candidate.top < frameRect.bottom)
+        .sort((a, b) => a.relativeTop - b.relativeTop || (a.element.tagName === 'P' ? -1 : b.element.tagName === 'P' ? 1 : 0));
+      const anchor = candidates[0]?.element ?? null;
+      let anchorPos: number | null = null;
+      try {
+        const coords = marivellEditor?.view?.posAtCoords({ left: frameRect.left + 10, top: frameRect.top + 10 });
+        anchorPos = coords?.pos ?? null;
+      } catch {
+        anchorPos = null;
+      }
+      return {
+        beforeHydrateCalls: (w.__marivellHydrateTargetRangeCalls as number | undefined) ?? 0,
+        targetScrollTop: Math.round((frame.scrollHeight - frame.clientHeight) * 0.5),
+        beforeAnchorTop: anchor ? anchor.getBoundingClientRect().top - frameRect.top : null,
+        anchorPos,
+        anchorText: anchor ? (anchor.textContent ?? '').slice(0, 80) : '',
+      };
+    });
+    await handle.page.evaluate(({ targetScrollTop }) => {
+      const frame = document.querySelector('.editor-frame');
+      if (!(frame instanceof HTMLElement)) throw new Error('editor frame missing');
+      frame.scrollTop = targetScrollTop;
+      frame.dispatchEvent(new Event('scroll'));
+    }, { targetScrollTop: scrollStart.targetScrollTop });
+    await handle.page.waitForFunction(() => {
+      const frame = document.querySelector('.editor-frame');
+      if (!(frame instanceof HTMLElement)) return false;
+      const frameRect = frame.getBoundingClientRect();
+      let placeholders = 0;
+      Array.from(frame.querySelectorAll('.math-inline-node')).forEach((node) => {
+        const rect = node.getBoundingClientRect();
+        if (rect.bottom <= frameRect.top || rect.top >= frameRect.bottom) return;
+        const preview = node.querySelector(':scope > .math-node-preview');
+        const hasKatex = preview?.querySelector('.katex') !== null;
+        const hasHintOrError = preview?.querySelector(
+          '.katex-error, .math-node-empty-hint, .math-node-placeholder-hint',
+        ) !== null;
+        if (!hasKatex && !hasHintOrError && node.classList.contains('math-inline-node--placeholder')) {
+          placeholders += 1;
+        }
+      });
+      return placeholders === 0;
+    }, undefined, { timeout: 10_000 }).catch(() => {});
+    const fastScrollResult = await handle.page.evaluate(({ beforeHydrateCalls, beforeAnchorTop, anchorPos, targetScrollTop }) => {
+      const frame = document.querySelector('.editor-frame');
+      if (!(frame instanceof HTMLElement)) throw new Error('editor frame missing');
+      const w: any = window;
+      const marivellEditorAfter: any = w.__marivellEditor;
+      const frameRect = frame.getBoundingClientRect();
+      const candidates = Array.from(
+        frame.querySelectorAll('p, .math-inline-node'),
+      )
+        .map((element: HTMLElement) => {
+          const rect = element.getBoundingClientRect();
+          return { element, relativeTop: rect.top - frameRect.top, bottom: rect.bottom, top: rect.top };
+        })
+        .filter((candidate) => candidate.bottom > frameRect.top && candidate.top < frameRect.bottom)
+        .sort((a, b) => a.relativeTop - b.relativeTop);
+      let anchor: HTMLElement | null = null;
+      try {
+        const dom = marivellEditorAfter?.view?.domAtPos(anchorPos);
+        const node = dom?.node;
+        const element = node?.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+        anchor = element?.closest('p') ?? null;
+      } catch {
+        anchor = null;
+      }
+      const afterHydrateCalls = (w.__marivellHydrateTargetRangeCalls as number | undefined) ?? 0;
+      let placeholders = 0;
+      Array.from(frame.querySelectorAll('.math-inline-node')).forEach((node) => {
+        const rect = node.getBoundingClientRect();
+        if (rect.bottom <= frameRect.top || rect.top >= frameRect.bottom) return;
+        const preview = node.querySelector(':scope > .math-node-preview');
+        const hasKatex = preview?.querySelector('.katex') !== null;
+        const hasHintOrError = preview?.querySelector(
+          '.katex-error, .math-node-empty-hint, .math-node-placeholder-hint',
+        ) !== null;
+        if (!hasKatex && !hasHintOrError && node.classList.contains('math-inline-node--placeholder')) {
+          placeholders += 1;
+        }
+      });
+      const drift = Math.abs(frame.scrollTop - targetScrollTop);
+      return {
+        beforeHydrateCalls,
+        afterHydrateCalls,
+        targetScrollTop,
+        finalScrollTop: frame.scrollTop,
+        finalPlaceholders: placeholders,
+        drift,
+        anchorConnected: anchor?.isConnected ?? false,
+        anchorVisibleAfter: Boolean(anchor),
+      };
+    }, { beforeHydrateCalls: scrollStart.beforeHydrateCalls, beforeAnchorTop: scrollStart.beforeAnchorTop, anchorPos: scrollStart.anchorPos, targetScrollTop: scrollStart.targetScrollTop });
+    assert(
+      'fast scroll path invokes hydrateTargetRange',
+      fastScrollResult.afterHydrateCalls > fastScrollResult.beforeHydrateCalls,
+      JSON.stringify(fastScrollResult),
+    );
+    assert(
+      'fast scroll lands with zero visible inline math placeholders',
+      fastScrollResult.finalPlaceholders === 0,
+      JSON.stringify(fastScrollResult),
+    );
+    assert(
+      'fast scroll lands with zero scroll drift',
+      fastScrollResult.drift < 1,
+      JSON.stringify(fastScrollResult),
+    );
+
     await toggleSource(handle.page);
     await waitForSourceInput(handle.page);
     const sourceClean = await handle.page.evaluate(() => {
