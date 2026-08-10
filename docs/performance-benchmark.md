@@ -473,3 +473,39 @@ Status: all planned implementation phases A-F are committed. Phase G release
 budgets are still not fully met: open, typing, interaction-combined,
 mode-switch, scroll-frame, and jump-ready latencies remain above the final
 budgets.
+
+## Stage 1: Scoped MathSyntaxHighlight (2026-08-11)
+
+Stage 1 replaced the full-document `MathSyntaxHighlight` DecorationSet with
+selection-local and viewport-local decoration. The implementation also keeps a
+diagnostic counter in the benchmark DOM snapshot:
+
+- `syntax-decoration-span-count`
+- `syntax-decoration-full-build-count`
+- `syntax-decoration-local-build-count`
+
+Large-file run (`/home/crh/下载/barfoot_ser24/barfoot_ser24.md`):
+
+| Metric | Stage 0 baseline | Stage 1 |
+| --- | ---: | ---: |
+| visual-open | 10,394 ms | 6,665 ms |
+| renderer-render-to-ready | 7,386 ms | 3,870 ms |
+| document-dom-node-count | 255,028 | 45,967 |
+| syntax-decoration-span-count | 209,134 | 73 |
+| syntax-decoration-full-build-count | n/a | 0 |
+| interaction-typing | 264.2 ms | 190.6 ms |
+| interaction-combined | 2,614.9 ms | 1,988 ms |
+| mode-switch-visual-to-source-ms | 1,361.1 ms | 1,232.7 ms |
+| mode-switch-source-to-visual-ms | 3,034.1 ms | 3,010.2 ms |
+| scroll-avg-frame | 186.8 ms | 212 ms |
+| scroll-max-frame | 498.7 ms | 452.8 ms |
+| scroll-drag-sequence | 2,276.1 ms | 1,847.2 ms |
+| context-menu-open | 142.7 ms | 72.4 ms |
+| scrollDriftPx | 0 | 0 |
+| viewportPlaceholders | 0 | 0 |
+| inlineMathActivateReadyMs | 13.9 ms | 3.1 ms |
+
+Existing hard gates passed in a main-agent verification run. Open, DOM, typing,
+combined interactions, mode switches, drag scroll, and context menu all
+improved versus Stage 0; scroll-frame latency remains the main Stage 2 target
+because the release budget still requires 16.6 ms average / 33 ms max frames.

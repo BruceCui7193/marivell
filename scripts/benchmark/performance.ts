@@ -1097,6 +1097,14 @@ async function measureDomSnapshot(page: Page): Promise<ReportEntry[]> {
       );
       return !hasDirectErrorText;
     }).length;
+    const syntaxSpanElements = Array.from(
+      document.querySelectorAll<HTMLElement>('[class*="math-syntax-"]'),
+    );
+    const syntaxDiagnostics = (
+      window as unknown as Record<string, unknown>
+    ).__marivellMathSyntaxDiagnostics as
+      | { fullBuildCount: number; localBuildCount: number; spanCount: number }
+      | undefined;
     return {
       documentDomNodeCount: document.querySelectorAll('*').length,
       paragraphNodeCount: document.querySelectorAll('.editor-surface p').length,
@@ -1104,6 +1112,9 @@ async function measureDomSnapshot(page: Page): Promise<ReportEntry[]> {
       inlineMathNodeCount: inlineMathNodes.length,
       inlineMathPreviewActive,
       inlineMathPreviewPlaceholder,
+      syntaxDecorationSpanCount: syntaxSpanElements.length,
+      syntaxDecorationFullBuildCount: syntaxDiagnostics?.fullBuildCount ?? 0,
+      syntaxDecorationLocalBuildCount: syntaxDiagnostics?.localBuildCount ?? 0,
     };
   });
 
@@ -1113,6 +1124,24 @@ async function measureDomSnapshot(page: Page): Promise<ReportEntry[]> {
       value: snapshot.documentDomNodeCount,
       unit: 'nodes',
       note: 'document.querySelectorAll(*) count',
+    },
+    {
+      metric: 'syntax-decoration-span-count',
+      value: snapshot.syntaxDecorationSpanCount,
+      unit: 'nodes',
+      note: '.math-syntax-* decoration span count',
+    },
+    {
+      metric: 'syntax-decoration-full-build-count',
+      value: snapshot.syntaxDecorationFullBuildCount,
+      unit: 'builds',
+      note: 'MathSyntaxHighlight full-document decoration builds',
+    },
+    {
+      metric: 'syntax-decoration-local-build-count',
+      value: snapshot.syntaxDecorationLocalBuildCount,
+      unit: 'builds',
+      note: 'MathSyntaxHighlight local decoration builds',
     },
     {
       metric: 'paragraph-node-count',

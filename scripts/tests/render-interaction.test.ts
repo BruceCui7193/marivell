@@ -196,6 +196,27 @@ function assertMathSyntaxDecorations(name: string, editor: Editor): void {
   assert(`${name}: cmd decoration exists`, cmdCount > 0, `cmd=${cmdCount}`);
   assert(`${name}: brace decoration exists`, braceCount > 0, `brace=${braceCount}`);
   assert(`${name}: special decoration exists`, specialCount > 0, `special=${specialCount}`);
+
+  const allSyntaxSpans = editor.view.dom.querySelectorAll('[class*="math-syntax-"]');
+  const outsideEditingFormula = Array.from(allSyntaxSpans).filter(
+    (element) => !element.closest('.math-inline-node.is-editing'),
+  );
+  assert(
+    `${name}: syntax spans stay inside the focused formula`,
+    outsideEditingFormula.length === 0,
+    `outside=${outsideEditingFormula.length} total=${allSyntaxSpans.length}`,
+  );
+}
+
+function assertNoMathSyntaxDecorations(name: string, editor: Editor): void {
+  const count = editor.view.dom.querySelectorAll('[class*="math-syntax-"]').length;
+  assert(`${name}: no math syntax decoration outside editing/viewport`, count === 0, `count=${count}`);
+}
+
+function focusFirstMath(editor: Editor): void {
+  const pos = findNodePosition(editor, 'inlineMath');
+  if (pos === null) throw new Error('missing inlineMath');
+  editor.commands.setTextSelection(pos + 1);
 }
 
 function copyPayload(editor: Editor) {
@@ -1698,12 +1719,48 @@ console.log('\n## visual render interaction matrix');
   const editor = makeEditor('Initial');
   try {
     load(editor, 'Inline $\\frac{x}{y}_1$\n');
-    assertMathSyntaxDecorations('math syntax highlight initial', editor);
+    assertNoMathSyntaxDecorations('math syntax non-edit initial', editor);
     assert('math syntax highlight initial markdown', md(editor).includes('$\\frac{x}{y}_1$'), md(editor));
 
     const start = findNodePosition(editor, 'inlineMath');
     assert('math syntax highlight finds inline math', start !== null, String(start));
     if (start === null) throw new Error('missing inlineMath');
+    editor.commands.setTextSelection(start + 1);
+    assertMathSyntaxDecorations('math syntax focused initial', editor);
+
+    const formulaNode = editor.state.doc.nodeAt(start);
+    if (!formulaNode) throw new Error('missing inlineMath node');
+    editor.commands.setTextSelection({
+      from: start + 1,
+      to: start + 1 + formulaNode.textContent.length,
+    });
+    const partialPayload = copyPayload(editor);
+    assert(
+      'math syntax partial copy stays raw latex',
+      partialPayload.plain === '\\frac{x}{y}_1' && partialPayload.markdown === null,
+      JSON.stringify(partialPayload),
+    );
+
+    editor.view.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.state.doc, start)));
+    const wholePayload = copyPayload(editor);
+    assert(
+      'math syntax whole-node copy keeps delimiters',
+      wholePayload.markdown?.includes('$\\frac{x}{y}_1$') ?? false,
+      JSON.stringify(wholePayload),
+    );
+    const pasteTarget = makeEditor('');
+    try {
+      pastePayload(pasteTarget, wholePayload);
+      assert(
+        'math syntax paste keeps formula',
+        md(pasteTarget).includes('$\\frac{x}{y}_1$'),
+        md(pasteTarget),
+      );
+    } finally {
+      pasteTarget.destroy();
+    }
+
+    editor.commands.setTextSelection(start + 1);
     const insertPos = start + 1;
     const insertTr = editor.state.tr.insert(insertPos, editor.state.schema.text('{b}'));
     editor.view.dispatch(insertTr.setSelection(TextSelection.create(insertTr.doc, insertPos + 2)));
@@ -1714,11 +1771,13 @@ console.log('\n## visual render interaction matrix');
     editor.commands.undo();
     const undoneMd = md(editor);
     assert('math syntax highlight undo insertion', undoneMd.includes('$\\frac{x}{y}_1$'), undoneMd);
+    focusFirstMath(editor);
     assertMathSyntaxDecorations('math syntax highlight undo insertion', editor);
 
     editor.commands.redo();
     const redoneMd = md(editor);
     assert('math syntax highlight redo insertion', redoneMd.includes('{b}\\frac{x}{y}_1'), redoneMd);
+    focusFirstMath(editor);
     assertMathSyntaxDecorations('math syntax highlight redo insertion', editor);
 
     const formulaPos = findNodePosition(editor, 'inlineMath');
@@ -1728,16 +1787,19 @@ console.log('\n## visual render interaction matrix');
     editor.view.dispatch(deleteTr.setSelection(TextSelection.create(deleteTr.doc, deleteFrom)));
     const deletedMd = md(editor);
     assert('math syntax highlight deletion content', deletedMd.includes('b}\\frac{x}{y}_1'), deletedMd);
+    focusFirstMath(editor);
     assertMathSyntaxDecorations('math syntax highlight deletion', editor);
 
     editor.commands.undo();
     const undoDeleteMd = md(editor);
     assert('math syntax highlight undo deletion', undoDeleteMd.includes('{b}\\frac{x}{y}_1'), undoDeleteMd);
+    focusFirstMath(editor);
     assertMathSyntaxDecorations('math syntax highlight undo deletion', editor);
 
     editor.commands.redo();
     const redoDeleteMd = md(editor);
     assert('math syntax highlight redo deletion', redoDeleteMd.includes('b}\\frac{x}{y}_1'), redoDeleteMd);
+    focusFirstMath(editor);
     assertMathSyntaxDecorations('math syntax highlight redo deletion', editor);
     assertHealthy('math syntax highlight', editor);
   } finally {
@@ -1752,15 +1814,22 @@ console.log('\n## visual render interaction matrix');
     const source = Array.from({ length: formulaCount }, (_, index) => `$\\frac{x_{${index}}}{y_${index}}$`).join('\n');
     load(editor, source);
     assert('math syntax highlight many formulas loaded', countNodes(editor, 'inlineMath') === formulaCount, md(editor).slice(0, 200));
-    assertMathSyntaxDecorations('math syntax highlight many formulas initial', editor);
+    assertNoMathSyntaxDecorations('math syntax many formulas non-edit initial', editor);
 
     const pos = findNodePosition(editor, 'inlineMath');
     if (pos === null) throw new Error('missing inlineMath in many formulas');
+    editor.commands.setTextSelection(pos + 1);
     const manyInsertTr = editor.state.tr.insert(pos + 1, editor.state.schema.text('{edit}'));
     editor.view.dispatch(manyInsertTr.setSelection(TextSelection.create(manyInsertTr.doc, pos + 2)));
     const manyMd = md(editor);
     assert('math syntax highlight many formulas edit', countNodes(editor, 'inlineMath') === formulaCount && manyMd.includes('{edit}\\frac{x_{0}}{y_0}'), manyMd.slice(0, 300));
     assertMathSyntaxDecorations('math syntax highlight many formulas after edit', editor);
+    const scopedSpanCount = editor.view.dom.querySelectorAll('[class*="math-syntax-"]').length;
+    assert(
+      'math syntax highlight many formulas remains scoped',
+      scopedSpanCount < 100,
+      `scopedSpanCount=${scopedSpanCount}`,
+    );
   } finally {
     editor.destroy();
   }

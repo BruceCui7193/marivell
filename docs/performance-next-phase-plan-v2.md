@@ -188,6 +188,16 @@
 - 所有硬门禁继续通过。
 - 允许新增大文件 DOM 数预算，但不允许放宽已有门禁。
 
+#### 2.2.6 Stage 1 执行结果（2026-08-11）
+
+Stage 1 结果记录在 `docs/performance-benchmark.md`，关键变化：
+
+- 初始视觉 DOM 从 255,028 降到 45,967，`.math-syntax-*` 从 209,134 降到 73。
+- `visual-open` 从 10,394ms 降到 6,705ms，`renderer-render-to-ready` 从 7,386ms 降到 3,924ms。
+- `interaction-combined` 从 2,614.9ms 降到 1,988ms，drag scroll 从 2,276.1ms 降到 1,847.2ms（主代理复测）。
+- 现有硬门禁全部通过：scrollDrift=0、viewportPlaceholders=0、inlineMathActivateReadyMs=3.1ms。
+- `interaction-typing` 从 264.2ms 降到 190.6ms；后续 Stage 2 仍必须继续降低 typing 热路径和滚动帧成本。
+
 ### 2.3 Stage 2：滚动锁高与双缓冲 hydration
 
 #### 2.3.1 目标
