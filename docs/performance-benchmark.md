@@ -444,3 +444,32 @@ placeholders, 50ms fallback replacement, and 4ms single-frame activation now
 pass in both e2e and the large-file benchmark. Overall scroll frame time and
 jump-ready latency are still above the final budget, so the release gate is not
 complete yet.
+
+
+## Phase F Result (2026-08-10)
+
+Phase F made export and jump paths hydration-safe:
+
+- PDF/image/Pandoc export now calls `forceHydrateAll()`, waits for two stable
+  rAF frames with zero exported placeholder classes, retries once if needed,
+  and aborts if content still cannot hydrate.
+- Search, outline, and footnote jumps use two-stage hydration: force-activate
+  target range, wait, re-measure with PM coordinates, then scroll/select.
+- Added `export-hydrate.e2e.test.ts` (14 assertions) covering PDF export,
+  long-image export, outline jump, footnote jump, placeholder-free snapshots,
+  and complete formula/image/code/Mermaid/HTML content.
+
+Phase E hard gates remained green in the verified large-file run:
+
+| Gate | Phase E | After Phase F |
+| --- | ---: | ---: |
+| inline-height-drift | 0 px | 0 px |
+| inline-math-activate-ready-ms | 2.5 ms | 2.4 ms |
+| inline-math-activate-max-frame-ms | 2.6 ms | 2.4 ms |
+| scroll first-frame ready | pass | pass |
+| scroll timeouts | none | none |
+
+Status: all planned implementation phases A-F are committed. Phase G release
+budgets are still not fully met: open, typing, interaction-combined,
+mode-switch, scroll-frame, and jump-ready latencies remain above the final
+budgets.
