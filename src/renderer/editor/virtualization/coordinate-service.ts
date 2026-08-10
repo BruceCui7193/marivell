@@ -1,5 +1,7 @@
 import type { EditorView } from '@tiptap/pm/view';
 import { forceActivateById } from './activation-controller';
+import { hydrateTargetRange } from './activation-controller';
+import { hydrateInlineMathGroupsAroundPosition } from './inline-math-group-registry';
 
 export interface CoordinateEditor {
   view: EditorView;
@@ -79,6 +81,75 @@ export function scrollPosIntoView(editor: CoordinateEditor, pos: number): boolea
   try {
     forceActivateAtPosition(editor, pos);
     const clamped = Math.max(0, Math.min(pos, editor.view.state.doc.content.size));
+    const domPosition = editor.view.domAtPos(clamped);
+    const node = domPosition.node;
+    const element = node.nodeType === Node.TEXT_NODE ? node.parentElement : node as HTMLElement;
+    element?.scrollIntoView({ block: 'center', behavior: 'auto' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function nextAnimationFrames(count = 2): Promise<void> {
+  if (typeof requestAnimationFrame === 'undefined') {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const tick = (remaining: number): void => {
+      if (remaining <= 0) {
+        resolve();
+        return;
+      }
+      requestAnimationFrame(() => tick(remaining - 1));
+    };
+    tick(count);
+  });
+}
+
+export async function hydrateAndWaitForPosition(
+  editor: CoordinateEditor,
+  pos: number,
+): Promise<boolean> {
+  try {
+    const clamped = Math.max(0, Math.min(pos, editor.view.state.doc.content.size));
+    forceActivateAtPosition(editor, clamped);
+    const frame = editor.view.dom.closest<HTMLElement>('.editor-frame');
+    if (frame) {
+      const viewportRadius = Math.max(frame.clientHeight || 1, 1);
+      hydrateTargetRange(frame, clamped, viewportRadius);
+      hydrateInlineMathGroupsAroundPosition(frame, clamped, viewportRadius);
+    }
+    await nextAnimationFrames();
+    forceActivateAtPosition(editor, clamped);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function scrollPosIntoViewAfterHydration(
+  editor: CoordinateEditor,
+  pos: number,
+): Promise<boolean> {
+  try {
+    await hydrateAndWaitForPosition(editor, pos);
+    const clamped = Math.max(0, Math.min(pos, editor.view.state.doc.content.size));
+    forceActivateAtPosition(editor, clamped);
+    const coords = coordsAtPos(editor, clamped);
+    const frame = editor.view.dom.closest<HTMLElement>('.editor-frame');
+    if (coords && frame) {
+      const frameRect = frame.getBoundingClientRect();
+      const elementHeight = Math.max(coords.bottom - coords.top, 1);
+      const targetTop =
+        frame.scrollTop +
+        coords.top -
+        frameRect.top -
+        Math.max((frame.clientHeight - elementHeight) / 2, 0);
+      const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+      frame.scrollTop = Math.max(0, Math.min(targetTop, maxScrollTop));
+      return true;
+    }
     const domPosition = editor.view.domAtPos(clamped);
     const node = domPosition.node;
     const element = node.nodeType === Node.TEXT_NODE ? node.parentElement : node as HTMLElement;

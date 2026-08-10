@@ -16,7 +16,7 @@ import { EditorContent, useEditor, type Editor as TiptapEditor } from '@tiptap/r
 import type { JSONContent } from '@tiptap/core';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import { EditorState, NodeSelection, TextSelection } from '@tiptap/pm/state';
-import type { OpenedFolder, SavedDocument, ThemeMode } from '@shared/contracts';
+import type { ExportDocumentPayload, OpenedFolder, SavedDocument, ThemeMode } from '@shared/contracts';
 import type { DocumentStats, EditorDocumentState } from '../App';
 import type { GlassEffect, ThemePalette } from '../theme';
 import Toolbar from './Toolbar';
@@ -54,6 +54,7 @@ import {
   type SourceScrollAnchor,
 } from '../editor/scroll-anchor';
 import {
+  forceHydrateAll,
   forceActivateViewport,
   hydrateTargetRange,
   resumeScrollAnchorProvider,
@@ -64,8 +65,10 @@ import {
   coordsAtPos,
   forceActivateAtCoords,
   forceActivateAtPosition,
+  hydrateAndWaitForPosition,
   posAtCoords,
   scrollPosIntoView,
+  scrollPosIntoViewAfterHydration,
 } from '../editor/virtualization/coordinate-service';
 import {
   clearNodeHeightCache,
@@ -591,6 +594,55 @@ const VISUAL_META_SYNC_DELAY_MS = 260;
 const VISUAL_DOCUMENT_SYNC_TIMEOUT_MS = 1400;
 const SEARCH_QUERY_PREFILL_MAX_CHARS = 240;
 const SEARCH_QUERY_PREFILL_MAX_NEWLINES = 2;
+
+const EXPORT_PLACEHOLDER_SELECTOR = [
+  '.math-inline-node--placeholder',
+  '.math-block-node-placeholder',
+  '.image-node__placeholder',
+  '.mermaid-node__placeholder',
+  '.html-block-placeholder',
+  '.code-block-node--placeholder',
+  '.mermaid-node__empty',
+].join(',');
+
+interface ExportTestCaptureCall {
+  kind: string;
+  payload: ExportDocumentPayload;
+  snapshot: string;
+  hydrateCalls: number;
+  elapsedMs: number;
+}
+
+interface ExportTestCapture {
+  enabled: boolean;
+  calls: ExportTestCaptureCall[];
+}
+
+function countExportPlaceholders(frame: HTMLElement): number {
+  return frame.querySelectorAll(EXPORT_PLACEHOLDER_SELECTOR).length;
+}
+
+async function waitForExportDomStable(frame: HTMLElement): Promise<boolean> {
+  const deadline = performance.now() + 6000;
+  let stableFrames = 0;
+  while (performance.now() < deadline) {
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+    if (!frame.isConnected) {
+      return false;
+    }
+    if (countExportPlaceholders(frame) === 0) {
+      stableFrames += 1;
+      if (stableFrames >= 2) {
+        return true;
+      }
+    } else {
+      stableFrames = 0;
+    }
+  }
+  return countExportPlaceholders(frame) === 0;
+}
 
 function ensureEditableSelectionAtDocumentStart(editor: TiptapEditor): void {
   const { selection, doc } = editor.state;
@@ -2995,9 +3047,7 @@ export default function EditorShell({
 
       // Scroll to the match position using the DOM, which is more reliable
       // than tr.scrollIntoView() when the editor doesn't have focus.
-      requestAnimationFrame(() => {
-        scrollPosIntoView(editor, Math.min(pos, editor.state.doc.content.size));
-      });
+      void scrollPosIntoViewAfterHydration(editor, Math.min(pos, editor.state.doc.content.size));
     },
     [editor],
   );
@@ -3944,12 +3994,78 @@ export default function EditorShell({
     };
   }, [document.title]);
 
+  const prepareExportPayload = useCallback(async (kind: 'pdf' | 'image' | 'pandoc') => {
+    const benchmarkWindow = window as unknown as Record<string, unknown>;
+    const capture: ExportTestCapture =
+      (benchmarkWindow.__marivellExportCapture as ExportTestCapture | undefined) ??
+      { enabled: false, calls: [] };
+    benchmarkWindow.__marivellExportCapture = capture;
+    const startedAt = performance.now();
+    const frame = sourceModeRef.current ? null : editorFrameRef.current;
+
+    if (frame && editorRef.current) {
+      forceHydrateAll();
+      let stable = await waitForExportDomStable(frame);
+      if (!stable) {
+        forceHydrateAll();
+        stable = await waitForExportDomStable(frame);
+      }
+      if (!stable) {
+        throw new Error('Export aborted: virtual content did not hydrate before capture');
+      }
+    }
+
+    const payload = getExportPayload();
+    const hydrateCalls =
+      typeof benchmarkWindow.__marivellForceHydrateAllCalls === 'number'
+        ? (benchmarkWindow.__marivellForceHydrateAllCalls as number)
+        : 0;
+    if (capture.enabled) {
+      capture.calls.push({
+        kind,
+        payload,
+        snapshot: editorRef.current?.view.dom.outerHTML ?? '',
+        hydrateCalls,
+        elapsedMs: performance.now() - startedAt,
+      });
+    }
+
+    return { payload, captured: capture.enabled };
+  }, [getExportPayload]);
+
+  const callExportPdf = useCallback(async () => {
+    const result = await prepareExportPayload('pdf');
+    if (!result.captured) {
+      await window.markdownEditor.exportAsPdf(result.payload);
+    }
+  }, [prepareExportPayload]);
+
+  const callExportImage = useCallback(async () => {
+    const result = await prepareExportPayload('image');
+    if (!result.captured) {
+      await window.markdownEditor.exportAsImage(result.payload);
+    }
+  }, [prepareExportPayload]);
+
+  const callExportPandoc = useCallback(
+    async (
+      format: Parameters<typeof window.markdownEditor.exportWithPandoc>[1],
+      options?: Parameters<typeof window.markdownEditor.exportWithPandoc>[2],
+    ) => {
+      const result = await prepareExportPayload('pandoc');
+      if (!result.captured) {
+        await window.markdownEditor.exportWithPandoc(result.payload, format, options);
+      }
+    },
+    [prepareExportPayload],
+  );
+
   useEffect(() => {
     const offPandoc = window.markdownEditor.onExportPandocRequest((format, options) => {
-      void window.markdownEditor.exportWithPandoc(getExportPayload(), format, options);
+      void callExportPandoc(format, options);
     });
     return offPandoc;
-  }, [getExportPayload]);
+  }, [callExportPandoc]);
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -3982,12 +4098,12 @@ export default function EditorShell({
       }
 
       if (menuEvent.detail === 'export-pdf') {
-        void window.markdownEditor.exportAsPdf(getExportPayload());
+        void callExportPdf();
         return;
       }
 
       if (menuEvent.detail === 'export-image') {
-        void window.markdownEditor.exportAsImage(getExportPayload());
+        void callExportImage();
         return;
       }
 
@@ -4010,7 +4126,7 @@ export default function EditorShell({
     return () => {
       window.removeEventListener('markdown-editor:menu-action', handler as EventListener);
     };
-  }, [getExportPayload, onSaveDocument, onSaveDocumentAs, toggleSourceModeWithTransition]);
+  }, [callExportImage, callExportPdf, onSaveDocument, onSaveDocumentAs, toggleSourceModeWithTransition]);
 
   const handleFrameMouseDown = useCallback(
     (event: MouseEvent<HTMLDivElement>) => {
@@ -4119,18 +4235,18 @@ export default function EditorShell({
   }, [document.savedMarkdown, onSaveDocumentAs, editor]);
 
   const handleExportPdf = useCallback(() => {
-    void window.markdownEditor.exportAsPdf(getExportPayload());
-  }, [getExportPayload]);
+    void callExportPdf();
+  }, [callExportPdf]);
 
   const handleExportImage = useCallback(() => {
-    void window.markdownEditor.exportAsImage(getExportPayload());
-  }, [getExportPayload]);
+    void callExportImage();
+  }, [callExportImage]);
 
   const handleExportPandoc = useCallback(
     (format: Parameters<typeof window.markdownEditor.exportWithPandoc>[1]) => {
-      void window.markdownEditor.exportWithPandoc(getExportPayload(), format);
+      void callExportPandoc(format);
     },
-    [getExportPayload],
+    [callExportPandoc],
   );
 
   const handleInsertImage = useCallback(() => {
@@ -4226,18 +4342,82 @@ export default function EditorShell({
         return;
       }
 
-      try {
-        forceActivateAtPosition(editor, item.start);
-        const pos = item.start;
-        const selection = TextSelection.create(editor.state.doc, pos + 1);
-        editor.view.dispatch(editor.state.tr.setSelection(selection).scrollIntoView());
-        editor.view.focus();
-      } catch {
-        // ignore invalid positions
-      }
+      const pos = item.start;
+      void (async () => {
+        try {
+          await hydrateAndWaitForPosition(editor, pos);
+          const selection = TextSelection.create(editor.state.doc, pos + 1);
+          editor.view.dispatch(editor.state.tr.setSelection(selection));
+          await scrollPosIntoViewAfterHydration(editor, pos + 1);
+          editor.view.focus();
+        } catch {
+          // ignore invalid positions
+        }
+      })();
     },
     [editor, jumpSourceToOffset, outline],
   );
+
+  const jumpToFootnoteDefinition = useCallback(
+    async (label: string) => {
+      const currentEditor = editorRef.current ?? editor;
+      if (!currentEditor) {
+        return;
+      }
+
+      let targetPos: number | null = null;
+      currentEditor.state.doc.descendants((node, pos) => {
+        if (
+          targetPos === null &&
+          node.type.name === 'footnoteDefinition' &&
+          String(node.attrs.label ?? '') === label
+        ) {
+          targetPos = pos;
+          return false;
+        }
+        return true;
+      });
+
+      if (targetPos === null) {
+        return;
+      }
+
+      const hydrated = await hydrateAndWaitForPosition(currentEditor, targetPos);
+      if (!hydrated) {
+        return;
+      }
+      const selection = TextSelection.near(currentEditor.state.doc.resolve(targetPos + 1));
+      currentEditor.view.dispatch(currentEditor.state.tr.setSelection(selection));
+      await scrollPosIntoViewAfterHydration(currentEditor, targetPos);
+      currentEditor.view.focus();
+    },
+    [editor],
+  );
+
+  useEffect(() => {
+    const frame = editorFrameRef.current;
+    if (!frame) {
+      return;
+    }
+    const handler = (event: Event) => {
+      const target = event.target as HTMLElement | null;
+      const reference = target?.closest<HTMLElement>('[data-type="footnote-reference"]');
+      if (!reference) {
+        return;
+      }
+      const label = reference.getAttribute('data-label');
+      if (!label) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      void jumpToFootnoteDefinition(label);
+    };
+    frame.addEventListener('click', handler, true);
+    return () => {
+      frame.removeEventListener('click', handler, true);
+    };
+  }, [editor, jumpToFootnoteDefinition]);
 
   return (
     <div className="app-shell" data-theme={resolvedTheme} data-color-scheme={themePalette}>

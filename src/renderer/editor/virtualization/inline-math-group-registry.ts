@@ -843,6 +843,30 @@ export function activateInlineMathGroupsInViewport(
   return 0;
 }
 
+export function forceHydrateAllInlineMathGroups(): number {
+  const sorted = getSortedGroups();
+  const anchor = inlineMathScrollAnchorProvider?.capture() ?? null;
+  let activated = 0;
+  try {
+    withInlineMathActivationMeasurement(() => {
+      for (const group of sorted) {
+        if (group.active) {
+          group.requested = true;
+          requestPrefetch(collectGroupFormulaEntries(group).slice(0, 48));
+          continue;
+        }
+        activateGroup(group);
+        activated += 1;
+      }
+    });
+  } finally {
+    if (anchor !== null) {
+      inlineMathScrollAnchorProvider?.restore(anchor);
+    }
+  }
+  return activated;
+}
+
 function getGroupDistance(group: InlineMathGroup, centerPosition: number): number {
   if (centerPosition < group.firstPmPos) {
     return group.firstPmPos - centerPosition;

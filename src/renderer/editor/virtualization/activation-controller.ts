@@ -1,4 +1,5 @@
 import { createHydrationQueue } from './hydration-queue';
+import { forceHydrateAllInlineMathGroups } from './inline-math-group-registry';
 
 interface VirtualNodeCallbacks {
   activate(): void;
@@ -551,6 +552,16 @@ export function forceActivateById(id: string): void {
 export function forceHydrateAll(): number {
   return withScrollAnchorRestore(() => {
     let activatedCount = 0;
+    if (typeof window !== 'undefined') {
+      const benchmarkWindow = window as unknown as {
+        markdownEditor?: { getBenchmarkEnabled?: () => boolean };
+        __marivellForceHydrateAllCalls?: number;
+      };
+      if (benchmarkWindow.markdownEditor?.getBenchmarkEnabled?.()) {
+        benchmarkWindow.__marivellForceHydrateAllCalls =
+          (benchmarkWindow.__marivellForceHydrateAllCalls ?? 0) + 1;
+      }
+    }
 
     for (const [id, registration] of Array.from(virtualNodes)) {
       cancelPendingActivation(id);
@@ -571,6 +582,7 @@ export function forceHydrateAll(): number {
       pendingActivationFrame = null;
     }
 
+    forceHydrateAllInlineMathGroups();
     return activatedCount;
   });
 }
