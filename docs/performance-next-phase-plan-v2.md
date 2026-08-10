@@ -515,3 +515,15 @@ Stage 1 结果记录在 `docs/performance-benchmark.md`，关键变化：
 3. 发布预算连续三次 benchmark 至少两次达标。
 4. `docs/performance-benchmark.md` 记录最终结果。
 5. 本方案文档记录每个 Stage 的实际结果、失败实验和回退 commit。
+
+### 2.7 Stage 2 执行结果（2026-08-11）
+
+Stage 2 已实现但未达发布线：
+
+- 新增 `ScrollStabilizer`：滚动期间锁定文档高度、滚动停止后等待视口 hydration 完成再释放 spacer，并在释放后做顶部锚点补偿。
+- 行内公式激活前在当前段落内插入隐藏 sample 测量真实 KaTeX 高度；块级公式在高度缓存未命中时同步测量。
+- 新增 `scripts/tests/scroll-stabilizer.e2e.test.ts`，覆盖 top→bottom→middle 拖拽、首帧无 placeholder、0 scrollTop drift、0 anchor drift、拖后输入、Ctrl+A、源码/预览切换。
+- 大文件硬门禁 `scrollDriftPx=0`、`viewportPlaceholders=0` 保持通过；新 e2e 全部通过。
+- 已知未完成：大文件 drag 场景 `inline-height-drift=116px`，scroll avg/max 与 jump-ready 相对 Stage 1 仍更慢（最新大文件：avg 239.7ms、max 587.1ms、drag 3042.2ms），尚未达到发布预算。
+- 原因记录：等待 pending hydration queue 全部排空再释放 spacer，虽然稳定了 bottom/middle 锚点，但显著拉长 jump-ready；drag 场景中公式密集锚点的 116px 漂移说明当前高度预留/补偿仍不足。
+- Stage 3 需优先降低队列与 hydration 工作，再处理剩余锚点漂移，不能直接以当前 Stage 2 进入发布门禁。

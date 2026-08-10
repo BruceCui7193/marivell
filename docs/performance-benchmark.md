@@ -509,3 +509,49 @@ Existing hard gates passed in a main-agent verification run. Open, DOM, typing,
 combined interactions, mode switches, drag scroll, and context menu all
 improved versus Stage 0; scroll-frame latency remains the main Stage 2 target
 because the release budget still requires 16.6 ms average / 33 ms max frames.
+
+## Stage 2: Scroll Stabilizer + Context-Aware Inline Hydration (2026-08-11)
+
+Stage 2 added a `ScrollStabilizer` service that locks the document height during
+scroll/hydration with a bottom spacer, throttles scroll hydration by PM
+position movement, re-measures the viewport anchor at settle time, and releases
+the spacer only after visible hydration is complete. Inline formula activation
+now performs in-context hidden-sample measurement before swapping placeholder to
+KaTeX. Block math activation performs a synchronous hidden-sample measurement
+when the height cache misses. A new `scroll-stabilizer.e2e.test.ts` covers
+top -> bottom -> middle drag, first-ready zero placeholders, zero scrollTop
+drift, zero anchor drift, typing, Ctrl+A, and source/preview switching after
+drag.
+
+Large-file run (`/home/crh/下载/barfoot_ser24/barfoot_ser24.md`):
+
+| Metric | Stage 1 | Stage 2 latest |
+| --- | ---: | ---: |
+| visual-open | 6,665 ms | 7,016 ms |
+| renderer-render-to-ready | 3,870 ms | 4,014 ms |
+| document-dom-node-count | 45,967 | 45,967 |
+| syntax-decoration-span-count | 73 | 73 |
+| interaction-typing | 190.6 ms | 205.5 ms |
+| interaction-combined | 1,988 ms | 1,655.1 ms |
+| mode-switch-visual-to-source-ms | 1,232.7 ms | 1,262.4 ms |
+| mode-switch-source-to-visual-ms | 3,010.2 ms | 3,402 ms |
+| scroll-avg-frame | 212 ms | 239.7 ms |
+| scroll-max-frame | 452.8 ms | 587.1 ms |
+| scroll-jump-bottom | 1,535.1 ms | 2,176.8 ms |
+| scroll-jump-middle | 1,514.1 ms | 3,267.4 ms |
+| scroll-drag-sequence | 1,847.2 ms | 3,042.2 ms |
+| scrollDriftPx | 0 | 0 |
+| viewportPlaceholders | 0 | 0 |
+| inline-height-drift | n/a | bottom=0 middle=0 drag=116 px |
+| inlineMathActivateReadyMs | 3.1 ms | 1,055.6 ms |
+| inlineMathActivateMaxFrameMs | 3.2 ms | 1,055.6 ms |
+| context-menu-open | 72.4 ms | 66 ms |
+
+Status: the new e2e hard gates for drag `scrollDriftPx=0`, `viewportPlaceholders=0`
+and text-anchor drift are green, and the benchmark's configured hard gates
+(`scrollDriftPx`, `viewportPlaceholders`) pass. The large-file drag benchmark
+still reports a 116px inline-height drift for a formula-rich anchor, and scroll
+frame/jump-ready latency is worse than Stage 1 because the stabilizer waits for
+the pending hydration queue before releasing the spacer. This stage is not yet
+release-ready; Stage 3 should reduce the queue/hydration work before the final
+release gate.
