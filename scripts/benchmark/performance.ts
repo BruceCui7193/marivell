@@ -1185,6 +1185,16 @@ async function main(): Promise<void> {
         },
       ];
       for (const modeStep of modeSwitchSteps) {
+        const countersBefore =
+          modeStep.targetMode === 'visual'
+            ? await handle.page.evaluate(() => {
+                const target = window as unknown as Record<string, number | undefined>;
+                return {
+                  fast: target.__marivellModeSwitchFastPath ?? 0,
+                  full: target.__marivellModeSwitchFullParse ?? 0,
+                };
+              })
+            : null;
         const switchResult = await withTimeout(
           measureModeSwitch(
             handle.page,
@@ -1212,18 +1222,30 @@ async function main(): Promise<void> {
         }
 
         if (modeStep.targetMode === 'visual') {
+          const countersAfter = await handle.page.evaluate(() => {
+            const target = window as unknown as Record<string, number | undefined>;
+            return {
+              fast: target.__marivellModeSwitchFastPath ?? 0,
+              full: target.__marivellModeSwitchFullParse ?? 0,
+            };
+          });
+          const fastDelta =
+            countersAfter.fast - (countersBefore?.fast ?? 0);
+          const fullDelta =
+            countersAfter.full - (countersBefore?.full ?? 0);
+          const noReparse = fastDelta > 0 && fullDelta === 0;
           report.push(
             {
               metric: 'mode-switch-no-reparse',
-              value: false,
+              value: noReparse,
               unit: 'boolean',
-              note: 'full-parse-expected-before-phase-d; no Phase D cache marker found',
+              note: `fast-path=${fastDelta} full-parse=${fullDelta}`,
             },
             {
               metric: 'mode-switch-source-to-visual-no-reparse',
-              value: false,
+              value: noReparse,
               unit: 'boolean',
-              note: 'full-parse-expected-before-phase-d',
+              note: `fast-path=${fastDelta} full-parse=${fullDelta}`,
             },
           );
         }

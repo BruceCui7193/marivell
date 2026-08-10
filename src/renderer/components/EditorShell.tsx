@@ -14,7 +14,8 @@ import {
 } from 'react';
 import { EditorContent, useEditor, type Editor as TiptapEditor } from '@tiptap/react';
 import type { JSONContent } from '@tiptap/core';
-import { NodeSelection, TextSelection } from '@tiptap/pm/state';
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
+import { EditorState, NodeSelection, TextSelection } from '@tiptap/pm/state';
 import type { OpenedFolder, SavedDocument, ThemeMode } from '@shared/contracts';
 import type { DocumentStats, EditorDocumentState } from '../App';
 import type { GlassEffect, ThemePalette } from '../theme';
@@ -37,7 +38,12 @@ import {
   buildSourceContextMenu,
   buildVisualContextMenu,
 } from '../editor/context-menu-actions';
-import { parseMarkdown, serializeMarkdown } from '../editor/markdown';
+import {
+  parseMarkdown,
+  parseMarkdownFragment,
+  serializeMarkdown,
+  serializeMarkdownFragment,
+} from '../editor/markdown';
 import { buildBlockModelFromEditor } from '../editor/block-model';
 import {
   captureSourceScrollAnchor,
@@ -76,7 +82,12 @@ import {
   setInlineMathPrefetchRequester,
   syncInlineMathSelection,
 } from '../editor/virtualization/inline-math-group-registry';
-import { markdownOffsetToPmPos } from '../editor/position-map';
+import {
+  buildSourceBlockAnchors,
+  getSourceBlockSpans,
+  sourceOffsetToPmPosWithAnchors,
+  type SourceBlockAnchor,
+} from '../editor/position-map';
 import { replaceEditorContent } from '../editor/replace-editor-content';
 import {
   splitFormulaChunks,
@@ -148,6 +159,20 @@ interface WorkerParseFailure {
 }
 
 type WorkerParseResponse = WorkerParseSuccess | WorkerParseFailure;
+
+interface VisualSelectionMapping {
+  source: SourceSearchMatch;
+  visual: { from: number; to: number; kind: 'text' | 'node' };
+}
+
+interface ModeSwitchCache {
+  sourceText: string;
+  canonicalVisualMarkdown?: string;
+  pmVersion: number;
+  sourceToPmAnchor: Map<string, number>;
+  sourceBlocks: SourceBlockAnchor[];
+  visualSelectionMapping?: VisualSelectionMapping;
+}
 
 const FORMULA_CHUNK_MAX_IN_FLIGHT = 2;
 const FORMULA_CHUNK_REQUEST_ID_OFFSET = 0x4000_0000;
@@ -315,6 +340,247 @@ function createMarkdownWorker(): Worker {
   return new Worker(new URL('../editor/markdown.worker.ts', import.meta.url), {
     type: 'module',
   });
+}
+
+type ModeSwitchMetric =
+  | 'source-to-visual-fast'
+  | 'source-to-visual-full-parse'
+  | 'visual-to-source-full-serialize';
+
+function incrementModeSwitchMetric(metric: ModeSwitchMetric): void {
+  try {
+    if (!window.markdownEditor.getBenchmarkEnabled?.()) {
+      return;
+    }
+    const target = window as unknown as Record<string, number | undefined>;
+    const key =
+      metric === 'source-to-visual-fast'
+        ? '__marivellModeSwitchFastPath'
+        : metric === 'source-to-visual-full-parse'
+          ? '__marivellModeSwitchFullParse'
+          : '__marivellModeSwitchFullSerialize';
+    target[key] = (target[key] ?? 0) + 1;
+  } catch {
+    // Benchmark instrumentation must never affect editor behavior.
+  }
+}
+
+function getTopLevelNodeSizes(editor: TiptapEditor): number[] {
+  const sizes: number[] = [];
+  editor.state.doc.content.forEach((node) => {
+    sizes.push(node.nodeSize);
+  });
+  return sizes;
+}
+
+function buildModeSwitchCache(
+  sourceText: string,
+  editor: TiptapEditor,
+): ModeSwitchCache | null {
+  const sourceBlocks = buildSourceBlockAnchors(
+    sourceText,
+    getTopLevelNodeSizes(editor),
+  );
+  if (sourceBlocks.length === 0) {
+    return null;
+  }
+  const sourceToPmAnchor = new Map<string, number>();
+  for (const block of sourceBlocks) {
+    sourceToPmAnchor.set(String(block.sourceStart), block.pmStart);
+    sourceToPmAnchor.set(String(block.sourceEnd), block.pmEnd);
+  }
+  return {
+    sourceText,
+    canonicalVisualMarkdown: sourceText,
+    pmVersion:
+      (editor.state.doc as unknown as { version?: number }).version ?? 0,
+    sourceToPmAnchor,
+    sourceBlocks,
+  };
+}
+
+function findLocalSourceBlockChange(
+  cache: ModeSwitchCache,
+  newSource: string,
+): { index: number; oldAnchor: SourceBlockAnchor; newAnchor: SourceBlockAnchor } | null {
+  const newSpans = getSourceBlockSpans(newSource);
+  if (
+    cache.sourceBlocks.length === 0 ||
+    newSpans.length !== cache.sourceBlocks.length
+  ) {
+    return null;
+  }
+
+  const changedIndexes: number[] = [];
+  for (let index = 0; index < cache.sourceBlocks.length; index += 1) {
+    const oldAnchor = cache.sourceBlocks[index]!;
+    const nextSpan = newSpans[index]!;
+    if (oldAnchor.text === nextSpan.text) {
+      continue;
+    }
+    changedIndexes.push(index);
+  }
+
+  if (changedIndexes.length !== 1) {
+    return null;
+  }
+  const index = changedIndexes[0]!;
+  const oldAnchor = cache.sourceBlocks[index]!;
+  const nextSpan = newSpans[index]!;
+  if (
+    oldAnchor.kind !== nextSpan.kind ||
+    (oldAnchor.kind !== 'paragraph' && oldAnchor.kind !== 'heading') ||
+    oldAnchor.sourceStart !== nextSpan.sourceStart
+  ) {
+    return null;
+  }
+
+  return {
+    index,
+    oldAnchor,
+    newAnchor: {
+      ...nextSpan,
+      pmStart: oldAnchor.pmStart,
+      pmEnd: oldAnchor.pmEnd,
+    },
+  };
+}
+
+function sameVisualSelection(
+  mapping: VisualSelectionMapping | undefined,
+  selection: { from: number; to: number; kind: 'text' | 'node' },
+): boolean {
+  return Boolean(
+    mapping &&
+      mapping.visual.from === selection.from &&
+      mapping.visual.to === selection.to &&
+      mapping.visual.kind === selection.kind,
+  );
+}
+
+function pmPosToSourceOffsetWithAnchors(
+  editor: TiptapEditor,
+  anchors: SourceBlockAnchor[],
+  pmPos: number,
+): number | null {
+  const index = anchors.findIndex(
+    (anchor) => pmPos >= anchor.pmStart && pmPos <= anchor.pmEnd,
+  );
+  if (index === -1) {
+    return null;
+  }
+  const block = anchors[index]!;
+  const topLevelNodes: ProseMirrorNode[] = [];
+  editor.state.doc.content.forEach((node) => topLevelNodes.push(node));
+  const blockNode = topLevelNodes[index];
+  if (!blockNode) {
+    return null;
+  }
+
+  try {
+    const miniDoc = editor.schema.node('doc', null, [blockNode]);
+    const state = EditorState.create({ schema: editor.schema, doc: miniDoc });
+    let tr = state.tr;
+    const relative = Math.max(
+      0,
+      Math.min(pmPos - block.pmStart, block.pmEnd - block.pmStart),
+    );
+    tr = tr.insertText(SELECTION_END_MARKER, Math.min(relative, tr.doc.content.size));
+    tr = tr.insertText(SELECTION_START_MARKER, Math.min(relative, tr.doc.content.size));
+    const markedMarkdown = serializeMarkdownFragment(tr.doc.toJSON().content);
+    const extracted = extractSelectionMarkersFromMarkdown(markedMarkdown);
+    return block.sourceStart + extracted.selection.start;
+  } catch {
+    return null;
+  }
+}
+
+function buildSourceSelectionFromVisualEditor(
+  editor: TiptapEditor,
+  markdown: string,
+  cache: ModeSwitchCache | null,
+): SourceSearchMatch {
+  const selection = editor.state.selection;
+  const kind: 'text' | 'node' =
+    selection instanceof NodeSelection ? 'node' : 'text';
+  const mapping = cache?.visualSelectionMapping;
+  if (sameVisualSelection(mapping, { from: selection.from, to: selection.to, kind })) {
+    return { start: mapping!.source.start, end: mapping!.source.end };
+  }
+  if (cache && cache.sourceBlocks.length > 0) {
+    const from = pmPosToSourceOffsetWithAnchors(editor, cache.sourceBlocks, selection.from);
+    const to = from === null
+      ? null
+      : pmPosToSourceOffsetWithAnchors(editor, cache.sourceBlocks, selection.to);
+    if (from !== null && to !== null) {
+      return clampSourceSelection({ start: from, end: to }, markdown);
+    }
+  }
+
+  // Rare fallback: an edited structural block that cannot be mapped from the
+  // block cache. This still serializes with markers so caret mapping stays
+  // exact instead of leaking markers into saved markdown.
+  const transaction = editor.state.tr;
+  transaction.insertText(SELECTION_END_MARKER, selection.to);
+  transaction.insertText(SELECTION_START_MARKER, selection.from);
+  const markedMarkdown = serializeMarkdown(transaction.doc.toJSON());
+  return extractSelectionMarkersFromMarkdown(markedMarkdown).selection;
+}
+
+function serializeVisualDocumentLocally(
+  editor: TiptapEditor,
+  oldSource: string,
+  cache: ModeSwitchCache | null,
+  editRange: { from: number; to: number } | null,
+): { markdown: string; fullPath: boolean } | null {
+  if (!cache || cache.sourceText !== oldSource || !editRange) {
+    return null;
+  }
+
+  const topLevelNodes: ProseMirrorNode[] = [];
+  editor.state.doc.content.forEach((node) => topLevelNodes.push(node));
+  if (topLevelNodes.length !== cache.sourceBlocks.length) {
+    return null;
+  }
+
+  const changedIndexes = new Set<number>();
+  let pmStart = 0;
+  for (let index = 0; index < topLevelNodes.length; index += 1) {
+    const node = topLevelNodes[index]!;
+    const pmEnd = pmStart + node.nodeSize;
+    if (editRange.from < pmEnd && editRange.to > pmStart) {
+      changedIndexes.add(index);
+    }
+    pmStart = pmEnd;
+  }
+  if (changedIndexes.size === 0) {
+    return null;
+  }
+
+  const patches: Array<{ start: number; end: number; text: string }> = [];
+  for (const index of changedIndexes) {
+    const block = cache.sourceBlocks[index];
+    const node = topLevelNodes[index];
+    if (!block || !node) {
+      return null;
+    }
+    const blockMarkdown = serializeMarkdownFragment([node.toJSON()]).trimEnd();
+    patches.push({
+      start: block.sourceStart,
+      end: block.sourceEnd,
+      text: blockMarkdown,
+    });
+  }
+
+  let markdown = oldSource;
+  patches.sort((left, right) => right.start - left.start);
+  for (const patch of patches) {
+    markdown =
+      markdown.slice(0, patch.start) +
+      patch.text +
+      markdown.slice(patch.end);
+  }
+  return { markdown, fullPath: false };
 }
 
 const VISUAL_META_SYNC_DELAY_MS = 260;
@@ -652,6 +918,9 @@ export default function EditorShell({
     selection: SourceSearchMatch;
     content: JSONContent;
   } | null>(null);
+  const modeSwitchCacheRef = useRef<ModeSwitchCache | null>(null);
+  const visualEditRangeRef = useRef<{ from: number; to: number } | null>(null);
+  const modeSwitchRequestRef = useRef(0);
   const sourcePreviewTimerRef = useRef<number | null>(null);
   const sourcePreviewRequestRef = useRef(0);
   const formulaHtmlCacheGenerationRef = useRef(0);
@@ -830,20 +1099,6 @@ export default function EditorShell({
     pendingModeSwitchScrollRatioRef.current = computeScrollRatio(activeScrollElement);
   }, []);
 
-  const buildSourceDraftFromVisualSelection = useCallback(
-    (targetEditor: TiptapEditor): { markdown: string; selection: SourceSearchMatch } => {
-      const { from, to } = targetEditor.state.selection;
-      const transaction = targetEditor.state.tr;
-      transaction.insertText(SELECTION_END_MARKER, to);
-      transaction.insertText(SELECTION_START_MARKER, from);
-
-      const markedMarkdown = serializeMarkdown(transaction.doc.toJSON());
-      return extractSelectionMarkersFromMarkdown(markedMarkdown);
-    },
-    [],
-  );
-
-
   const parseMarkdownInWorker = useCallback((markdown: string, includeFormulaHtml = false) => {
     if (!markdownWorkerRef.current) {
       markdownWorkerRef.current = createMarkdownWorker();
@@ -971,6 +1226,8 @@ export default function EditorShell({
 
     setSourceDraft(document.markdown);
     sourceDraftRef.current = document.markdown;
+    modeSwitchCacheRef.current = null;
+    visualEditRangeRef.current = null;
     sourceSelectionRef.current = {
       start: document.markdown.length,
       end: document.markdown.length,
@@ -1196,6 +1453,19 @@ export default function EditorShell({
       }
 
       visualDocEditedRef.current = true;
+      try {
+        const changed = transaction.changedRange();
+        const previous = visualEditRangeRef.current;
+        visualEditRangeRef.current = {
+          from: Math.min(previous?.from ?? changed?.from ?? 0, changed?.from ?? 0),
+          to: Math.max(previous?.to ?? changed?.to ?? 0, changed?.to ?? 0),
+        };
+      } catch {
+        visualEditRangeRef.current = {
+          from: 0,
+          to: nextEditor.state.doc.content.size,
+        };
+      }
       requestAnimationFrame(() => {
         if (!nextEditor.isDestroyed) {
           syncInlineMathSelection(nextEditor);
@@ -1672,15 +1942,42 @@ export default function EditorShell({
     // If the user only toggled modes without editing visually, prefer the
     // last canonical markdown (source or last emitted) over a re-serialize
     // that can rewrite task lists, math delimiters, etc.
-    const markdown = visualDocEditedRef.current
-      ? serializeMarkdown(targetEditor.getJSON())
-      : lastEmittedMarkdownRef.current ||
-        visualMarkdownRef.current ||
-        serializeMarkdown(targetEditor.getJSON());
+    const canonicalSource =
+      lastEmittedMarkdownRef.current ||
+      visualMarkdownRef.current ||
+      serializeMarkdown(targetEditor.getJSON());
+    let markdown: string;
+    if (visualDocEditedRef.current) {
+      const localResult = serializeVisualDocumentLocally(
+        targetEditor,
+        canonicalSource,
+        modeSwitchCacheRef.current,
+        visualEditRangeRef.current,
+      );
+      if (localResult && !localResult.fullPath) {
+        markdown = localResult.markdown;
+      } else {
+        markdown = serializeMarkdown(targetEditor.getJSON());
+        incrementModeSwitchMetric('visual-to-source-full-serialize');
+      }
+    } else {
+      markdown = canonicalSource;
+    }
     const stats = calculateDocumentStats(getEditorPlainText(targetEditor));
     visualMarkdownRef.current = markdown;
     visualStatsRef.current = stats;
     lastEmittedMarkdownRef.current = markdown;
+    visualDocEditedRef.current = false;
+    visualEditRangeRef.current = null;
+    const nextCache = buildModeSwitchCache(markdown, targetEditor);
+    if (nextCache) {
+      modeSwitchCacheRef.current = {
+        ...nextCache,
+        visualSelectionMapping: modeSwitchCacheRef.current?.visualSelectionMapping,
+      };
+    } else {
+      modeSwitchCacheRef.current = null;
+    }
     setLiveStats((current) => (areStatsEqual(current, stats) ? current : stats));
     setLiveDirty(markdown !== document.savedMarkdown);
     onDocumentChange(markdown, stats);
@@ -1861,6 +2158,7 @@ export default function EditorShell({
       visualMarkdownRef.current = document.markdown;
       visualStatsRef.current = stats;
       lastEmittedMarkdownRef.current = document.markdown;
+      modeSwitchCacheRef.current = buildModeSwitchCache(document.markdown, editor);
       setOutline((current) => (areOutlinesEqual(current, nextOutline) ? current : nextOutline));
       setLiveStats((current) => (areStatsEqual(current, stats) ? current : stats));
       setLiveDirty(document.dirty);
@@ -1881,6 +2179,7 @@ export default function EditorShell({
       visualMarkdownRef.current = '';
       visualStatsRef.current = emptyStats;
       lastEmittedMarkdownRef.current = '';
+      modeSwitchCacheRef.current = buildModeSwitchCache('', editor);
       setOutline((current) => (current.length === 0 ? current : []));
       setLiveStats((current) => (areStatsEqual(current, emptyStats) ? current : emptyStats));
       setLiveDirty(document.dirty);
@@ -2179,6 +2478,24 @@ export default function EditorShell({
     armSkipNextDocChange();
     visualDocEditedRef.current = false;
     restoreSelectionMarkersFromEditorState(editor.state, editor.view);
+    const restoredSelection = editor.state.selection;
+    lastVisualSelectionRef.current = {
+      from: restoredSelection.from,
+      to: restoredSelection.to,
+      kind: restoredSelection instanceof NodeSelection ? 'node' : 'text',
+    };
+    const cache = modeSwitchCacheRef.current;
+    const sourceSelection = lastModeSwitchSourceSelectionRef.current;
+    if (
+      cache &&
+      cache.sourceText === sourceDraftRef.current &&
+      sourceSelection
+    ) {
+      cache.visualSelectionMapping = {
+        source: sourceSelection,
+        visual: lastVisualSelectionRef.current,
+      };
+    }
     scrollPosIntoView(editor, editor.state.selection.from);
     sourceCaretMovedRef.current = false;
     externalUpdateRef.current = false;
@@ -2593,9 +2910,48 @@ export default function EditorShell({
     />
   );
 
+  const syncSourceToVisualState = useCallback(
+    (
+      markdown: string,
+      sourceSelection: SourceSearchMatch,
+      visualSelection: { from: number; to: number; kind: 'text' | 'node' } | null,
+    ) => {
+      if (!editor) {
+        return;
+      }
+      const stats = computeSourceStats(markdown);
+      onDocumentChange(markdown, stats);
+      onDocumentMetaChange(markdown !== document.savedMarkdown);
+      visualMarkdownRef.current = markdown;
+      visualStatsRef.current = stats;
+      lastEmittedMarkdownRef.current = markdown;
+      const nextCache = buildModeSwitchCache(markdown, editor);
+      if (nextCache) {
+        modeSwitchCacheRef.current = nextCache;
+        if (visualSelection) {
+          modeSwitchCacheRef.current.visualSelectionMapping = {
+            source: sourceSelection,
+            visual: visualSelection,
+          };
+        }
+      } else {
+        modeSwitchCacheRef.current = null;
+      }
+      setLiveStats((currentStats) => (areStatsEqual(currentStats, stats) ? currentStats : stats));
+      setLiveDirty(markdown !== document.savedMarkdown);
+      const nextOutline = extractOutline(markdown);
+      setOutline((currentOutline) =>
+        areOutlinesEqual(currentOutline, nextOutline) ? currentOutline : nextOutline,
+      );
+      setVisualSearchRevision((currentRevision) => currentRevision + 1);
+    },
+    [document.savedMarkdown, editor, onDocumentChange, onDocumentMetaChange],
+  );
+
   const toggleSourceModePreservingViewport = useCallback(() => {
     captureModeSwitchScrollRatio();
-    if (sourceModeRef.current && editor) {
+    const currentSourceMode = sourceModeRef.current;
+    if (currentSourceMode && editor) {
       const input = sourceTextareaRef.current;
       const markdown = sourceDraftRef.current;
       const nextSelection = clampSourceSelection(
@@ -2611,75 +2967,91 @@ export default function EditorShell({
         (nextSelection.start !== previousSelection.start ||
           nextSelection.end !== previousSelection.end);
     }
-    setSourceMode((current) => {
-      if (!current) {
-        pendingVisualSelectionRestoreRef.current = false;
-        if (editor) {
-          const currentVisualSelection = editor.state.selection;
-          lastVisualSelectionRef.current = {
-            from: currentVisualSelection.from,
-            to: currentVisualSelection.to,
-            kind: currentVisualSelection instanceof NodeSelection ? 'node' : 'text',
-          };
-          const flushed = flushVisualSync(editor);
-          // Marker pass is only used for caret mapping. Content prefers the
-          // canonical flushed string so we do not rewrite unedited documents.
-          const sourceState = buildSourceDraftFromVisualSelection(editor);
-          const markdown = flushed?.markdown ?? sourceState.markdown;
-          const selection = clampSourceSelection(sourceState.selection, markdown);
-          pendingSourceSelectionRef.current = selection;
-          lastModeSwitchSourceSelectionRef.current = {
-            start: selection.start,
-            end: selection.end,
-          };
-          sourceSelectionRef.current = selection;
-          skipSourceDraftExternalSyncRef.current = true;
-          setSourceDraft(markdown);
-          sourceDraftRef.current = markdown;
-          const stats = computeSourceStats(markdown);
-          setLiveStats((currentStats) => (areStatsEqual(currentStats, stats) ? currentStats : stats));
-          queueSourcePreview(markdown, selection);
-          return true;
-        }
 
-        const fallbackMarkdown = documentMarkdownRef.current;
-        pendingSourceSelectionRef.current = {
-          start: fallbackMarkdown.length,
-          end: fallbackMarkdown.length,
+    if (!currentSourceMode) {
+      pendingVisualSelectionRestoreRef.current = false;
+      if (editor) {
+        const currentVisualSelection = editor.state.selection;
+        lastVisualSelectionRef.current = {
+          from: currentVisualSelection.from,
+          to: currentVisualSelection.to,
+          kind: currentVisualSelection instanceof NodeSelection ? 'node' : 'text',
         };
-        sourceSelectionRef.current = pendingSourceSelectionRef.current;
+        const flushed = flushVisualSync(editor);
+        const markdown =
+          flushed?.markdown ??
+          lastEmittedMarkdownRef.current ??
+          documentMarkdownRef.current;
+        const selection = buildSourceSelectionFromVisualEditor(
+          editor,
+          markdown,
+          modeSwitchCacheRef.current,
+        );
+        if (modeSwitchCacheRef.current) {
+          modeSwitchCacheRef.current.visualSelectionMapping = {
+            source: selection,
+            visual: lastVisualSelectionRef.current,
+          };
+        }
+        pendingSourceSelectionRef.current = selection;
+        lastModeSwitchSourceSelectionRef.current = {
+          start: selection.start,
+          end: selection.end,
+        };
+        sourceSelectionRef.current = selection;
         skipSourceDraftExternalSyncRef.current = true;
-        setSourceDraft(fallbackMarkdown);
-        sourceDraftRef.current = fallbackMarkdown;
-        const stats = computeSourceStats(fallbackMarkdown);
+        setSourceDraft(markdown);
+        sourceDraftRef.current = markdown;
+        const stats = computeSourceStats(markdown);
         setLiveStats((currentStats) => (areStatsEqual(currentStats, stats) ? currentStats : stats));
-        return true;
+        queueSourcePreview(markdown, selection);
+        setSourceMode(true);
+        sourceModeRef.current = true;
+        return;
       }
 
-      if (editor) {
-        const input = sourceTextareaRef.current;
-        const markdown = sourceDraftRef.current;
-        const selection = clampSourceSelection(
-          {
-            start: input?.selectionStart ?? sourceSelectionRef.current.start,
-            end: input?.selectionEnd ?? sourceSelectionRef.current.end,
-          },
-          markdown,
-        );
-        sourceSelectionRef.current = selection;
+      const fallbackMarkdown = documentMarkdownRef.current;
+      pendingSourceSelectionRef.current = {
+        start: fallbackMarkdown.length,
+        end: fallbackMarkdown.length,
+      };
+      sourceSelectionRef.current = pendingSourceSelectionRef.current;
+      skipSourceDraftExternalSyncRef.current = true;
+      setSourceDraft(fallbackMarkdown);
+      sourceDraftRef.current = fallbackMarkdown;
+      const stats = computeSourceStats(fallbackMarkdown);
+      setLiveStats((currentStats) => (areStatsEqual(currentStats, stats) ? currentStats : stats));
+      setSourceMode(true);
+      sourceModeRef.current = true;
+      return;
+    }
 
+    if (editor) {
+      const input = sourceTextareaRef.current;
+      const markdown = sourceDraftRef.current;
+      const selection = clampSourceSelection(
+        {
+          start: input?.selectionStart ?? sourceSelectionRef.current.start,
+          end: input?.selectionEnd ?? sourceSelectionRef.current.end,
+        },
+        markdown,
+      );
+      sourceSelectionRef.current = selection;
+
+      const cached = modeSwitchCacheRef.current;
+      if (markdown === lastEmittedMarkdownRef.current) {
+        incrementModeSwitchMetric('source-to-visual-fast');
         const savedSourceSelection = lastModeSwitchSourceSelectionRef.current;
-        const selectionUnchanged =
-          savedSourceSelection !== null && !sourceCaretMovedRef.current;
         const savedVisualSelection = lastVisualSelectionRef.current;
+        let nextVisualSelection: { from: number; to: number; kind: 'text' | 'node' } | null = null;
         if (
-          markdown === lastEmittedMarkdownRef.current &&
-          selectionUnchanged &&
-          savedVisualSelection !== null
+          savedVisualSelection &&
+          !sourceCaretMovedRef.current &&
+          savedSourceSelection &&
+          selection.start === savedSourceSelection.start &&
+          selection.end === savedSourceSelection.end
         ) {
-          externalUpdateRef.current = true;
-          armSkipNextDocChange();
-          visualDocEditedRef.current = false;
+          nextVisualSelection = savedVisualSelection;
           const nextSelection =
             savedVisualSelection.kind === 'node'
               ? NodeSelection.create(editor.state.doc, savedVisualSelection.from)
@@ -2688,114 +3060,177 @@ export default function EditorShell({
                   savedVisualSelection.from,
                   savedVisualSelection.to,
                 );
+          externalUpdateRef.current = true;
+          armSkipNextDocChange();
+          visualDocEditedRef.current = false;
           editor.view.dispatch(editor.state.tr.setSelection(nextSelection));
           externalUpdateRef.current = false;
-          pendingVisualSelectionRestoreRef.current = false;
-          pendingModeSwitchScrollRatioRef.current = null;
-          lastModeSwitchSourceSelectionRef.current = null;
-          lastVisualSelectionRef.current = null;
-          const stats = computeSourceStats(markdown);
-          onDocumentChange(markdown, stats);
-          onDocumentMetaChange(markdown !== document.savedMarkdown);
-          visualMarkdownRef.current = markdown;
-          visualStatsRef.current = stats;
-          lastEmittedMarkdownRef.current = markdown;
-          setLiveStats((currentStats) => (areStatsEqual(currentStats, stats) ? currentStats : stats));
-          setLiveDirty(markdown !== document.savedMarkdown);
-          const nextOutline = extractOutline(markdown);
-          setOutline((currentOutline) =>
-            areOutlinesEqual(currentOutline, nextOutline) ? currentOutline : nextOutline,
+        } else {
+          const mappedFrom = sourceOffsetToPmPosWithAnchors(
+            markdown,
+            cached?.sourceBlocks ?? [],
+            selection.start,
+            editor.state.doc.content.size,
           );
-          setVisualSearchRevision((currentRevision) => currentRevision + 1);
-          return false;
+          const mappedTo =
+            mappedFrom === null
+              ? null
+              : sourceOffsetToPmPosWithAnchors(
+                  markdown,
+                  cached?.sourceBlocks ?? [],
+                  selection.end,
+                  editor.state.doc.content.size,
+                );
+          const from = mappedFrom ?? Math.min(selection.start, editor.state.doc.content.size);
+          const to = mappedTo ?? Math.max(from, Math.min(selection.end, editor.state.doc.content.size));
+          nextVisualSelection = { from, to, kind: 'text' };
+          externalUpdateRef.current = true;
+          armSkipNextDocChange();
+          visualDocEditedRef.current = false;
+          try {
+            editor.view.dispatch(
+              editor.state.tr.setSelection(TextSelection.create(editor.state.doc, from, to)),
+            );
+          } catch {
+            editor.view.dispatch(
+              editor.state.tr.setSelection(
+                TextSelection.create(editor.state.doc, editor.state.doc.content.size),
+              ),
+            );
+          }
+          externalUpdateRef.current = false;
         }
+        pendingVisualSelectionRestoreRef.current = false;
+        pendingModeSwitchScrollRatioRef.current = null;
+        lastModeSwitchSourceSelectionRef.current = {
+          start: selection.start,
+          end: selection.end,
+        };
+        lastVisualSelectionRef.current = nextVisualSelection;
+        syncSourceToVisualState(markdown, selection, nextVisualSelection);
+        setSourceMode(false);
+        sourceModeRef.current = false;
+        return;
+      }
 
-        if (markdown === lastEmittedMarkdownRef.current && selection.start === selection.end) {
-          const mappedPos = markdownOffsetToPmPos(markdown, parseMarkdown(markdown), selection.start);
-          const visualEndPos = selection.start >= markdown.length
-            ? editor.state.doc.content.size
-            : null;
-          const effectivePos = mappedPos ?? visualEndPos;
-          if (effectivePos !== null) {
+      const localChange =
+        cached && cached.sourceText === lastEmittedMarkdownRef.current
+          ? findLocalSourceBlockChange(cached, markdown)
+          : null;
+      if (localChange) {
+        const blockText = markdown.slice(
+          localChange.newAnchor.sourceStart,
+          localChange.newAnchor.sourceEnd,
+        );
+        const relativeStart = Math.max(
+          0,
+          Math.min(selection.start - localChange.newAnchor.sourceStart, blockText.length),
+        );
+        const relativeEnd = Math.max(
+          relativeStart,
+          Math.min(selection.end - localChange.newAnchor.sourceStart, blockText.length),
+        );
+        const markedBlock = insertSelectionMarkersIntoMarkdown(
+          blockText,
+          relativeStart,
+          relativeEnd,
+        );
+        const parsedBlocks = parseMarkdownFragment(markedBlock);
+        if (parsedBlocks.length === 1) {
+          try {
+            const blockNode = editor.schema.nodeFromJSON(parsedBlocks[0]!);
             externalUpdateRef.current = true;
             armSkipNextDocChange();
             visualDocEditedRef.current = false;
             editor.view.dispatch(
-              editor.state.tr.setSelection(TextSelection.create(editor.state.doc, effectivePos)),
+              editor.state.tr.replaceWith(
+                localChange.oldAnchor.pmStart,
+                localChange.oldAnchor.pmEnd,
+                blockNode,
+              ),
             );
-            pendingModeSwitchScrollRatioRef.current = null;
             externalUpdateRef.current = false;
-            pendingVisualSelectionRestoreRef.current = false;
-            lastModeSwitchSourceSelectionRef.current = { start: selection.start, end: selection.end };
-            lastVisualSelectionRef.current = {
-              from: effectivePos,
-              to: effectivePos,
-              kind: 'text',
+            incrementModeSwitchMetric('source-to-visual-fast');
+            pendingVisualSelectionRestoreRef.current = true;
+            lastModeSwitchSourceSelectionRef.current = {
+              start: selection.start,
+              end: selection.end,
             };
-            const stats = computeSourceStats(markdown);
-            onDocumentChange(markdown, stats);
-            onDocumentMetaChange(markdown !== document.savedMarkdown);
-            visualMarkdownRef.current = markdown;
-            visualStatsRef.current = stats;
-            lastEmittedMarkdownRef.current = markdown;
-            setLiveStats((currentStats) => (areStatsEqual(currentStats, stats) ? currentStats : stats));
-            setLiveDirty(markdown !== document.savedMarkdown);
-            const nextOutline = extractOutline(markdown);
-            setOutline((currentOutline) =>
-              areOutlinesEqual(currentOutline, nextOutline) ? currentOutline : nextOutline,
-            );
-            setVisualSearchRevision((currentRevision) => currentRevision + 1);
-            return false;
+            syncSourceToVisualState(markdown, selection, null);
+            setSourceMode(false);
+            sourceModeRef.current = false;
+            return;
+          } catch {
+            externalUpdateRef.current = false;
           }
         }
+      }
 
-        const cachedPreview = sourcePreviewCacheRef.current;
-        const cacheHit =
-          cachedPreview &&
-          cachedPreview.markdown === markdown &&
-          isSameSourceSelection(cachedPreview.selection, selection);
-
-        // Always apply content. The previous cache-hit path skipped setContent,
-        // leaving the visual editor on stale document content after source edits.
-        const markedContent = cacheHit
-          ? cachedPreview.content
-          : parseMarkdown(
-              insertSelectionMarkersIntoMarkdown(markdown, selection.start, selection.end),
-            );
-
+      incrementModeSwitchMetric('source-to-visual-full-parse');
+      const markedMarkdown = insertSelectionMarkersIntoMarkdown(
+        markdown,
+        selection.start,
+        selection.end,
+      );
+      const cachedPreview = sourcePreviewCacheRef.current;
+      const cacheHit = Boolean(
+        cachedPreview &&
+        cachedPreview.markdown === markdown &&
+        isSameSourceSelection(cachedPreview.selection, selection),
+      );
+      const applyParsedMarkedContent = (content: JSONContent) => {
         externalUpdateRef.current = true;
         armSkipNextDocChange();
         visualDocEditedRef.current = false;
-        replaceEditorContent(editor, markedContent);
+        replaceEditorContent(editor, content);
         externalUpdateRef.current = false;
-
         pendingVisualSelectionRestoreRef.current = true;
-        const stats = computeSourceStats(markdown);
-        onDocumentChange(markdown, stats);
-        onDocumentMetaChange(markdown !== document.savedMarkdown);
-        visualMarkdownRef.current = markdown;
-        visualStatsRef.current = stats;
-        lastEmittedMarkdownRef.current = markdown;
-        setLiveStats((currentStats) => (areStatsEqual(currentStats, stats) ? currentStats : stats));
-        setLiveDirty(markdown !== document.savedMarkdown);
-        const nextOutline = extractOutline(markdown);
-        setOutline((currentOutline) =>
-          areOutlinesEqual(currentOutline, nextOutline) ? currentOutline : nextOutline,
-        );
-        setVisualSearchRevision((currentRevision) => currentRevision + 1);
+        lastModeSwitchSourceSelectionRef.current = {
+          start: selection.start,
+          end: selection.end,
+        };
+        syncSourceToVisualState(markdown, selection, null);
+      };
+      if (cacheHit && cachedPreview) {
+        applyParsedMarkedContent(cachedPreview.content);
+      } else if (markdown.length >= LARGE_DOCUMENT_THRESHOLD) {
+        const requestId = ++modeSwitchRequestRef.current;
+        void parseMarkdownInWorker(markedMarkdown)
+          .then((result) => {
+            if (
+              requestId !== modeSwitchRequestRef.current ||
+              sourceModeRef.current ||
+              editor.isDestroyed
+            ) {
+              return;
+            }
+            applyParsedMarkedContent(result.content);
+          })
+          .catch(() => {
+            if (requestId !== modeSwitchRequestRef.current || editor.isDestroyed) {
+              return;
+            }
+            applyParsedMarkedContent(
+              parseMarkdown(markedMarkdown),
+            );
+          });
+      } else {
+        applyParsedMarkedContent(parseMarkdown(markedMarkdown));
       }
+    }
 
-      return false;
-    });
+    setSourceMode(false);
+    sourceModeRef.current = false;
   }, [
     armSkipNextDocChange,
-    buildSourceDraftFromVisualSelection,
     captureModeSwitchScrollRatio,
     document.savedMarkdown,
     editor,
     onDocumentChange,
     onDocumentMetaChange,
+    parseMarkdownInWorker,
     queueSourcePreview,
+    syncSourceToVisualState,
   ]);
 
   const toggleSourceModeWithTransition = useCallback(() => {
