@@ -269,6 +269,10 @@ Stage 1 结果记录在 `docs/performance-benchmark.md`，关键变化：
 - 不能出现“先 placeholder 再补渲染”的可见闪烁。
 - 不允许通过牺牲 `source→visual` 或 typing 来换滚动。
 
+#### 2.3.6 Stage 2 修订：滚动热路径定向优化（2026-08-11 失败实验后）
+
+首轮 ScrollStabilizer 实验已回退。修订后不再等待 pending hydration 队列全部排空，不再在滚动中同步隐藏测量。Stage 2 改为在 Stage 1 基线上降低滚动热路径成本：MathSyntaxHighlight 的 viewport 更新必须 rAF/scrollend 合并，避免每个 scroll 事件同步 posAtCoords 或 dispatch 带 scrollIntoView 的 transaction；hydration 只激活视口 ±1 屏并复用缓存高度；不得放宽现有硬门禁。
+
 ### 2.4 Stage 3：模式切换与布局
 
 #### 2.4.1 目标
