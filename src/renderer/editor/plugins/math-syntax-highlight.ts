@@ -28,6 +28,10 @@ interface MathSyntaxDiagnostics {
   localBuildCount: number;
   spanCount: number;
   rangeCount: number;
+  scrollEventCount: number;
+  viewportRafCount: number;
+  viewportDispatchCount: number;
+  viewportSkippedCount: number;
 }
 
 const mathSyntaxKey = new PluginKey<MathSyntaxState>('mathSyntaxHighlight');
@@ -36,6 +40,10 @@ let pendingViewportScrollTop: number | null = null;
 let lastViewportFrom = -1;
 let lastViewportTo = -1;
 let lastSelectionChangeAt = -1;
+let viewportScrollEventCount = 0;
+let viewportRafCount = 0;
+let viewportDispatchCount = 0;
+let viewportSkippedCount = 0;
 
 function clampDocPos(doc: ProseMirrorNode, pos: number): number {
   return Math.max(0, Math.min(doc.content.size, pos));
@@ -47,9 +55,28 @@ function setDiagnostics(state: MathSyntaxState): void {
     localBuildCount: state.localBuildCount,
     spanCount: state.spanCount,
     rangeCount: state.ranges.length,
+    scrollEventCount: viewportScrollEventCount,
+    viewportRafCount: viewportRafCount,
+    viewportDispatchCount: viewportDispatchCount,
+    viewportSkippedCount: viewportSkippedCount,
   };
   (globalThis as unknown as Record<string, unknown>).__marivellMathSyntaxDiagnostics =
     diagnostics;
+}
+
+function publishViewportDiagnostics(): void {
+  const current = (globalThis as unknown as Record<string, unknown>)
+    .__marivellMathSyntaxDiagnostics as MathSyntaxDiagnostics | undefined;
+  (globalThis as unknown as Record<string, unknown>).__marivellMathSyntaxDiagnostics = {
+    fullBuildCount: current?.fullBuildCount ?? 0,
+    localBuildCount: current?.localBuildCount ?? 0,
+    spanCount: current?.spanCount ?? 0,
+    rangeCount: current?.rangeCount ?? 0,
+    scrollEventCount: viewportScrollEventCount,
+    viewportRafCount: viewportRafCount,
+    viewportDispatchCount: viewportDispatchCount,
+    viewportSkippedCount: viewportSkippedCount,
+  };
 }
 
 function tokenizeLatex(text: string): Token[] {
@@ -318,22 +345,25 @@ export const MathSyntaxHighlight = Extension.create({
             if (next !== frame) {
               if (frame) {
                 frame.removeEventListener('scroll', scheduleViewportUpdate);
+                frame.removeEventListener('scrollend', scheduleViewportUpdate);
               }
               frame = next;
               frame?.addEventListener('scroll', scheduleViewportUpdate, { passive: true });
+              frame?.addEventListener('scrollend', scheduleViewportUpdate, { passive: true });
             }
           };
 
           const scheduleViewportUpdate = (): void => {
+            viewportScrollEventCount += 1;
             if (rafId !== null) return;
             pendingViewportScrollTop = ((frame ?? view.dom) as HTMLElement).scrollTop;
             rafId = requestAnimationFrame(() => {
               rafId = null;
+              viewportRafCount += 1;
+              if (!view.isDestroyed) updateViewport();
+              publishViewportDiagnostics();
             });
             syncFrame();
-            queueMicrotask(() => {
-              if (!view.isDestroyed) updateViewport();
-            });
           };
 
           const updateViewport = (): void => {
@@ -359,7 +389,11 @@ export const MathSyntaxHighlight = Extension.create({
                 bottom.pos,
               );
               if (range.from >= range.to) return;
-              if (lastViewportFrom === range.from && lastViewportTo === range.to) return;
+              if (lastViewportFrom === range.from && lastViewportTo === range.to) {
+                viewportSkippedCount += 1;
+                return;
+              }
+              viewportDispatchCount += 1;
               view.dispatch(
                 view.state.tr.setMeta(mathSyntaxKey, {
                   type: 'viewport',
@@ -368,7 +402,7 @@ export const MathSyntaxHighlight = Extension.create({
                     to: range.to,
                     reason: 'viewport',
                   },
-                }).scrollIntoView(),
+                }),
               );
             } catch {
               // jsdom and headless probes have no usable layout coordinates.
@@ -388,6 +422,7 @@ export const MathSyntaxHighlight = Extension.create({
               if (rafId !== null) cancelAnimationFrame(rafId);
               if (frame) {
                 frame.removeEventListener('scroll', scheduleViewportUpdate);
+                frame.removeEventListener('scrollend', scheduleViewportUpdate);
               }
               window.removeEventListener('resize', scheduleViewportUpdate);
             },

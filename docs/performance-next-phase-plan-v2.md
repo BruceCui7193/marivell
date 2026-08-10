@@ -273,6 +273,8 @@ Stage 1 结果记录在 `docs/performance-benchmark.md`，关键变化：
 
 首轮 ScrollStabilizer 实验已回退。修订后不再等待 pending hydration 队列全部排空，不再在滚动中同步隐藏测量。Stage 2 改为在 Stage 1 基线上降低滚动热路径成本：MathSyntaxHighlight 的 viewport 更新必须 rAF/scrollend 合并，避免每个 scroll 事件同步 posAtCoords 或 dispatch 带 scrollIntoView 的 transaction；hydration 只激活视口 ±1 屏并复用缓存高度；不得放宽现有硬门禁。
 
+修订实现已在 `perf/performance-optimization` 上落地：MathSyntaxHighlight 改为 rAF 合并；EditorShell 在非跳转帧跳过 PM 坐标映射、跳转帧保留精确视口中心/半径、简化锚点捕获并减少补偿 rAF。大文件硬门禁保持通过，滚动 max、bottom jump-ready、source→visual 有改善；typing、scroll avg、middle/drag jump-ready 仍有波动，部分 run 比 60fce80 基线慢。随后补齐了拖拽锚点漂移修复：`compensateTopAnchor` 在原有 rAF 补偿链后增加最终重测与延迟复查；主代理用原始 benchmark 复测确认大文件 `scroll-drag-sequence-inline-height-drift` 已从 116px 修回 0px，且未放宽断言。当前 Stage 2 记为部分进展，不宣称通过发布门禁。
+
 ### 2.4 Stage 3：模式切换与布局
 
 #### 2.4.1 目标

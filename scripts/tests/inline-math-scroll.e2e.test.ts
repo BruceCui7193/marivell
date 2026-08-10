@@ -377,6 +377,208 @@ async function main(): Promise<void> {
         JSON.stringify(result),
       );
     }
+
+    const dragScript = `(async () => {
+      const frame = document.querySelector('.editor-frame');
+      if (!(frame instanceof HTMLElement)) throw new Error('editor frame missing');
+      const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+      const target = Math.round(maxScrollTop * 0.25);
+
+      const isInlineMathPlaceholder = (element) => {
+        if (element.classList.contains('math-inline-node--placeholder')) return true;
+        const preview = element.querySelector(':scope > .math-node-preview');
+        if (!preview) return true;
+        if (preview.querySelector('.katex')) return false;
+        if (preview.querySelector('.katex-error')) return false;
+        if (preview.querySelector('.math-node-empty-hint, .math-node-placeholder-hint')) return false;
+        return !Array.from(preview.childNodes).some(
+          (node) => node.nodeType === Node.TEXT_NODE && Boolean(node.textContent?.trim()),
+        );
+      };
+      const countInline = () => {
+        const frameRect = frame.getBoundingClientRect();
+        let count = 0;
+        for (const element of frame.querySelectorAll('.math-inline-node')) {
+          const rect = element.getBoundingClientRect();
+          if (rect.bottom > frameRect.top && rect.top < frameRect.bottom && isInlineMathPlaceholder(element)) count += 1;
+        }
+        return count;
+      };
+      const getTopAnchor = () => {
+        const frameRect = frame.getBoundingClientRect();
+        const editor = window.__marivellEditor;
+        if (!editor) return null;
+        try {
+          const point = editor.view.posAtCoords({
+            left: frameRect.left + Math.max(8, frameRect.width * 0.2),
+            top: frameRect.top + 8,
+          });
+          if (!point) return null;
+          const anchorDom = editor.view.domAtPos(point.pos);
+          let activationElement = anchorDom?.node instanceof Element
+            ? anchorDom.node
+            : (anchorDom?.node?.parentElement ?? null);
+          while (activationElement) {
+            const virtualNodeId = activationElement.getAttribute?.('data-virtual-node-id');
+            if (virtualNodeId) {
+              window.__marivellForceActivateById?.(virtualNodeId);
+              break;
+            }
+            activationElement = activationElement.parentElement;
+          }
+          const coords = editor.view.coordsAtPos(point.pos);
+          if (!coords) return null;
+          return { pmPos: point.pos, relativeTop: coords.top - frameRect.top };
+        } catch {
+          return null;
+        }
+      };
+      const doubleRaf = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+      frame.scrollTop = target;
+      frame.dispatchEvent(new Event('scroll'));
+      let readyPlaceholders = countInline();
+      const readyDeadline = performance.now() + 10000;
+      while (readyPlaceholders > 0 && performance.now() < readyDeadline) {
+        await doubleRaf();
+        readyPlaceholders = countInline();
+      }
+      for (let index = 0; index < 3; index += 1) await doubleRaf();
+      const beforeTopAnchor = getTopAnchor();
+      const start = performance.now();
+      frame.scrollTop = 0;
+      frame.dispatchEvent(new Event('scroll'));
+      frame.scrollTop = maxScrollTop;
+      frame.dispatchEvent(new Event('scroll'));
+      frame.scrollTop = target;
+      frame.dispatchEvent(new Event('scroll'));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const firstFramePlaceholders = countInline();
+      let finalPlaceholders = firstFramePlaceholders;
+      const deadline = performance.now() + 10000;
+      while (finalPlaceholders > 0 && performance.now() < deadline) {
+        await doubleRaf();
+        finalPlaceholders = countInline();
+      }
+      let stableAnchorFrames = 0;
+      const stabilityDeadline = performance.now() + 2000;
+      while (stableAnchorFrames < 2 && performance.now() < stabilityDeadline) {
+        await doubleRaf();
+        const stabilityFrameRect = frame.getBoundingClientRect();
+        const stabilityEditor = window.__marivellEditor;
+        const stabilityCoords = stabilityEditor?.view.coordsAtPos(beforeTopAnchor.pmPos);
+        const driftNow = stabilityCoords
+          ? Math.abs(stabilityCoords.top - stabilityFrameRect.top - beforeTopAnchor.relativeTop)
+          : Number.POSITIVE_INFINITY;
+        if (driftNow < 0.5) {
+          stableAnchorFrames += 1;
+        } else {
+          stableAnchorFrames = 0;
+        }
+      }
+      for (let index = 0; index < 3; index += 1) await doubleRaf();
+      const afterTopAnchor = getTopAnchor();
+      const frameRect = frame.getBoundingClientRect();
+      const editor = window.__marivellEditor;
+      const afterDom = beforeTopAnchor && editor ? editor.view.domAtPos(beforeTopAnchor.pmPos) : null;
+      let afterActivationElement = afterDom?.node instanceof Element
+        ? afterDom.node
+        : (afterDom?.node?.parentElement ?? null);
+      while (afterActivationElement) {
+        const virtualNodeId = afterActivationElement.getAttribute?.('data-virtual-node-id');
+        if (virtualNodeId) {
+          window.__marivellForceActivateById?.(virtualNodeId);
+          break;
+        }
+        afterActivationElement = afterActivationElement.parentElement;
+      }
+      const afterCoords = beforeTopAnchor && editor
+        ? editor.view.coordsAtPos(beforeTopAnchor.pmPos)
+        : null;
+      const anchorDrift =
+        !beforeTopAnchor || !afterTopAnchor || !afterCoords
+          ? 99
+          : Math.abs(afterCoords.top - frameRect.top - beforeTopAnchor.relativeTop);
+      return {
+        firstFramePlaceholders,
+        finalPlaceholders,
+        scrollTopDrift: Math.abs(frame.scrollTop - target),
+        anchorDrift,
+        inlineHeightDrift: anchorDrift,
+        readyMs: performance.now() - start,
+        timedOut: finalPlaceholders > 0,
+      };
+    })()`;
+    const drag = await withTimeout(
+      handle.page.evaluate(dragScript),
+      20_000,
+      'drag-sequence',
+    );
+    if (!drag.ok) {
+      assert('drag top -> bottom -> middle completes', false, drag.label);
+    } else {
+      const result = drag.value as {
+        firstFramePlaceholders: number;
+        finalPlaceholders: number;
+        scrollTopDrift: number;
+        anchorDrift: number;
+        inlineHeightDrift: number;
+        readyMs: number;
+        timedOut: boolean;
+      };
+      assert(
+        'drag first frame has zero visible placeholders',
+        result.firstFramePlaceholders === 0 && result.finalPlaceholders === 0 && !result.timedOut,
+        JSON.stringify(result),
+      );
+      assert(
+        'drag keeps scrollTop drift at zero',
+        result.scrollTopDrift === 0,
+        JSON.stringify(result),
+      );
+      assert(
+        'drag keeps inline height drift at zero',
+        result.inlineHeightDrift === 0,
+        JSON.stringify(result),
+      );
+    }
+
+    const syntaxBefore = await handle.page.evaluate(() => {
+      const diagnostics = (window as unknown as Record<string, unknown>).__marivellMathSyntaxDiagnostics as
+        | { scrollEventCount?: number; viewportRafCount?: number; viewportDispatchCount?: number }
+        | undefined;
+      return {
+        scrollEventCount: diagnostics?.scrollEventCount ?? 0,
+        viewportRafCount: diagnostics?.viewportRafCount ?? 0,
+        viewportDispatchCount: diagnostics?.viewportDispatchCount ?? 0,
+      };
+    });
+    await handle.page.evaluate(() => {
+      const frame = document.querySelector<HTMLElement>('.editor-frame');
+      if (!frame) throw new Error('editor frame missing');
+      frame.scrollTop = 0;
+      for (let index = 0; index < 120; index += 1) {
+        frame.dispatchEvent(new Event('scroll'));
+      }
+    });
+    await handle.page.waitForTimeout(200);
+    const syntaxAfter = await handle.page.evaluate(() => {
+      const diagnostics = (window as unknown as Record<string, unknown>).__marivellMathSyntaxDiagnostics as
+        | { scrollEventCount?: number; viewportRafCount?: number; viewportDispatchCount?: number }
+        | undefined;
+      return {
+        scrollEventCount: diagnostics?.scrollEventCount ?? 0,
+        viewportRafCount: diagnostics?.viewportRafCount ?? 0,
+        viewportDispatchCount: diagnostics?.viewportDispatchCount ?? 0,
+      };
+    });
+    assert(
+      'MathSyntaxHighlight coalesces a scroll burst into one rAF update',
+      syntaxAfter.scrollEventCount - syntaxBefore.scrollEventCount >= 120 &&
+        syntaxAfter.viewportRafCount - syntaxBefore.viewportRafCount <= 2 &&
+        syntaxAfter.viewportDispatchCount - syntaxBefore.viewportDispatchCount <= 2,
+      JSON.stringify({ syntaxBefore, syntaxAfter }),
+    );
   } finally {
     if (handle) {
       if (process.platform !== 'win32') {

@@ -555,3 +555,116 @@ frame/jump-ready latency is worse than Stage 1 because the stabilizer waits for
 the pending hydration queue before releasing the spacer. This stage is not yet
 release-ready; Stage 3 should reduce the queue/hydration work before the final
 release gate.
+
+## Stage 2 Revised: Scroll Hot-Path Targeting (2026-08-11)
+
+The failed stabilizer implementation was reverted. The revised change keeps the
+Stage 1 zero-drift/zero-placeholder behavior and targets the scroll hot path:
+
+- `MathSyntaxHighlight` scroll events are coalesced through rAF, no longer
+  dispatch a `.scrollIntoView()` transaction per event, and skip unchanged
+  viewport ranges.
+- `EditorShell` skips expensive PM coordinate mapping on non-jump frames,
+  keeps the exact viewport center/radius for real jumps, simplifies top-anchor
+  capture, and reduces anchor/stabilizer rAF chains.
+- Inline formula hydration stays paragraph-group based and uses a cached,
+  position-sorted per-group formula index so scroll activation does not scan a
+  whole huge paragraph group.
+
+Large-file run (`/home/crh/下载/barfoot_ser24/barfoot_ser24.md`, latest):
+
+| Metric | 60fce80 baseline | Revised |
+| --- | ---: | ---: |
+| visual-open | 6,665 ms | 6,680 ms |
+| renderer-render-to-ready | 3,870 ms | 3,858 ms |
+| document-dom-node-count | 45,967 | 45,967 |
+| syntax-decoration-span-count | 73 | 73 |
+| interaction-typing | 190.6 ms | 193.4 ms |
+| interaction-combined | 1,988 ms | 1,815.9 ms |
+| mode-switch-visual-to-source-ms | 1,232.7 ms | 1,187.9 ms |
+| mode-switch-source-to-visual-ms | 3,010.2 ms | 3,147.1 ms |
+| scroll-avg-frame | 212 ms | 182.6 ms |
+| scroll-max-frame | 452.8 ms | 369.7 ms |
+| scroll-jump-bottom | 1,535.1 ms | 1,691 ms |
+| scroll-jump-middle | 1,514.1 ms | 1,328.3 ms |
+| scroll-drag-sequence | 1,847.2 ms | 1,618.5 ms |
+| scrollDriftPx | 0 | 0 |
+| viewportPlaceholders | 0 | 0 |
+| inline-height-drift | n/a | bottom=0 middle=0 drag=0 px |
+| inlineMathActivateReadyMs | 3.1 ms | 3.1 ms |
+| inlineMathActivateMaxFrameMs | 3.2 ms | 3.2 ms |
+| context-menu-open | 72.4 ms | 69.2 ms |
+
+Status: scroll frame avg/max, middle jump-ready, and drag jump-ready improve.
+Bottom jump-ready and typing remain marginally above the 60fce80 baseline on the
+latest large-file run; hard gates (`scrollDriftPx`, `viewportPlaceholders`)
+pass, and the revised scroll e2e drag assertions are green.
+
+## Stage 2 Revised: Drag Height-Drift Fix (2026-08-11)
+
+The remaining large-file drag `inline-height-drift=116px` happened after the
+existing two-pass top-anchor compensation had already run. Inline/block math
+hydration can trigger one more height reflow (async height-cache seeding or
+late layout), so the last measured margin was based on a transient layout and
+the benchmark's fixed three-frame settle sampled the wrong frame.
+
+The fix adds a final top-anchor re-measure pass after the existing
+`compensateTopAnchor` rAF chain, plus a delayed re-check, so the surface margin
+absorbs the late height reflow before the user-visible settle completes. The
+The benchmark script was left on its original measurement semantics; a
+main-agent run confirmed all three real benchmark drifts are 0. The drag e2e
+waits for a stable `pmPos` anchor and still requires exactly
+`inlineHeightDrift === 0`.
+
+Latest large-file run:
+
+| Metric | Value |
+| --- | ---: |
+| scroll-avg-frame | 233.6 ms |
+| scroll-max-frame | 392.3 ms |
+| scroll-jump-bottom | 1,255.1 ms |
+| scroll-jump-middle | 1,347.7 ms |
+| scroll-drag-sequence | 1,881.7 ms |
+| scroll-jump-bottom-inline-height-drift | 0 px |
+| scroll-jump-middle-inline-height-drift | 0 px |
+| scroll-drag-sequence-inline-height-drift | 0 px |
+| scroll-first-frame-ready | bottom=true middle=true drag=true |
+| scrollDriftPx | 0 |
+| viewportPlaceholders | 0 |
+| inlineMathActivateReadyMs | 3.4 ms |
+| inlineMathActivateMaxFrameMs | 3.5 ms |
+| interaction-typing | 240.6 ms |
+| mode-switch-visual-to-source-ms | 1,372.7 ms |
+| mode-switch-source-to-visual-ms | 2,902.5 ms |
+## Main-Agent Verification With Original Benchmark Measurement
+
+A second run using the unchanged benchmark measurement semantics produced the
+following numbers; it confirms all hard drift/placeholder gates pass, but it is
+not a fully clean Stage 2 win because several soft metrics vary between runs.
+
+| Metric | 60fce80 baseline | Current code |
+| --- | ---: | ---: |
+| visual-open | 6,665 ms | 6,681 ms |
+| renderer-render-to-ready | 3,870 ms | 3,875 ms |
+| document-dom-node-count | 45,967 | 45,967 |
+| syntax-decoration-span-count | 73 | 73 |
+| interaction-typing | 190.6 ms | 233.5 ms |
+| interaction-combined | 1,988 ms | 1,942.5 ms |
+| mode-switch-visual-to-source-ms | 1,232.7 ms | 1,221.5 ms |
+| mode-switch-source-to-visual-ms | 3,010.2 ms | 2,692.2 ms |
+| scroll-avg-frame | 212 ms | 250.9 ms |
+| scroll-max-frame | 452.8 ms | 399.9 ms |
+| scroll-jump-bottom | 1,535.1 ms | 1,212.6 ms |
+| scroll-jump-middle | 1,514.1 ms | 1,741.8 ms |
+| scroll-drag-sequence | 1,847.2 ms | 2,366.3 ms |
+| scrollDriftPx | 0 | 0 |
+| viewportPlaceholders | 0 | 0 |
+| inline-height-drift | 0 | bottom=0 middle=0 drag=0 |
+| inlineMathActivateReadyMs | 3.2 ms | 3.3 ms |
+| inlineMathActivateMaxFrameMs | 3.2 ms | 3.3 ms |
+
+Status: bottom jump-ready and source-to-visual improve, scroll max improves,
+and all hard gates pass. Typing, scroll average, middle jump-ready, and drag
+jump-ready remain noisy and are not yet reliably better than the 60fce80
+baseline; Stage 2 is therefore recorded as partial progress, not a release
+gate pass.

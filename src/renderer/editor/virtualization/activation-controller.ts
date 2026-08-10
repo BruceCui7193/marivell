@@ -549,6 +549,10 @@ export function forceActivateById(id: string): void {
   forceActivate(id);
 }
 
+if (typeof window !== 'undefined') {
+  (window as unknown as Record<string, unknown>).__marivellForceActivateById = forceActivateById;
+}
+
 export function forceHydrateAll(): number {
   return withScrollAnchorRestore(() => {
     let activatedCount = 0;
