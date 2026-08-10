@@ -592,6 +592,7 @@ function serializeVisualDocumentLocally(
 
 const VISUAL_META_SYNC_DELAY_MS = 260;
 const VISUAL_DOCUMENT_SYNC_TIMEOUT_MS = 1400;
+const MODE_SWITCH_OVERLAY_DELAY_MS = 180;
 const SEARCH_QUERY_PREFILL_MAX_CHARS = 240;
 const SEARCH_QUERY_PREFILL_MAX_NEWLINES = 2;
 
@@ -767,10 +768,7 @@ const EditorViewport = memo(function EditorViewport({
         style={
           sourceMode
             ? {
-                position: 'absolute',
-                inset: '0px',
-                visibility: 'hidden',
-                pointerEvents: 'none',
+                display: 'none',
               }
             : undefined
         }
@@ -981,6 +979,7 @@ export default function EditorShell({
   const sourcePreviewTimerRef = useRef<number | null>(null);
   const sourcePreviewRequestRef = useRef(0);
   const formulaHtmlCacheGenerationRef = useRef(0);
+  const formulaHtmlCacheRef = useRef<Map<string, string>>(new Map());
   const formulaChunkRequestRef = useRef(0);
   const formulaChunkQueueRef = useRef<FormulaIndexEntry[][]>([]);
   const formulaChunkInFlightRef = useRef<Map<number, number>>(new Map());
@@ -1213,6 +1212,11 @@ export default function EditorShell({
         window.clearTimeout(sourcePreviewTimerRef.current);
       }
 
+      if (markdown.length >= LARGE_DOCUMENT_THRESHOLD) {
+        sourcePreviewTimerRef.current = null;
+        return;
+      }
+
       sourcePreviewTimerRef.current = window.setTimeout(() => {
         sourcePreviewTimerRef.current = null;
         const markedMarkdown = insertSelectionMarkersIntoMarkdown(
@@ -1243,7 +1247,7 @@ export default function EditorShell({
               sourcePreviewCacheRef.current = null;
             }
           });
-      }, markdown.length >= LARGE_DOCUMENT_THRESHOLD ? 180 : 60);
+      }, 60);
     },
     [parseMarkdownInWorker],
   );
@@ -1666,6 +1670,11 @@ export default function EditorShell({
     const invalidateHeightCache = () => {
       resetEditorEnvironmentKeyCache();
       clearNodeHeightCache();
+      if (formulaHtmlCacheRef.current.size > 0) {
+        prepareInlineMathForFormulaHtml(
+          Object.fromEntries(formulaHtmlCacheRef.current),
+        );
+      }
       if (heightCacheInvalidationFrameRef.current !== null) {
         cancelAnimationFrame(heightCacheInvalidationFrameRef.current);
       }
@@ -1781,13 +1790,14 @@ export default function EditorShell({
     const compensateTopAnchor = (
       anchor: { pmPos: number; offsetTop: number },
       attempt = 0,
+      scrollTopTarget?: number,
     ): void => {
       const currentEditor = editorRef.current;
       if (!currentEditor || attempt > 2) {
         return;
       }
       if (attempt < 2) {
-        requestAnimationFrame(() => compensateTopAnchor(anchor, attempt + 1));
+        requestAnimationFrame(() => compensateTopAnchor(anchor, attempt + 1, scrollTopTarget));
         return;
       }
       try {
@@ -1797,6 +1807,36 @@ export default function EditorShell({
           const delta = (coords.top - frameRect.top) - anchor.offsetTop;
           applySurfaceAnchorCompensation(delta);
         }
+        if (typeof scrollTopTarget === 'number') {
+          const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+          const pinnedScrollTop = Math.min(scrollTopTarget, maxScrollTop);
+          frame.scrollTop = pinnedScrollTop;
+          lastAnchorRestoredScrollTopRef.current = pinnedScrollTop;
+          requestAnimationFrame(() => {
+            if (!frame.isConnected || typeof scrollTopTarget !== 'number') {
+              return;
+            }
+            const latestMax = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+            frame.scrollTop = Math.min(scrollTopTarget, latestMax);
+            lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
+            const latestEditor = editorRef.current;
+            if (!latestEditor) {
+              return;
+            }
+            try {
+              const latestFrameRect = frame.getBoundingClientRect();
+              const latestCoords = coordsAtPos(latestEditor, anchor.pmPos);
+              if (latestCoords) {
+                const latestDelta = (latestCoords.top - latestFrameRect.top) - anchor.offsetTop;
+                if (Math.abs(latestDelta) >= 0.1) {
+                  applySurfaceAnchorCompensation(latestDelta);
+                }
+              }
+            } catch {
+              // Anchor compensation is best-effort when PM layout is transient.
+            }
+          });
+        }
       } catch {
         // Anchor compensation is best-effort when PM layout is transient.
       }
@@ -1805,12 +1845,20 @@ export default function EditorShell({
     setInlineMathScrollAnchorProvider({
       capture: () => {
         const currentEditor = editorRef.current;
-        return currentEditor ? captureVisualScrollAnchor(frame, currentEditor) : null;
+        const anchor = currentEditor ? captureVisualScrollAnchor(frame, currentEditor) : null;
+        return anchor === null ? null : { ...anchor, scrollTop: frame.scrollTop };
       },
       restore: (anchor) => {
         const currentEditor = editorRef.current;
-        if (currentEditor) {
-          restoreVisualScrollAnchor(frame, currentEditor, anchor);
+        if (!currentEditor) {
+          return;
+        }
+        restoreVisualScrollAnchor(frame, currentEditor, anchor);
+        if (typeof anchor.scrollTop === 'number') {
+          const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+          const snappedScrollTop = Math.max(0, Math.min(anchor.scrollTop, maxScrollTop));
+          frame.scrollTop = snappedScrollTop;
+          lastAnchorRestoredScrollTopRef.current = snappedScrollTop;
         }
       },
     });
@@ -2098,7 +2146,7 @@ export default function EditorShell({
           if (wasAtBottom) {
             compensateBottomAnchor(anchorBeforeHydrate);
           } else {
-            compensateTopAnchor(anchorBeforeHydrate);
+            compensateTopAnchor(anchorBeforeHydrate, 0, scrollTopBeforeHydrate);
           }
         }
 
@@ -2428,6 +2476,7 @@ export default function EditorShell({
     latestExternalLoadRef.current = loadId;
     const formulaCacheGeneration = ++formulaHtmlCacheGenerationRef.current;
     clearFormulaHtmlCache();
+    formulaHtmlCacheRef.current.clear();
     formulaChunkQueueRef.current = [];
     formulaChunkInFlightRef.current.clear();
     formulaPrefetchRequestedKeysRef.current.clear();
@@ -2573,11 +2622,15 @@ export default function EditorShell({
 
     const scheduleFormulaHeightMeasurement = (
       _entries: FormulaIndexEntry[] | null | undefined,
-      _formulaHtml: Record<string, string>,
+      formulaHtml: Record<string, string>,
     ): void => {
-      // Background DOM measurement of every unique KaTeX string is too heavy for
-      // this huge-file path. Activated formulas keep a stable default height and
-      // the scroll stabilizer handles the small remaining drift.
+      if (!formulaHtml) {
+        return;
+      }
+      for (const [key, html] of Object.entries(formulaHtml)) {
+        formulaHtmlCacheRef.current.set(key, html);
+      }
+      prepareInlineMathForFormulaHtml(formulaHtml);
     };
 
     const pumpFormulaChunks = (): void => {
@@ -2645,6 +2698,9 @@ export default function EditorShell({
           formulaChunkInFlightRef.current.delete(requestId);
           if (event.data.ok && isActivePrefetch()) {
             seedFormulaHtmlCache(event.data.formulaHtml);
+            for (const [key, html] of Object.entries(event.data.formulaHtml)) {
+              formulaHtmlCacheRef.current.set(key, html);
+            }
             prepareInlineMathForFormulaHtml(event.data.formulaHtml);
             scheduleFormulaHeightMeasurement(missingEntries, event.data.formulaHtml);
           }
@@ -2719,6 +2775,9 @@ export default function EditorShell({
           if (isActivePrefetch()) {
             if (result.formulaHtml) {
               seedFormulaHtmlCache(result.formulaHtml);
+              for (const [key, html] of Object.entries(result.formulaHtml)) {
+                formulaHtmlCacheRef.current.set(key, html);
+              }
               scheduleFormulaHeightMeasurement(
                 result.formulaIndex ?? null,
                 result.formulaHtml,
@@ -3629,7 +3688,7 @@ export default function EditorShell({
         modeSwitchOverlayTimerRef.current = window.setTimeout(() => {
           setModeSwitching(false);
           modeSwitchOverlayTimerRef.current = null;
-        }, 420);
+        }, MODE_SWITCH_OVERLAY_DELAY_MS);
       });
     });
   }, [toggleSourceModePreservingViewport]);

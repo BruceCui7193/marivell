@@ -2203,9 +2203,10 @@
 .mermaid-node__placeholder,
 .html-block-placeholder,
 .code-block-node--placeholder {
-  contain: layout style paint;
+  contain: layout style;
   content-visibility: auto;
   contain-intrinsic-size: auto 96px;
+  overflow: visible;
 }
 
 .image-node__placeholder {
@@ -2239,6 +2240,7 @@
 .math-inline-node {
   display: inline-flex;
   align-items: center;
+  vertical-align: baseline;
   min-height: 1em;
   background: transparent;
 }
@@ -2736,9 +2738,10 @@
 .math-block-node {
   display: block;
   margin: 0.45em 0;
-  contain: layout style paint;
+  contain: layout style;
   content-visibility: auto;
   contain-intrinsic-size: auto 96px;
+  overflow: visible;
 }
 
 .math-block-node .math-node-preview {
@@ -2938,6 +2941,7 @@
 }
 
 .source-editor__gutter {
+  position: relative;
   z-index: 2;
   min-width: 3.2rem;
   height: 100%;
@@ -2951,7 +2955,21 @@
   font-variant-numeric: tabular-nums;
 }
 
+.source-editor__gutter-window {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
 .source-editor__line-no {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
   height: 1.7em;
   line-height: 1.7em;
   opacity: 0.78;

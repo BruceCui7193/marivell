@@ -52,8 +52,8 @@ export interface InlineMathRegistration {
 }
 
 export interface InlineMathScrollAnchorProvider {
-  capture(): { pmPos: number; offsetTop: number } | null;
-  restore(anchor: { pmPos: number; offsetTop: number }): void;
+  capture(): { pmPos: number; offsetTop: number; scrollTop?: number; atBottom?: boolean } | null;
+  restore(anchor: { pmPos: number; offsetTop: number; scrollTop?: number; atBottom?: boolean }): void;
 }
 
 interface InlineMathGroup {
@@ -85,6 +85,10 @@ let groupSeq = 0;
 let paragraphGroupSeq = 0;
 let sortedGroups: InlineMathGroup[] = [];
 let sortDirty = true;
+let inlineGroupPositionTree: InlineGroupPositionEntry | null = null;
+const inlineGroupPositionIndex = new Map<string, InlineGroupPositionEntry>();
+const inlineGroupPositionDirty = new Set<string>();
+let inlineGroupPositionCount = 0;
 let prefetchRequester: ((entries: FormulaIndexEntry[]) => void) | null = null;
 let activatingGroupId: string | null = null;
 let pendingGroups = new Set<InlineMathGroup>();
@@ -104,6 +108,213 @@ const inlineMathGroupIndexTestCounters: InlineMathGroupIndexTestCounters = {
   rangeQueries: 0,
   fullGroupScans: 0,
 };
+
+interface InlineGroupPositionEntry {
+  key: string;
+  group: InlineMathGroup;
+  firstPmPos: number;
+  lastPmPos: number;
+  minFirstPmPos: number;
+  maxLastPmPos: number;
+  priority: number;
+  left: InlineGroupPositionEntry | null;
+  right: InlineGroupPositionEntry | null;
+  size: number;
+}
+
+function getInlineGroupPositionPriority(key: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < key.length; index += 1) {
+    hash ^= key.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) / 4294967296;
+}
+
+function compareInlineGroupPositionEntries(
+  left: Pick<InlineGroupPositionEntry, 'key' | 'firstPmPos'>,
+  right: Pick<InlineGroupPositionEntry, 'key' | 'firstPmPos'>,
+): number {
+  if (left.firstPmPos !== right.firstPmPos) {
+    return left.firstPmPos - right.firstPmPos;
+  }
+  return left.key < right.key ? -1 : left.key > right.key ? 1 : 0;
+}
+
+function updateInlineGroupPositionEntrySize(entry: InlineGroupPositionEntry): void {
+  const left = entry.left;
+  const right = entry.right;
+  entry.size = 1 + (left?.size ?? 0) + (right?.size ?? 0);
+  entry.minFirstPmPos = Math.min(
+    entry.firstPmPos,
+    left?.minFirstPmPos ?? Number.POSITIVE_INFINITY,
+    right?.minFirstPmPos ?? Number.POSITIVE_INFINITY,
+  );
+  entry.maxLastPmPos = Math.max(
+    entry.lastPmPos,
+    left?.maxLastPmPos ?? Number.NEGATIVE_INFINITY,
+    right?.maxLastPmPos ?? Number.NEGATIVE_INFINITY,
+  );
+}
+
+function rotateInlineGroupPositionRight(
+  root: InlineGroupPositionEntry,
+): InlineGroupPositionEntry {
+  const pivot = root.left!;
+  root.left = pivot.right;
+  pivot.right = root;
+  updateInlineGroupPositionEntrySize(root);
+  updateInlineGroupPositionEntrySize(pivot);
+  return pivot;
+}
+
+function rotateInlineGroupPositionLeft(
+  root: InlineGroupPositionEntry,
+): InlineGroupPositionEntry {
+  const pivot = root.right!;
+  root.right = pivot.left;
+  pivot.left = root;
+  updateInlineGroupPositionEntrySize(root);
+  updateInlineGroupPositionEntrySize(pivot);
+  return pivot;
+}
+
+function insertInlineGroupPositionEntry(
+  root: InlineGroupPositionEntry | null,
+  entry: InlineGroupPositionEntry,
+): InlineGroupPositionEntry {
+  if (root === null) {
+    entry.left = null;
+    entry.right = null;
+    entry.size = 1;
+    entry.minFirstPmPos = entry.firstPmPos;
+    entry.maxLastPmPos = entry.lastPmPos;
+    return entry;
+  }
+
+  if (compareInlineGroupPositionEntries(entry, root) < 0) {
+    root.left = insertInlineGroupPositionEntry(root.left, entry);
+    if (root.left!.priority > root.priority) {
+      root = rotateInlineGroupPositionRight(root);
+    }
+  } else {
+    root.right = insertInlineGroupPositionEntry(root.right, entry);
+    if (root.right!.priority > root.priority) {
+      root = rotateInlineGroupPositionLeft(root);
+    }
+  }
+
+  updateInlineGroupPositionEntrySize(root);
+  return root;
+}
+
+function removeInlineGroupPositionEntry(
+  root: InlineGroupPositionEntry | null,
+  firstPmPos: number,
+  key: string,
+): InlineGroupPositionEntry | null {
+  if (root === null) {
+    return null;
+  }
+
+  const comparison =
+    firstPmPos !== root.firstPmPos
+      ? firstPmPos - root.firstPmPos
+      : key < root.key
+        ? -1
+        : key > root.key
+          ? 1
+          : 0;
+  if (comparison < 0) {
+    root.left = removeInlineGroupPositionEntry(root.left, firstPmPos, key);
+  } else if (comparison > 0) {
+    root.right = removeInlineGroupPositionEntry(root.right, firstPmPos, key);
+  } else {
+    return mergeInlineGroupPositionEntries(root.left, root.right);
+  }
+
+  updateInlineGroupPositionEntrySize(root);
+  return root;
+}
+
+function mergeInlineGroupPositionEntries(
+  left: InlineGroupPositionEntry | null,
+  right: InlineGroupPositionEntry | null,
+): InlineGroupPositionEntry | null {
+  if (left === null) {
+    return right;
+  }
+  if (right === null) {
+    return left;
+  }
+  if (left.priority > right.priority) {
+    left.right = mergeInlineGroupPositionEntries(left.right, right);
+    updateInlineGroupPositionEntrySize(left);
+    return left;
+  }
+  right.left = mergeInlineGroupPositionEntries(left, right.left);
+  updateInlineGroupPositionEntrySize(right);
+  return right;
+}
+
+function removeInlineGroupPosition(group: InlineMathGroup): void {
+  const entry = inlineGroupPositionIndex.get(group.key);
+  if (!entry) {
+    return;
+  }
+  inlineGroupPositionIndex.delete(group.key);
+  inlineGroupPositionDirty.delete(group.key);
+  inlineGroupPositionTree = removeInlineGroupPositionEntry(
+    inlineGroupPositionTree,
+    entry.firstPmPos,
+    group.key,
+  );
+  inlineGroupPositionCount -= 1;
+}
+
+function flushInlineGroupPositionDirty(): void {
+  if (inlineGroupPositionDirty.size === 0) {
+    return;
+  }
+  for (const key of Array.from(inlineGroupPositionDirty)) {
+    const existing = inlineGroupPositionIndex.get(key);
+    if (existing) {
+      inlineGroupPositionIndex.delete(key);
+      inlineGroupPositionTree = removeInlineGroupPositionEntry(
+        inlineGroupPositionTree,
+        existing.firstPmPos,
+        key,
+      );
+      inlineGroupPositionCount -= 1;
+    }
+    const group = groups.get(key);
+    if (group && Number.isFinite(group.firstPmPos)) {
+      const entry: InlineGroupPositionEntry = {
+        key,
+        group,
+        firstPmPos: group.firstPmPos,
+        lastPmPos: group.lastPmPos,
+        minFirstPmPos: group.firstPmPos,
+        maxLastPmPos: group.lastPmPos,
+        priority: getInlineGroupPositionPriority(key),
+        left: null,
+        right: null,
+        size: 1,
+      };
+      inlineGroupPositionIndex.set(key, entry);
+      inlineGroupPositionTree = insertInlineGroupPositionEntry(
+        inlineGroupPositionTree,
+        entry,
+      );
+      inlineGroupPositionCount += 1;
+    }
+    inlineGroupPositionDirty.delete(key);
+  }
+}
+
+function markGroupPositionDirty(group: InlineMathGroup): void {
+  inlineGroupPositionDirty.add(group.key);
+}
 
 function publishInlineMathActivationMetrics(): void {
   if (typeof window === 'undefined') {
@@ -334,8 +545,11 @@ function getKeyForParagraph(paragraph: HTMLElement): string {
   return `el:${paragraphId}`;
 }
 
-function markSortDirty(): void {
+function markSortDirty(group?: InlineMathGroup): void {
   sortDirty = true;
+  if (group) {
+    markGroupPositionDirty(group);
+  }
 }
 
 function unregisterGroup(group: InlineMathGroup): void {
@@ -348,7 +562,7 @@ function unregisterGroup(group: InlineMathGroup): void {
   }
   pendingGroups.delete(group);
   groups.delete(group.key);
-  markSortDirty();
+  removeInlineGroupPosition(group);
 }
 
 function refreshGroupBounds(group: InlineMathGroup): void {
@@ -364,6 +578,7 @@ function refreshGroupBounds(group: InlineMathGroup): void {
   }
   group.firstPmPos = Number.isFinite(first) ? first : 0;
   group.lastPmPos = Number.isFinite(last) ? last : 0;
+  markGroupPositionDirty(group);
 }
 
 function updateGroupPosition(group: InlineMathGroup, registration: InlineMathRegistration): void {
@@ -373,6 +588,7 @@ function updateGroupPosition(group: InlineMathGroup, registration: InlineMathReg
   }
   group.firstPmPos = Math.min(group.firstPmPos, position);
   group.lastPmPos = Math.max(group.lastPmPos, position);
+  markGroupPositionDirty(group);
 }
 
 function getGroupElement(group: InlineMathGroup): HTMLElement {
@@ -405,7 +621,7 @@ function refreshGroupParagraph(group: InlineMathGroup): void {
   } else {
     pendingGroups.add(group);
   }
-  markSortDirty();
+  markSortDirty(group);
 }
 
 function createGroup(key: string, registration: InlineMathRegistration): InlineMathGroup {
@@ -459,7 +675,7 @@ function removeRegistrationFromGroup(registration: InlineMathRegistration): void
     refreshGroupBounds(group);
   }
   refreshGroupParagraph(group);
-  markSortDirty();
+  markSortDirty(group);
 }
 
 function assignRegistrationToGroup(registration: InlineMathRegistration): InlineMathGroup | null {
@@ -494,7 +710,7 @@ function assignRegistrationToGroup(registration: InlineMathRegistration): Inline
   if (group.paragraph === null) {
     refreshGroupParagraph(group);
   }
-  markSortDirty();
+  markSortDirty(group);
   return group;
 }
 
@@ -534,15 +750,53 @@ function reconcilePendingGroups(): void {
 
 function getSortedGroups(): InlineMathGroup[] {
   reconcilePendingGroups();
-  if (sortDirty) {
-    inlineMathGroupIndexTestCounters.sorts += 1;
-    sortedGroups = Array.from(groups.values()).sort((left, right) => {
-      const byPos = left.firstPmPos - right.firstPmPos;
-      return byPos !== 0 ? byPos : left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
-    });
-    sortDirty = false;
+  flushInlineGroupPositionDirty();
+  const result: InlineMathGroup[] = [];
+  collectInlineGroupPositionInOrder(inlineGroupPositionTree, result);
+  return result;
+}
+
+function collectInlineGroupPositionInOrder(
+  root: InlineGroupPositionEntry | null,
+  result: InlineMathGroup[],
+): void {
+  if (root === null) {
+    return;
   }
-  return sortedGroups;
+  collectInlineGroupPositionInOrder(root.left, result);
+  result.push(root.group);
+  collectInlineGroupPositionInOrder(root.right, result);
+}
+
+function collectInlineGroupPositionRange(
+  root: InlineGroupPositionEntry | null,
+  low: number,
+  high: number,
+  result: InlineMathGroup[],
+): void {
+  if (root === null) {
+    return;
+  }
+  if (
+    root.left &&
+    root.left.minFirstPmPos <= high &&
+    root.left.maxLastPmPos >= low
+  ) {
+    collectInlineGroupPositionRange(root.left, low, high, result);
+  }
+  if (
+    root.firstPmPos <= high &&
+    root.lastPmPos >= low
+  ) {
+    result.push(root.group);
+  }
+  if (
+    root.firstPmPos <= high &&
+    root.right &&
+    root.right.maxLastPmPos >= low
+  ) {
+    collectInlineGroupPositionRange(root.right, low, high, result);
+  }
 }
 
 function requestPrefetch(entries: FormulaIndexEntry[]): void {
@@ -633,9 +887,9 @@ function getGroupViewportRelation(
 }
 
 export function registerInlineMathNode(registration: InlineMathRegistration): () => void {
-  assignRegistrationToGroup(registration);
+  const group = assignRegistrationToGroup(registration);
   syncInlineMathPlaceholderKey(registration);
-  markSortDirty();
+  markSortDirty(group ?? undefined);
 
   let removed = false;
   return () => {
@@ -883,15 +1137,11 @@ function getInlineMathGroupsInPositionRange(
 ): InlineMathGroup[] {
   inlineMathGroupIndexTestCounters.rangeQueries += 1;
   reconcilePendingGroups();
+  flushInlineGroupPositionDirty();
   const low = centerPosition - maxDistance;
   const high = centerPosition + maxDistance;
   const matches: InlineMathGroup[] = [];
-  for (const group of groups.values()) {
-    if (group.lastPmPos < low || group.firstPmPos > high) {
-      continue;
-    }
-    matches.push(group);
-  }
+  collectInlineGroupPositionRange(inlineGroupPositionTree, low, high, matches);
   return matches;
 }
 
@@ -1183,6 +1433,10 @@ export function resetInlineMathGroupRegistryForTest(): void {
   }
   groups.clear();
   pendingGroups.clear();
+  inlineGroupPositionTree = null;
+  inlineGroupPositionIndex.clear();
+  inlineGroupPositionDirty.clear();
+  inlineGroupPositionCount = 0;
   sortedGroups = [];
   sortDirty = true;
   inlineMathGroupIndexTestCounters.sorts = 0;

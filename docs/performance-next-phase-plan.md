@@ -437,3 +437,11 @@ interface ModeSwitchCache {
 1. `perf-budget.json` 新增 `inlineMathActivateReadyMs: 50`，对应 plan 2.2.4 的 fallback 替换上限。
 2. benchmark 新增 `inline-math-activate-ready-ms`：快速滚动/跳转到含行内公式区域后，从触发到视口内最后一个 placeholder 被 KaTeX 替换的耗时；以及 `inline-math-activate-budget-ms` 单帧激活预算 <= 4ms。
 3. e2e 新增断言：视口内公式激活后 `.math-node-preview .katex` 必须存在；若发生 fallback，从 raw-placeholder 到 KaTeX 的替换必须在 50ms 内完成；单次激活批处理不能阻塞主线程超过 4ms。
+
+## 补充约束：块级公式不裁剪与行内公式垂直对齐
+
+已通过真实 Electron 探针确认：
+
+- 激活的 block/display math 不得因虚拟化高度锁定被裁剪。激活 preview 必须使用 `height: auto` 与 `overflow: visible`，只允许用已测量高度作为 `min-height`；`.math-block-node` 不得使用会裁剪内容的 `contain: paint`。
+- 激活的 inline math 必须保持与同行文本的基线/底部对齐。`.math-inline-node`、`.math-node-preview` 在激活态必须使用 `vertical-align: baseline`，且不得沿用 placeholder 的固定高度/`overflow: hidden`；NodeView 在 placeholder → active 切换时必须重新应用 sizing。
+- `scripts/tests/math-layout.e2e.test.ts` 固定断言：高矩阵 display math 的 KaTeX 高度超过默认 placeholder 且不被 wrapper/preview 裁剪；`$a$` 与普通 `a` 的底部偏差不超过 1px；含矩阵/分数的 inline math 激活后无高度锁、overflow 为 visible、基线/底部对齐，且高公式同时向文本上下延伸。

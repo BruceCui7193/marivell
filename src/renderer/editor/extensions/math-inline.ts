@@ -329,8 +329,8 @@ export const MathInline = Node.create({
         renderPreview(node.textContent);
         const activeHeight = cachedHeight ?? BLOCK_MATH_DEFAULT_HEIGHT;
         previewDOM.style.boxSizing = 'border-box';
-        previewDOM.style.overflow = 'hidden';
-        previewDOM.style.height = `${activeHeight}px`;
+        previewDOM.style.overflow = 'visible';
+        previewDOM.style.height = 'auto';
         previewDOM.style.minHeight = `${activeHeight}px`;
       };
 
@@ -362,8 +362,8 @@ export const MathInline = Node.create({
         const width = getCachedNodeWidth(inlineKey);
         previewDOM.style.display = 'inline-block';
         previewDOM.style.boxSizing = 'border-box';
-        previewDOM.style.overflow = 'hidden';
-        previewDOM.style.height = `${height}px`;
+        previewDOM.style.overflow = 'visible';
+        previewDOM.style.height = 'auto';
         previewDOM.style.minHeight = `${height}px`;
         previewDOM.style.lineHeight = `${height}px`;
         previewDOM.style.whiteSpace = 'nowrap';
@@ -374,11 +374,28 @@ export const MathInline = Node.create({
           dom.style.minWidth = `${width}px`;
           dom.style.maxWidth = `${width}px`;
         }
-        dom.style.overflow = 'hidden';
-        dom.style.height = `${height}px`;
+        dom.style.overflow = 'visible';
+        dom.style.height = 'auto';
         dom.style.minHeight = `${height}px`;
         dom.style.lineHeight = `${height}px`;
         dom.style.verticalAlign = 'middle';
+      };
+
+      const resetInlineActiveSizing = (): void => {
+        previewDOM.style.overflow = 'visible';
+        previewDOM.style.height = 'auto';
+        dom.style.overflow = 'visible';
+        dom.style.height = 'auto';
+        dom.style.verticalAlign = 'baseline';
+        previewDOM.style.verticalAlign = 'baseline';
+        previewDOM.style.lineHeight = '';
+        previewDOM.style.minHeight = '';
+        previewDOM.style.minWidth = '';
+        previewDOM.style.maxWidth = '';
+        dom.style.lineHeight = '';
+        dom.style.minHeight = '';
+        dom.style.minWidth = '';
+        dom.style.maxWidth = '';
       };
 
       const showInlinePlaceholder = (): void => {
@@ -403,6 +420,7 @@ export const MathInline = Node.create({
           syncInlineMathPlaceholderKey(inlineRegistration);
         }
         renderPreview(node.textContent);
+        resetInlineActiveSizing();
         const cachedHtml = getCachedFormulaHtml(node.textContent, 'no');
         if (cachedHtml) {
           scheduleInlineMathHeightMeasurement(node.textContent, 'no', cachedHtml, dom);

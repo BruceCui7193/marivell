@@ -2004,6 +2004,13 @@ for (const chain of chainSources) {
       getInlineMathGroupCountForTest() === groupCountBeforeTyping,
       `before=${groupCountBeforeTyping} after=${getInlineMathGroupCountForTest()}`,
     );
+    const typingCounters = getInlineMathGroupIndexTestCountersForTest();
+    assert(
+      'typing does not sort or full-scan inline math groups',
+      typingCounters.sorts === 0 &&
+        typingCounters.fullGroupScans === 0,
+      JSON.stringify(typingCounters),
+    );
 
     // Editing inside an existing inlineMath keeps the same group alive.
     const groupCountBefore = getInlineMathGroupCountForTest();

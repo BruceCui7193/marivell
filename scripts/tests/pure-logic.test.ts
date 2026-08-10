@@ -6,6 +6,10 @@ import { parseMarkdown, serializeMarkdown, serializeMarkdownFragment } from '../
 import { cleanSelectionMarkersFromJsonContent } from '../../src/renderer/editor/selection-markers';
 import { highlightMarkdownSource, offsetToLineCol } from '../../src/renderer/editor/markdown-highlight.ts';
 import {
+  getSourceEditorVisibleRange,
+  highlightVisibleSourceRange,
+} from '../../src/renderer/components/SourceEditor.tsx';
+import {
   findSourceSearchMatches,
   replaceSourceSearchMatch,
   replaceAllSourceSearchMatches,
@@ -637,6 +641,26 @@ section('source markdown highlight');
   assert('highlight strong', html.includes('md-token--strong'));
   assert('highlight math', html.includes('md-token--math'));
   assert('empty highlight non-empty string', highlightMarkdownSource('').length > 0);
+  const visibleRange = getSourceEditorVisibleRange(10_000, 24_000, 600, {
+    lineHeight: 24,
+    paddingTop: 28,
+  });
+  assert(
+    'source virtualization starts around the textarea viewport',
+    visibleRange.start >= 970 &&
+      visibleRange.start <= 1_020 &&
+      visibleRange.endExclusive > visibleRange.start + 150,
+    JSON.stringify(visibleRange),
+  );
+  const fenced = 'before\n```js\nconst value = 1;\n```\nafter\n';
+  const fencedHtml = highlightVisibleSourceRange(fenced, 2, 3);
+  assert(
+    'source virtualization preserves fence context',
+    fencedHtml.includes('md-token--codeblock') &&
+      fencedHtml.includes('value') &&
+      !fencedHtml.includes('md-token--fence'),
+    fencedHtml,
+  );
 
   // "a\nbc\nd" offsets: 0=a, 1=\n, 2=b, 3=c → line 2 col 2 at offset 3
   const pos = offsetToLineCol('a\nbc\nd', 3);
