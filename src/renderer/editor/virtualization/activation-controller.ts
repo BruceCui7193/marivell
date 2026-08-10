@@ -699,12 +699,24 @@ export function hydrateTargetRange(
     if (distance > prefetchRadius || registration.active) {
       continue;
     }
+    if (
+      registration.nodeType === 'image' ||
+      registration.nodeType === 'mermaidBlock' ||
+      registration.nodeType === 'htmlBlock' ||
+      registration.nodeType === 'codeBlock'
+    ) {
+      continue;
+    }
 
-    hydrationQueue.enqueue({
-      id: registration.id,
-      position,
-      priority: distance <= viewportRadius ? 1 : 0,
-    });
+    if (distance <= viewportRadius) {
+      forceActivate(registration.id);
+    } else {
+      hydrationQueue.enqueue({
+        id: registration.id,
+        position,
+        priority: 0,
+      });
+    }
   }
 
   const activateStart = performance.now();

@@ -350,7 +350,10 @@ function flushReads(): void {
     if (!element) {
       continue;
     }
-    const height = readNodeHeight(element);
+    const height =
+      chunk.items[index].display === 'no' && element.parentElement
+        ? Math.max(readNodeHeight(element), readNodeHeight(element.parentElement))
+        : readNodeHeight(element);
     if (height > 0) {
       chunk.measured[chunk.items[index].key] = height;
     }

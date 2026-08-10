@@ -487,6 +487,8 @@ async function measureScrollJumpScenario(
   inlineHeightDrift: number | 'n/a';
   inlineHeightDriftNote: string;
   inlineHeightAnchor: string | null;
+  inlineMathActivateReadyMs: number;
+  inlineMathActivateMaxFrameMs: number;
   timedOut: boolean;
 }> {
   const scenarioName = JSON.stringify(scenario);
@@ -545,28 +547,41 @@ async function measureScrollJumpScenario(
       return count;
     };
 
+    const visibleInlineMathPlaceholderCount = () => {
+      const frameRect = frame.getBoundingClientRect();
+      let count = 0;
+      for (const element of frame.querySelectorAll('.math-inline-node')) {
+        if (!isInlineMathPlaceholder(element)) {
+          continue;
+        }
+        const rect = element.getBoundingClientRect();
+        if (rect.bottom > frameRect.top && rect.top < frameRect.bottom) {
+          count += 1;
+        }
+      }
+      return count;
+    };
+
     const getTopAnchor = () => {
       const frameRect = frame.getBoundingClientRect();
-      const candidates = Array.from(
-        frame.querySelectorAll('.editor-surface p, .math-inline-node'),
-      )
-        .map((element) => {
-          const rect = element.getBoundingClientRect();
-          return { element, relativeTop: rect.top - frameRect.top, top: rect.top, bottom: rect.bottom };
-        })
-        .filter((candidate) => candidate.bottom > frameRect.top && candidate.top < frameRect.bottom)
-        .sort(
-          (a, b) =>
-            a.relativeTop - b.relativeTop ||
-            (a.element.classList.contains('math-inline-node') ? -1 : 1),
-        );
-      const anchor = candidates[0]?.element ?? null;
-      if (!anchor || !anchor.isConnected) return null;
-      return {
-        element: anchor,
-        relativeTop: anchor.getBoundingClientRect().top - frame.getBoundingClientRect().top,
-        description: anchor.tagName.toLowerCase() + '.' + (Array.from(anchor.classList).join('.') || 'no-class'),
-      };
+      const editor = window.__marivellEditor;
+      if (!editor) return null;
+      try {
+        const point = editor.view.posAtCoords({
+          left: frameRect.left + Math.max(8, frameRect.width * 0.2),
+          top: frameRect.top + 8,
+        });
+        if (!point) return null;
+        const coords = editor.view.coordsAtPos(point.pos);
+        if (!coords) return null;
+        return {
+          pmPos: point.pos,
+          relativeTop: coords.top - frameRect.top,
+          description: 'pm:' + point.pos,
+        };
+      } catch {
+        return null;
+      }
     };
 
     const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
@@ -582,6 +597,10 @@ async function measureScrollJumpScenario(
       targetScrollTop = middle;
     }
 
+    const benchmarkWindow = window;
+    if (typeof benchmarkWindow.__marivellResetInlineMathActivationMetrics === 'function') {
+      benchmarkWindow.__marivellResetInlineMathActivationMetrics();
+    }
     const start = performance.now();
     const beforeScrollTop = frame.scrollTop;
     if (${scenarioName} === 'drag') {
@@ -601,10 +620,19 @@ async function measureScrollJumpScenario(
     });
     let firstFramePlaceholders = -1;
     let firstFramePlaceholderDetails = [];
+    let inlineMathActivateReadyMs = null;
+    let inlineMathPlaceholderFirstSeenAt = null;
     let timedOut = false;
     while (true) {
       await waitForFrame();
       const placeholders = visiblePlaceholderCount();
+      const inlinePlaceholders = visibleInlineMathPlaceholderCount();
+      if (inlinePlaceholders > 0 && inlineMathPlaceholderFirstSeenAt === null) {
+        inlineMathPlaceholderFirstSeenAt = performance.now();
+      }
+      if (inlinePlaceholders === 0 && inlineMathPlaceholderFirstSeenAt !== null && inlineMathActivateReadyMs === null) {
+        inlineMathActivateReadyMs = performance.now() - inlineMathPlaceholderFirstSeenAt;
+      }
       if (firstFramePlaceholders === -1) {
         firstFramePlaceholders = placeholders;
         if (placeholders > 0) {
@@ -653,22 +681,24 @@ async function measureScrollJumpScenario(
     let inlineHeightAnchor = null;
     if (beforeTopAnchor) {
       inlineHeightAnchor = beforeTopAnchor.description;
-      const anchor = beforeTopAnchor.element;
-      if (!anchor.isConnected) {
-        inlineHeightDriftNote = 'top anchor was removed during hydration';
-      } else {
+      try {
         const frameRect = frame.getBoundingClientRect();
-        const rect = anchor.getBoundingClientRect();
-        if (rect.bottom <= frameRect.top || rect.top >= frameRect.bottom) {
-          inlineHeightDriftNote = 'top anchor is no longer visible after hydration';
-        } else {
-          const afterRelativeTop = rect.top - frameRect.top;
+        const editor = window.__marivellEditor;
+        const coords = editor?.view.coordsAtPos(beforeTopAnchor.pmPos);
+        if (coords) {
+          const afterRelativeTop = coords.top - frameRect.top;
           inlineHeightDrift = Math.abs(afterRelativeTop - beforeTopAnchor.relativeTop);
           inlineHeightDriftNote = 'anchor=' + inlineHeightAnchor + ' before=' + Math.round(beforeTopAnchor.relativeTop * 10) / 10 + ' after=' + Math.round(afterRelativeTop * 10) / 10;
+        } else {
+          inlineHeightDriftNote = 'top anchor coords unavailable after hydration';
         }
+      } catch {
+        inlineHeightDriftNote = 'top anchor coords failed after hydration';
       }
     }
 
+    const inlineMathActivateMaxFrameMs =
+      benchmarkWindow.__marivellInlineMathActivationMaxFrameMs ?? 0;
     return {
       jumpReadyMs: performance.now() - start,
       firstFramePlaceholders,
@@ -687,6 +717,8 @@ async function measureScrollJumpScenario(
       inlineHeightDrift,
       inlineHeightDriftNote,
       inlineHeightAnchor,
+      inlineMathActivateReadyMs: inlineMathActivateReadyMs ?? 0,
+      inlineMathActivateMaxFrameMs,
       timedOut,
     };
   })()`;
@@ -701,6 +733,8 @@ async function measureScrollJumpScenario(
     inlineHeightDrift: number | 'n/a';
     inlineHeightDriftNote: string;
     inlineHeightAnchor: string | null;
+    inlineMathActivateReadyMs: number;
+    inlineMathActivateMaxFrameMs: number;
     timedOut: boolean;
   }>;
 }
@@ -847,6 +881,7 @@ const BUDGET_METRIC_ALIASES: Record<string, string[]> = {
   modeSwitchVisualToSourceMs: ['mode-switch-visual-to-source-ms'],
   scrollAvgFrameMs: ['scroll-avg-frame'],
   scrollMaxFrameMs: ['scroll-max-frame'],
+  inlineMathActivateReadyMs: ['inline-math-activate-ready-ms'],
 };
 
 function readPerfBudget(): Record<string, number> {
@@ -1294,6 +1329,8 @@ async function main(): Promise<void> {
 
       const scrollFirstFrameReady: Record<string, boolean> = {};
       const inlineHeightDrifts: Record<string, number | 'n/a'> = {};
+      const inlineMathActivateReady: number[] = [];
+      const inlineMathActivateMaxFrame: number[] = [];
       const scrollJumpScenarios: Array<{ metric: string; scenario: ScrollJumpScenario }> = [
         { metric: 'scroll-jump-bottom', scenario: 'bottom' },
         { metric: 'scroll-jump-middle', scenario: 'middle' },
@@ -1341,9 +1378,21 @@ async function main(): Promise<void> {
               unit: 'px',
               note: jump.value.inlineHeightDriftNote,
             },
+            {
+              metric: `${jumpScenario.metric}-inline-math-activate-ready-ms`,
+              value: round(jump.value.inlineMathActivateReadyMs),
+              unit: 'ms',
+            },
+            {
+              metric: `${jumpScenario.metric}-inline-math-activate-max-frame-ms`,
+              value: round(jump.value.inlineMathActivateMaxFrameMs),
+              unit: 'ms',
+            },
           );
           scrollFirstFrameReady[jumpScenario.metric] = jump.value.firstFrameReady;
           inlineHeightDrifts[jumpScenario.metric] = jump.value.inlineHeightDrift;
+          inlineMathActivateReady.push(jump.value.inlineMathActivateReadyMs);
+          inlineMathActivateMaxFrame.push(jump.value.inlineMathActivateMaxFrameMs);
         } else {
           report.push({
             metric: jumpScenario.metric,
@@ -1375,6 +1424,22 @@ async function main(): Promise<void> {
           value: inlineHeightDriftSummary,
           unit: 'px',
           note: `bottom=${inlineHeightDrifts['scroll-jump-bottom'] ?? 'n/a'} middle=${inlineHeightDrifts['scroll-jump-middle'] ?? 'n/a'} drag=${inlineHeightDrifts['scroll-drag-sequence'] ?? 'n/a'}`,
+        },
+        {
+          metric: 'inline-math-activate-ready-ms',
+          value: inlineMathActivateReady.length > 0
+            ? round(Math.max(...inlineMathActivateReady))
+            : 'n/a',
+          unit: 'ms',
+          note: `bottom=${inlineMathActivateReady[0] ?? 'n/a'} middle=${inlineMathActivateReady[1] ?? 'n/a'} drag=${inlineMathActivateReady[2] ?? 'n/a'}`,
+        },
+        {
+          metric: 'inline-math-activate-max-frame-ms',
+          value: inlineMathActivateMaxFrame.length > 0
+            ? round(Math.max(...inlineMathActivateMaxFrame))
+            : 'n/a',
+          unit: 'ms',
+          note: `bottom=${inlineMathActivateMaxFrame[0] ?? 'n/a'} middle=${inlineMathActivateMaxFrame[1] ?? 'n/a'} drag=${inlineMathActivateMaxFrame[2] ?? 'n/a'}`,
         },
       );
 

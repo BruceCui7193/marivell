@@ -80,6 +80,7 @@ import {
   hydrateInlineMathGroupsAroundPosition,
   prepareInlineMathForFormulaHtml,
   setInlineMathPrefetchRequester,
+  setInlineMathScrollAnchorProvider,
   syncInlineMathSelection,
 } from '../editor/virtualization/inline-math-group-registry';
 import {
@@ -1530,7 +1531,9 @@ export default function EditorShell({
   useEffect(() => {
     editorRef.current = editor;
     if (window.markdownEditor.getBenchmarkEnabled?.()) {
-      (window as unknown as Record<string, unknown>).__marivellEditor = editor;
+      const benchmarkWindow = window as unknown as Record<string, unknown>;
+      benchmarkWindow.__marivellEditor = editor;
+      benchmarkWindow.__marivellClearFormulaHtmlCache = clearFormulaHtmlCache;
     }
   }, [editor]);
 
@@ -1660,7 +1663,36 @@ export default function EditorShell({
     let hydrationFrame: number | null = null;
     let lastSyncHydrateScrollTop = frame.scrollTop;
 
-    const getViewportCenterPosition = (): { pos: number } | null => {
+    setInlineMathScrollAnchorProvider({
+      capture: () => {
+        const currentEditor = editorRef.current;
+        return currentEditor ? captureVisualScrollAnchor(frame, currentEditor) : null;
+      },
+      restore: (anchor) => {
+        const currentEditor = editorRef.current;
+        if (currentEditor) {
+          restoreVisualScrollAnchor(frame, currentEditor, anchor);
+        }
+      },
+    });
+    (window as unknown as Record<string, unknown>).__marivellForceInlineHydrateViewport = () => {
+      const currentEditor = editorRef.current;
+      const currentFrame = editorFrameRef.current;
+      if (!currentEditor || !currentFrame) {
+        return 0;
+      }
+      const centerAndRadius = getViewportCenterAndRadius();
+      if (centerAndRadius) {
+        return hydrateInlineMathGroupsAroundPosition(
+          currentFrame,
+          centerAndRadius.pos,
+          centerAndRadius.radius,
+        );
+      }
+      return 0;
+    };
+
+    const getViewportCenterAndRadius = (): { pos: number; radius: number } | null => {
       const currentEditor = editorRef.current;
       if (!currentEditor) {
         return null;
@@ -1669,14 +1701,32 @@ export default function EditorShell({
       if (rect.height <= 0) {
         return null;
       }
-      try {
-        const coords = posAtCoords(
-          currentEditor,
-          rect.left + rect.width / 2,
-          rect.top + rect.height / 2,
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      const docSize = currentEditor.state.doc.content.size;
+      const fallbackRadius = () =>
+        Math.max(
+          1,
+          Math.ceil(
+            (docSize * frame.clientHeight) / Math.max(frame.scrollHeight, 1),
+          ),
         );
-        if (coords) {
-          return { pos: coords.pos };
+      try {
+        const center = posAtCoords(currentEditor, centerX, centerY);
+        const top = posAtCoords(currentEditor, centerX, rect.top + 1);
+        const bottom = posAtCoords(currentEditor, centerX, rect.bottom - 1);
+        if (center && top && bottom) {
+          const radius = Math.max(
+            1,
+            Math.ceil(
+              Math.max(
+                center.pos - top.pos,
+                bottom.pos - center.pos,
+                bottom.pos - top.pos,
+              ),
+            ),
+          );
+          return { pos: center.pos, radius };
         }
       } catch {
         // Fall through to the ratio estimate below.
@@ -1685,8 +1735,8 @@ export default function EditorShell({
       const ratio = maxScrollTop > 0
         ? Math.min(1, Math.max(0, frame.scrollTop / maxScrollTop))
         : 0;
-      const docSize = currentEditor.state.doc.content.size;
-      return { pos: Math.max(0, Math.min(docSize, Math.round(docSize * ratio))) };
+      const pos = Math.max(0, Math.min(docSize, Math.round(docSize * ratio)));
+      return { pos, radius: fallbackRadius() };
     };
 
     const hydrateScrollTarget = () => {
@@ -1696,19 +1746,6 @@ export default function EditorShell({
           Math.abs(frame.scrollTop - lastAnchorRestoredScrollTopRef.current) < 0.01)
       ) {
         return;
-      }
-
-      if (!sourceModeRef.current) {
-        const scrollDelta = Math.abs(frame.scrollTop - lastSyncHydrateScrollTop);
-        const jumpThreshold = Math.max(frame.clientHeight * 0.5, 400);
-        if (scrollDelta > jumpThreshold) {
-          const viewportRadius = Math.max(frame.clientHeight || 1, 1);
-          const center = getViewportCenterPosition();
-          if (center !== null) {
-            hydrateTargetRange(frame, center.pos, viewportRadius);
-          }
-          lastSyncHydrateScrollTop = frame.scrollTop;
-        }
       }
 
       hydrationFrame = requestAnimationFrame(() => {
@@ -1722,12 +1759,15 @@ export default function EditorShell({
         const scrollTopBeforeHydrate = frame.scrollTop;
         const scrollHeightBeforeHydrate = frame.scrollHeight;
         const oldMaxScrollTop = Math.max(scrollHeightBeforeHydrate - frame.clientHeight, 0);
-        const viewportRadius = Math.max(frame.clientHeight || 1, 1);
-        const center = getViewportCenterPosition();
-        const centerPos = center?.pos ?? null;
-        if (centerPos !== null) {
+        const centerAndRadius = getViewportCenterAndRadius();
+        const centerPos = centerAndRadius?.pos ?? null;
+        const viewportRadius = centerAndRadius?.radius ?? 1;
+        const scrollDelta = Math.abs(frame.scrollTop - lastSyncHydrateScrollTop);
+        const jumpThreshold = Math.max(frame.clientHeight * 0.5, 400);
+        if (centerPos !== null && scrollDelta > jumpThreshold) {
           hydrateTargetRange(frame, centerPos, viewportRadius);
           hydrateInlineMathGroupsAroundPosition(frame, centerPos, viewportRadius);
+          lastSyncHydrateScrollTop = frame.scrollTop;
         }
         const wasAtBottom = scrollTopBeforeHydrate >= oldMaxScrollTop - 1;
         keepAtBottomRef.current = wasAtBottom;
@@ -1790,6 +1830,7 @@ export default function EditorShell({
         cancelAnimationFrame(hydrationFrame);
         hydrationFrame = null;
       }
+      setInlineMathScrollAnchorProvider(null);
     };
   }, [editor]);
 
@@ -2133,6 +2174,7 @@ export default function EditorShell({
           if (currentFrame) {
             const currentEditor = editorRef.current;
             let centerPosition: number | undefined;
+            let positionRadius: number | undefined;
             if (currentEditor) {
               try {
                 const rect = currentFrame.getBoundingClientRect();
@@ -2142,11 +2184,38 @@ export default function EditorShell({
                   rect.top + rect.height / 2,
                 );
                 centerPosition = coords?.pos;
+                const topCoords = posAtCoords(
+                  currentEditor,
+                  rect.left + rect.width / 2,
+                  rect.top + 1,
+                );
+                const bottomCoords = posAtCoords(
+                  currentEditor,
+                  rect.left + rect.width / 2,
+                  rect.bottom - 1,
+                );
+                if (topCoords && bottomCoords) {
+                  positionRadius = Math.max(
+                    1,
+                    Math.ceil(
+                      Math.max(
+                        (coords?.pos ?? 0) - topCoords.pos,
+                        bottomCoords.pos - (coords?.pos ?? 0),
+                        bottomCoords.pos - topCoords.pos,
+                      ),
+                    ),
+                  );
+                }
               } catch {
                 // Full-viewport fallback below handles missing coordinates.
               }
             }
-            activateInlineMathGroupsInViewport(currentFrame, 1600, centerPosition);
+            activateInlineMathGroupsInViewport(
+              currentFrame,
+              1600,
+              centerPosition,
+              positionRadius,
+            );
           }
         });
       }
