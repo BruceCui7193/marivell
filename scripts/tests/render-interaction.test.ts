@@ -1967,14 +1967,33 @@ for (const chain of chainSources) {
 
     const frame = document.createElement('div');
     frame.className = 'editor-frame';
+    const groupCountBeforeQueries = getInlineMathGroupCountForTest();
+    const broadRangeActivated = hydrateInlineMathGroupsAroundPosition(frame, 10, 100_000);
+    assert(
+      'inline math broad range query finds live groups',
+      broadRangeActivated > 0,
+      `activated=${broadRangeActivated}`,
+    );
+    assert(
+      'inline math range query preserves the group map',
+      getInlineMathGroupCountForTest() === groupCountBeforeQueries,
+      `before=${groupCountBeforeQueries} after=${getInlineMathGroupCountForTest()}`,
+    );
     hydrateInlineMathGroupsAroundPosition(frame, 10, 1);
     hydrateInlineMathGroupsAroundPosition(frame, 10, 1);
     hydrateInlineMathGroupsAroundPosition(frame, 10, 1);
     const inlineIndexCounters = getInlineMathGroupIndexTestCountersForTest();
     assert(
       'inline math position queries do not re-sort the full group index',
-      inlineIndexCounters.sorts === 1 && inlineIndexCounters.rangeQueries >= 3,
+      inlineIndexCounters.sorts === 0 &&
+        inlineIndexCounters.fullGroupScans === 0 &&
+        inlineIndexCounters.rangeQueries >= 3,
       JSON.stringify(inlineIndexCounters),
+    );
+    assert(
+      'repeated inline math range queries do not lose groups',
+      getInlineMathGroupCountForTest() === groupCountBeforeQueries,
+      `before=${groupCountBeforeQueries} after=${getInlineMathGroupCountForTest()}`,
     );
 
     const groupCountBeforeTyping = getInlineMathGroupCountForTest();

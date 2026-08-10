@@ -2198,6 +2198,16 @@
   font-size: 13px;
 }
 
+.math-block-node-placeholder,
+.image-node__placeholder,
+.mermaid-node__placeholder,
+.html-block-placeholder,
+.code-block-node--placeholder {
+  contain: layout style paint;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 96px;
+}
+
 .image-node__placeholder {
   display: flex;
   align-items: center;
@@ -2726,6 +2736,9 @@
 .math-block-node {
   display: block;
   margin: 0.45em 0;
+  contain: layout style paint;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 96px;
 }
 
 .math-block-node .math-node-preview {
@@ -2856,9 +2869,8 @@
 }
 
 .math-block-node-placeholder .math-node-preview {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: block;
+  text-align: center;
 }
 
 .math-node-placeholder-hint {

@@ -2,6 +2,7 @@ import { getCachedFormulaHtml, getFormulaCacheKey } from '../math-render-cache';
 import type { FormulaIndexEntry } from '../markdown.worker';
 import {
   getCachedNodeHeight,
+  getCachedNodeWidth,
   notifyNodeHeightCacheSeeded,
   setCachedNodeHeight,
   subscribeNodeHeightCacheInvalidation,
@@ -75,6 +76,8 @@ const paragraphGroupIds = new WeakMap<HTMLElement, number>();
 const placeholderRegistrationsByHeightKey = new Map<string, Set<InlineMathRegistration>>();
 const inlineMathRegistrationsByFormulaKey = new Map<string, Set<InlineMathRegistration>>();
 const preparedFormulaHtml = new Map<string, string>();
+const preparedFormulaFragments = new Map<string, DocumentFragment>();
+const PREPARED_FORMULA_FRAGMENT_LIMIT = 2400;
 const pendingHeightMeasurements = new Set<string>();
 const layoutRetryFrames = new WeakMap<HTMLElement, number>();
 
@@ -88,6 +91,7 @@ let pendingGroups = new Set<InlineMathGroup>();
 let inlineMathScrollAnchorProvider: InlineMathScrollAnchorProvider | null = null;
 let inlineMathActivationFrameStart: number | null = null;
 let inlineMathActivationMaxFrameMs = 0;
+let inlineMathActivationReadyMs = 0;
 
 interface InlineMathGroupIndexTestCounters {
   sorts: number;
@@ -108,6 +112,8 @@ function publishInlineMathActivationMetrics(): void {
   const benchmarkWindow = window as unknown as Record<string, unknown>;
   benchmarkWindow.__marivellInlineMathActivationMaxFrameMs =
     inlineMathActivationMaxFrameMs;
+  benchmarkWindow.__marivellInlineMathActivationReadyMs =
+    inlineMathActivationReadyMs;
   benchmarkWindow.__marivellResetInlineMathActivationMetrics =
     resetInlineMathActivationMaxFrameMsForTest;
 }
@@ -134,6 +140,7 @@ function withInlineMathActivationMeasurement<T>(operation: () => T): T {
 
 export function resetInlineMathActivationMaxFrameMsForTest(): void {
   inlineMathActivationMaxFrameMs = 0;
+  inlineMathActivationReadyMs = 0;
   inlineMathActivationFrameStart = null;
   publishInlineMathActivationMetrics();
 }
@@ -240,10 +247,20 @@ function refreshPlaceholderHeights(seededKeys: string[] | null): void {
           continue;
         }
         registration.preview.style.display = 'inline-block';
+        registration.preview.style.boxSizing = 'border-box';
         registration.preview.style.overflow = 'hidden';
         registration.preview.style.height = `${height}px`;
         registration.preview.style.minHeight = `${height}px`;
         registration.preview.style.lineHeight = `${height}px`;
+        registration.preview.style.whiteSpace = 'nowrap';
+        registration.preview.style.verticalAlign = 'middle';
+        const width = getCachedNodeWidth(key);
+        if (width !== null) {
+          registration.preview.style.minWidth = `${width}px`;
+          registration.preview.style.maxWidth = `${width}px`;
+          registration.element.style.minWidth = `${width}px`;
+          registration.element.style.maxWidth = `${width}px`;
+        }
         registration.element.style.overflow = 'hidden';
         registration.element.style.height = `${height}px`;
         registration.element.style.minHeight = `${height}px`;
@@ -264,10 +281,20 @@ function refreshPlaceholderHeights(seededKeys: string[] | null): void {
         continue;
       }
       registration.preview.style.display = 'inline-block';
+      registration.preview.style.boxSizing = 'border-box';
       registration.preview.style.overflow = 'hidden';
       registration.preview.style.height = `${height}px`;
       registration.preview.style.minHeight = `${height}px`;
       registration.preview.style.lineHeight = `${height}px`;
+      registration.preview.style.whiteSpace = 'nowrap';
+      registration.preview.style.verticalAlign = 'middle';
+      const width = getCachedNodeWidth(key);
+      if (width !== null) {
+        registration.preview.style.minWidth = `${width}px`;
+        registration.preview.style.maxWidth = `${width}px`;
+        registration.element.style.minWidth = `${width}px`;
+        registration.element.style.maxWidth = `${width}px`;
+      }
       registration.element.style.overflow = 'hidden';
       registration.element.style.height = `${height}px`;
       registration.element.style.minHeight = `${height}px`;
@@ -831,37 +858,33 @@ function getInlineMathGroupsInPositionRange(
   maxDistance: number,
 ): InlineMathGroup[] {
   inlineMathGroupIndexTestCounters.rangeQueries += 1;
-  const sorted = getSortedGroups();
-  if (sorted.length === 0) {
-    return [];
-  }
+  reconcilePendingGroups();
   const low = centerPosition - maxDistance;
   const high = centerPosition + maxDistance;
-  let from = 0;
-  let to = sorted.length;
-  let lo = 0;
-  let hi = sorted.length;
-  while (lo < hi) {
-    const mid = Math.floor((lo + hi) / 2);
-    if (sorted[mid]!.lastPmPos < low) {
-      lo = mid + 1;
-    } else {
-      hi = mid;
+  const matches: InlineMathGroup[] = [];
+  for (const group of groups.values()) {
+    if (group.lastPmPos < low || group.firstPmPos > high) {
+      continue;
+    }
+    matches.push(group);
+  }
+  return matches;
+}
+
+export function countInlineMathPlaceholdersInPositionRange(
+  centerPosition: number,
+  radius: number,
+): number {
+  const groupsInRange = getInlineMathGroupsInPositionRange(centerPosition, radius);
+  let count = 0;
+  for (const group of groupsInRange) {
+    for (const registration of group.formulas) {
+      if (!registration.destroyed && !registration.active) {
+        count += 1;
+      }
     }
   }
-  from = lo;
-  lo = 0;
-  hi = sorted.length;
-  while (lo < hi) {
-    const mid = Math.floor((lo + hi) / 2);
-    if (sorted[mid]!.firstPmPos <= high) {
-      lo = mid + 1;
-    } else {
-      hi = mid;
-    }
-  }
-  to = lo;
-  return sorted.slice(from, to);
+  return count;
 }
 
 export function hydrateInlineMathGroupsAroundPosition(
@@ -888,15 +911,25 @@ export function hydrateInlineMathGroupsAroundPosition(
   if (toActivate.length === 0) {
     return 0;
   }
+  let activationFallbackMs = 0;
   const anchor = inlineMathScrollAnchorProvider?.capture() ?? null;
   const activated = withInlineMathActivationMeasurement(() => {
-    for (const group of toActivate) {
-      activateGroup(group);
+    const activationStart = performance.now();
+    try {
+      for (const group of toActivate) {
+        activateGroup(group);
+      }
+      return toActivate.length;
+    } finally {
+      activationFallbackMs = performance.now() - activationStart;
     }
-    return toActivate.length;
   });
   if (anchor !== null) {
     inlineMathScrollAnchorProvider?.restore(anchor);
+  }
+  if (activated > 0) {
+    inlineMathActivationReadyMs = Math.max(inlineMathActivationReadyMs, activationFallbackMs);
+    publishInlineMathActivationMetrics();
   }
   return activated;
 }
@@ -905,23 +938,104 @@ export function getPreparedInlineFormulaHtml(key: string): string | null {
   return preparedFormulaHtml.get(key) ?? null;
 }
 
+export function getPreparedInlineFormulaFragment(key: string): DocumentFragment | null {
+  const cached = preparedFormulaFragments.get(key);
+  if (cached) {
+    preparedFormulaFragments.delete(key);
+    preparedFormulaFragments.set(key, cached);
+    return cached.cloneNode(true) as DocumentFragment;
+  }
+  const html = preparedFormulaHtml.get(key);
+  if (typeof html !== 'string' || !html || typeof document === 'undefined') {
+    return null;
+  }
+  try {
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    const fragment = document.createDocumentFragment();
+    fragment.append(...Array.from(template.content.childNodes));
+    preparedFormulaFragments.set(key, fragment);
+    if (preparedFormulaFragments.size > PREPARED_FORMULA_FRAGMENT_LIMIT) {
+      const oldestKey = preparedFormulaFragments.keys().next().value;
+      if (typeof oldestKey === 'string') {
+        preparedFormulaFragments.delete(oldestKey);
+      }
+    }
+    return fragment.cloneNode(true) as DocumentFragment;
+  } catch {
+    return null;
+  }
+}
+
 export function prepareInlineMathForFormulaHtml(htmlByKey: Record<string, string>): void {
+  const sources = new Map<string, { latex: string; display: 'yes' | 'no' }>();
+  const htmlBySourceKey = new Map<string, string>();
+  let elementForMeasurement: HTMLElement | null = null;
   for (const [key, html] of Object.entries(htmlByKey)) {
     if (typeof html !== 'string' || !html) {
       continue;
     }
     preparedFormulaHtml.set(key, html);
+    htmlBySourceKey.set(key, html);
     const registrations = inlineMathRegistrationsByFormulaKey.get(key);
-    if (!registrations) {
-      continue;
-    }
-    for (const registration of registrations) {
-      if (registration.destroyed) {
-        continue;
+    if (registrations) {
+      for (const registration of registrations) {
+        if (registration.destroyed) {
+          continue;
+        }
+        registration.prepared = true;
+        elementForMeasurement ??= registration.element;
+        if (!sources.has(key)) {
+          sources.set(key, {
+            latex: registration.getLatex(),
+            display: registration.display,
+          });
+        }
       }
-      registration.prepared = true;
+    }
+    if (!sources.has(key)) {
+      const separator = key.indexOf('\u0000');
+      const displayName = separator >= 0 ? key.slice(0, separator) : '';
+      const latex = separator >= 0 ? key.slice(separator + 1) : '';
+      if (latex) {
+        sources.set(key, {
+          latex,
+          display: displayName === 'block' ? 'yes' : 'no',
+        });
+      }
     }
   }
+
+  if (sources.size === 0) {
+    return;
+  }
+  const items = buildFormulaHeightMeasurementItems(
+    Array.from(sources, ([key, source]) => ({ key, ...source })),
+    Object.fromEntries(htmlBySourceKey),
+    elementForMeasurement,
+  );
+  if (items.length === 0) {
+    return;
+  }
+  const itemsToMeasure = items.filter(
+    (item) =>
+      getCachedNodeHeight(item.key) === null &&
+      !pendingHeightMeasurements.has(item.key),
+  );
+  if (itemsToMeasure.length === 0) {
+    return;
+  }
+  for (const item of itemsToMeasure) {
+    pendingHeightMeasurements.add(item.key);
+  }
+  void measureFormulaHeights(itemsToMeasure).then((heights) => {
+    const heightKeys = Object.keys(heights);
+    for (const key of heightKeys) {
+      pendingHeightMeasurements.delete(key);
+      setCachedNodeHeight(key, heights[key]!);
+    }
+    notifyNodeHeightCacheSeeded(heightKeys);
+  });
 }
 
 export function scheduleInlineMathHeightMeasurement(
@@ -1037,6 +1151,7 @@ export function setInlineMathPrefetchRequester(
 }
 
 export function resetInlineMathGroupRegistryForTest(): void {
+  preparedFormulaFragments.clear();
   for (const group of Array.from(groups.values())) {
     if (group.paragraph !== null) {
       groupByParagraph.delete(group.paragraph);

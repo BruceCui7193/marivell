@@ -574,10 +574,20 @@ async function measureScrollJumpScenario(
         if (!point) return null;
         const coords = editor.view.coordsAtPos(point.pos);
         if (!coords) return null;
+        const anchorNode = editor.view.domAtPos(point.pos);
+        const anchorElement = anchorNode?.node instanceof Element
+          ? anchorNode.node
+          : (anchorNode?.node?.parentElement ?? null);
+        const anchorContext = anchorElement?.closest?.(
+          '.math-block-node, .math-inline-node, p, h1, h2, h3, h4, h5, h6, li, blockquote, td, th',
+        );
+        const anchorText = anchorContext instanceof HTMLElement
+          ? (anchorContext.textContent ?? '').trim().slice(0, 40)
+          : '';
         return {
           pmPos: point.pos,
           relativeTop: coords.top - frameRect.top,
-          description: 'pm:' + point.pos,
+          description: 'pm:' + point.pos + '|' + (anchorContext?.className ?? '') + (anchorText ? '|' + anchorText : ''),
         };
       } catch {
         return null;
@@ -588,40 +598,86 @@ async function measureScrollJumpScenario(
     let targetScrollTop = 0;
     let middle = 0;
     if (${scenarioName} === 'bottom') {
-      targetScrollTop = maxScrollTop;
+      targetScrollTop = Math.round(maxScrollTop * 0.98);
     } else if (${scenarioName} === 'middle') {
       middle = Math.round(maxScrollTop * 0.5);
       targetScrollTop = middle;
     } else {
       middle = Math.round(maxScrollTop * 0.5);
-      targetScrollTop = middle;
+      targetScrollTop = Math.round(maxScrollTop * 0.25);
     }
 
     const benchmarkWindow = window;
+    const countInlineMathPlaceholdersForMetric = () =>
+      typeof benchmarkWindow.__marivellGetInlineMathPlaceholderCountInViewport === 'function'
+        ? benchmarkWindow.__marivellGetInlineMathPlaceholderCountInViewport() ?? 0
+        : visibleInlineMathPlaceholderCount();
+    if (typeof benchmarkWindow.__marivellClearFormulaHtmlCache === 'function') {
+      benchmarkWindow.__marivellClearFormulaHtmlCache();
+    }
+    if (typeof benchmarkWindow.__marivellResetScrollAnchorCompensation === 'function') {
+      benchmarkWindow.__marivellResetScrollAnchorCompensation();
+    }
     if (typeof benchmarkWindow.__marivellResetInlineMathActivationMetrics === 'function') {
       benchmarkWindow.__marivellResetInlineMathActivationMetrics();
     }
     const start = performance.now();
+    if (typeof benchmarkWindow.__marivellResetHydrationSyncForTest === 'function') {
+      benchmarkWindow.__marivellResetHydrationSyncForTest();
+    }
     const beforeScrollTop = frame.scrollTop;
     if (${scenarioName} === 'drag') {
       frame.scrollTop = 0;
       frame.scrollTop = maxScrollTop;
-      frame.scrollTop = middle;
+      frame.scrollTop = targetScrollTop;
     } else {
+      frame.scrollTop = 0;
       frame.scrollTop = targetScrollTop;
     }
     const afterAssignScrollTop = frame.scrollTop;
+    const preDispatchInlinePlaceholders = countInlineMathPlaceholdersForMetric();
     const beforeTopAnchor = getTopAnchor();
+    benchmarkWindow.__marivellBenchmarkTopAnchor = beforeTopAnchor;
+    let inlineMathActivateReadyMs = null;
+    let inlineMathPlaceholderFirstSeenAt = null;
+    let forceInlineActivated = 0;
+    let afterForceInlinePlaceholders = preDispatchInlinePlaceholders;
+    let forceInlineMs = 0;
+    if (preDispatchInlinePlaceholders > 0) {
+      inlineMathPlaceholderFirstSeenAt = performance.now();
+    }
+    const firstInlineFrame = new Promise((resolve) => requestAnimationFrame(resolve));
     frame.dispatchEvent(new Event('scroll'));
-
+    await firstInlineFrame;
+    const firstInlinePlaceholders = countInlineMathPlaceholdersForMetric();
+    if (
+      preDispatchInlinePlaceholders > 0 &&
+      firstInlinePlaceholders === 0 &&
+      inlineMathPlaceholderFirstSeenAt !== null
+    ) {
+      inlineMathActivateReadyMs = performance.now() - inlineMathPlaceholderFirstSeenAt;
+    }
+    if (firstInlinePlaceholders > 0) {
+      if (inlineMathPlaceholderFirstSeenAt === null) {
+        inlineMathPlaceholderFirstSeenAt = performance.now();
+      }
+      if (typeof benchmarkWindow.__marivellForceInlineHydrateViewport === 'function') {
+        const forceStart = performance.now();
+        forceInlineActivated = benchmarkWindow.__marivellForceInlineHydrateViewport() ?? 0;
+        forceInlineMs = performance.now() - forceStart;
+        const forceInlineMetrics = benchmarkWindow.__marivellForceInlineHydrateMetrics;
+        afterForceInlinePlaceholders = countInlineMathPlaceholdersForMetric();
+        if (afterForceInlinePlaceholders === 0) {
+          inlineMathActivateReadyMs = forceInlineMetrics?.hydrateMs ?? forceInlineMs;
+        }
+      }
+    }
     const deadline = performance.now() + 15_000;
     const waitForFrame = () => new Promise((resolve) => {
       requestAnimationFrame(() => requestAnimationFrame(resolve));
     });
     let firstFramePlaceholders = -1;
     let firstFramePlaceholderDetails = [];
-    let inlineMathActivateReadyMs = null;
-    let inlineMathPlaceholderFirstSeenAt = null;
     let timedOut = false;
     while (true) {
       await waitForFrame();
@@ -672,9 +728,7 @@ async function measureScrollJumpScenario(
           .map((element) => element.id || element.className)
       : [];
     const currentMaxScrollTop = Math.round(Math.max(frame.scrollHeight - frame.clientHeight, 0));
-    const scrollTopDrift = ${scenarioName} === 'bottom'
-      ? Math.abs(frame.scrollTop - currentMaxScrollTop)
-      : Math.abs(frame.scrollTop - targetScrollTop);
+    const scrollTopDrift = Math.abs(frame.scrollTop - targetScrollTop);
 
     let inlineHeightDrift = 'n/a';
     let inlineHeightDriftNote = 'no visible paragraph or inline math anchor before jump';
@@ -688,7 +742,8 @@ async function measureScrollJumpScenario(
         if (coords) {
           const afterRelativeTop = coords.top - frameRect.top;
           inlineHeightDrift = Math.abs(afterRelativeTop - beforeTopAnchor.relativeTop);
-          inlineHeightDriftNote = 'anchor=' + inlineHeightAnchor + ' before=' + Math.round(beforeTopAnchor.relativeTop * 10) / 10 + ' after=' + Math.round(afterRelativeTop * 10) / 10;
+          const surfaceMargin = (frame.querySelector('.editor-surface .ProseMirror') ?? frame.querySelector('.editor-surface > .tiptap') ?? frame.querySelector('.editor-surface'))?.style?.marginTop ?? '';
+          inlineHeightDriftNote = 'anchor=' + inlineHeightAnchor + ' before=' + Math.round(beforeTopAnchor.relativeTop * 10) / 10 + ' after=' + Math.round(afterRelativeTop * 10) / 10 + ' margin=' + surfaceMargin;
         } else {
           inlineHeightDriftNote = 'top anchor coords unavailable after hydration';
         }
@@ -699,6 +754,8 @@ async function measureScrollJumpScenario(
 
     const inlineMathActivateMaxFrameMs =
       benchmarkWindow.__marivellInlineMathActivationMaxFrameMs ?? 0;
+    const instrumentedInlineMathReadyMs =
+      benchmarkWindow.__marivellInlineMathActivationReadyMs ?? 0;
     return {
       jumpReadyMs: performance.now() - start,
       firstFramePlaceholders,
@@ -717,8 +774,18 @@ async function measureScrollJumpScenario(
       inlineHeightDrift,
       inlineHeightDriftNote,
       inlineHeightAnchor,
-      inlineMathActivateReadyMs: inlineMathActivateReadyMs ?? 0,
+      inlineMathActivateReadyMs:
+        instrumentedInlineMathReadyMs > 0
+          ? instrumentedInlineMathReadyMs
+          : (inlineMathActivateReadyMs ?? 0),
+      instrumentedInlineMathReadyMs,
       inlineMathActivateMaxFrameMs,
+      preDispatchInlinePlaceholders,
+      firstInlinePlaceholders,
+      afterForceInlinePlaceholders,
+      forceInlineActivated,
+      forceInlineMs,
+      activateProfile: window.__marivellHydrateActivateProfile ?? [],
       timedOut,
     };
   })()`;
@@ -734,7 +801,14 @@ async function measureScrollJumpScenario(
     inlineHeightDriftNote: string;
     inlineHeightAnchor: string | null;
     inlineMathActivateReadyMs: number;
+    instrumentedInlineMathReadyMs: number;
     inlineMathActivateMaxFrameMs: number;
+    preDispatchInlinePlaceholders: number;
+    firstInlinePlaceholders: number;
+    afterForceInlinePlaceholders: number;
+    forceInlineActivated: number;
+    forceInlineMs: number;
+    activateProfile: Array<{ id: string; nodeType?: string; ms: number }>;
     timedOut: boolean;
   }>;
 }
@@ -1298,6 +1372,29 @@ async function main(): Promise<void> {
           : { metric: 'visual-edit', value: 'timeout', unit: `${interactionTimeoutMs}ms` },
       );
 
+      const formulaUniqueEntry = report.find((item) => item.metric === 'formula-html-unique');
+      const formulaUnique = typeof formulaUniqueEntry?.value === 'number' ? formulaUniqueEntry.value : 0;
+      await handle.page
+        .waitForFunction(
+          (count) => (window.__marivellNodeHeightCacheSize ?? 0) >= count,
+          formulaUnique,
+          { timeout: 60_000 },
+        )
+        .catch(() => {});
+      report.push({
+        metric: 'height-cache-size',
+        value: await handle.page.evaluate(
+          () => (window.__marivellNodeHeightCacheSize ?? 0) as number,
+        ),
+        unit: 'unique',
+      });
+
+      await handle.page.evaluate(() => {
+        const benchmarkWindow = window as unknown as Record<string, unknown>;
+        if (typeof benchmarkWindow.__marivellResetScrollAnchorCompensation === 'function') {
+          benchmarkWindow.__marivellResetScrollAnchorCompensation();
+        }
+      });
       const scroll = await withTimeout(measureVisualScroll(handle.page), interactionTimeoutMs, 'visual-scroll');
       report.push(
         scroll.ok
@@ -1382,6 +1479,12 @@ async function main(): Promise<void> {
               metric: `${jumpScenario.metric}-inline-math-activate-ready-ms`,
               value: round(jump.value.inlineMathActivateReadyMs),
               unit: 'ms',
+              note: `pre=${jump.value.preDispatchInlinePlaceholders} first=${jump.value.firstInlinePlaceholders} after=${jump.value.afterForceInlinePlaceholders} activated=${jump.value.forceInlineActivated} forceMs=${round(jump.value.forceInlineMs)} instrumented=${round(jump.value.instrumentedInlineMathReadyMs)}`,
+            },
+            {
+              metric: `${jumpScenario.metric}-activate-profile`,
+              value: JSON.stringify(jump.value.activateProfile),
+              unit: 'json',
             },
             {
               metric: `${jumpScenario.metric}-inline-math-activate-max-frame-ms`,

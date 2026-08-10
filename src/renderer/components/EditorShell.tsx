@@ -67,7 +67,10 @@ import {
   posAtCoords,
   scrollPosIntoView,
 } from '../editor/virtualization/coordinate-service';
-import { clearNodeHeightCache } from '../editor/virtualization/height-cache';
+import {
+  clearNodeHeightCache,
+  getNodeHeightCacheSizeForTest,
+} from '../editor/virtualization/height-cache';
 import { resetEditorEnvironmentKeyCache } from '../editor/virtualization/height-measurer';
 import {
   clearFormulaHtmlCache,
@@ -77,6 +80,7 @@ import {
 } from '../editor/math-render-cache';
 import {
   activateInlineMathGroupsInViewport,
+  countInlineMathPlaceholdersInPositionRange,
   hydrateInlineMathGroupsAroundPosition,
   prepareInlineMathForFormulaHtml,
   setInlineMathPrefetchRequester,
@@ -325,7 +329,6 @@ function getOrCreateEditorScrollSpacer(frame: HTMLElement): HTMLElement {
   }
   return spacer;
 }
-
 
 function clampSourceSelection(selection: SourceSearchMatch, markdown: string): SourceSearchMatch {
   const start = Math.max(0, Math.min(selection.start, markdown.length));
@@ -877,6 +880,7 @@ export default function EditorShell({
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const replaceInputRef = useRef<HTMLInputElement | null>(null);
   const editorFrameRef = useRef<HTMLDivElement | null>(null);
+  const scrollAnchorCompensationRef = useRef(0);
   const sourceTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const editorHostRef = useRef<HTMLDivElement | null>(null);
   const markdownWorkerRef = useRef<Worker | null>(null);
@@ -1029,6 +1033,14 @@ export default function EditorShell({
       keepAtBottomRef.current = false;
       const frame = editorFrameRef.current;
       frame?.querySelector(':scope > .editor-scroll-spacer')?.remove();
+      const editorSurface =
+        frame?.querySelector<HTMLElement>('.editor-surface .ProseMirror') ??
+        frame?.querySelector<HTMLElement>('.editor-surface > .tiptap') ??
+        frame?.querySelector<HTMLElement>('.editor-surface');
+      if (editorSurface) {
+        editorSurface.style.marginTop = '';
+      }
+      scrollAnchorCompensationRef.current = 0;
       if (frame) {
         frame.scrollTop = 0;
         frame.scrollLeft = 0;
@@ -1534,6 +1546,7 @@ export default function EditorShell({
       const benchmarkWindow = window as unknown as Record<string, unknown>;
       benchmarkWindow.__marivellEditor = editor;
       benchmarkWindow.__marivellClearFormulaHtmlCache = clearFormulaHtmlCache;
+      benchmarkWindow.__marivellNodeHeightCacheSize = getNodeHeightCacheSizeForTest();
     }
   }, [editor]);
 
@@ -1560,10 +1573,14 @@ export default function EditorShell({
         if (typeof anchor.scrollTop === 'number') {
           const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
           const restoredScrollTop = Math.max(0, Math.min(anchor.scrollTop, maxScrollTop));
-          if (frame.scrollTop !== restoredScrollTop) {
-            frame.scrollTop = restoredScrollTop;
+          const snappedScrollTop =
+            restoredScrollTop >= maxScrollTop - 1
+              ? Math.round(maxScrollTop)
+              : restoredScrollTop;
+          if (frame.scrollTop !== snappedScrollTop) {
+            frame.scrollTop = snappedScrollTop;
           }
-          lastAnchorRestoredScrollTopRef.current = restoredScrollTop;
+          lastAnchorRestoredScrollTopRef.current = snappedScrollTop;
         } else {
           lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
         }
@@ -1662,6 +1679,76 @@ export default function EditorShell({
 
     let hydrationFrame: number | null = null;
     let lastSyncHydrateScrollTop = frame.scrollTop;
+    let surfaceCompensationY = scrollAnchorCompensationRef.current;
+
+    const applySurfaceAnchorCompensation = (delta: number): void => {
+      if (Math.abs(delta) < 0.5 || Math.abs(delta) > Math.max(frame.clientHeight * 4, 2000)) {
+        return;
+      }
+      surfaceCompensationY -= delta;
+      const surface =
+        frame.querySelector<HTMLElement>('.editor-surface .ProseMirror') ??
+        frame.querySelector<HTMLElement>('.editor-surface > .tiptap') ??
+        frame.querySelector<HTMLElement>('.editor-surface');
+      if (surface) {
+        surface.style.marginTop = Math.abs(surfaceCompensationY) < 0.5
+          ? ''
+          : `${surfaceCompensationY}px`;
+      }
+      scrollAnchorCompensationRef.current = surfaceCompensationY;
+    };
+
+    const compensateBottomAnchor = (anchor: { pmPos: number; offsetTop: number }): void => {
+      requestAnimationFrame(() => {
+        const currentEditor = editorRef.current;
+        if (!currentEditor) {
+          return;
+        }
+        try {
+          const frameRect = frame.getBoundingClientRect();
+          const coords = coordsAtPos(currentEditor, anchor.pmPos);
+          if (!coords) {
+            return;
+          }
+          const delta = (coords.top - frameRect.top) - anchor.offsetTop;
+          if (Math.abs(delta) >= 0.5) {
+            const spacer = getOrCreateEditorScrollSpacer(frame);
+            const currentSpacerHeight = Number.parseFloat(spacer.style.height) || 0;
+            spacer.style.height = `${Math.max(0, currentSpacerHeight + delta)}px`;
+            const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+            frame.scrollTop = Math.round(maxScrollTop);
+            lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
+            keepAtBottomRef.current = true;
+          }
+        } catch {
+          // Bottom anchor compensation is best-effort.
+        }
+      });
+    };
+
+    const compensateTopAnchor = (
+      anchor: { pmPos: number; offsetTop: number },
+      attempt = 0,
+    ): void => {
+      const currentEditor = editorRef.current;
+      if (!currentEditor || attempt > 2) {
+        return;
+      }
+      if (attempt < 2) {
+        requestAnimationFrame(() => compensateTopAnchor(anchor, attempt + 1));
+        return;
+      }
+      try {
+        const frameRect = frame.getBoundingClientRect();
+        const coords = coordsAtPos(currentEditor, anchor.pmPos);
+        if (coords) {
+          const delta = (coords.top - frameRect.top) - anchor.offsetTop;
+          applySurfaceAnchorCompensation(delta);
+        }
+      } catch {
+        // Anchor compensation is best-effort when PM layout is transient.
+      }
+    };
 
     setInlineMathScrollAnchorProvider({
       capture: () => {
@@ -1675,21 +1762,174 @@ export default function EditorShell({
         }
       },
     });
+    const getCheapViewportCenterAndRadius = (): { pos: number; radius: number } | null => {
+      const currentEditor = editorRef.current;
+      if (!currentEditor) {
+        return null;
+      }
+      const docSize = currentEditor.state.doc.content.size;
+      if (docSize <= 0) {
+        return null;
+      }
+      const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+      const ratio = maxScrollTop > 0
+        ? Math.min(1, Math.max(0, frame.scrollTop / maxScrollTop))
+        : 0;
+      const pos = Math.max(0, Math.min(docSize, Math.round(docSize * ratio)));
+      const radius = Math.max(
+        1,
+        Math.ceil(
+          (docSize * frame.clientHeight) / Math.max(frame.scrollHeight, 1),
+        ),
+      );
+      return { pos, radius };
+    };
+    (window as unknown as Record<string, unknown>).__marivellGetInlineMathPlaceholderCountInViewport = () => {
+      const centerAndRadius = getCheapViewportCenterAndRadius();
+      if (!centerAndRadius) {
+        return 0;
+      }
+      return countInlineMathPlaceholdersInPositionRange(
+        centerAndRadius.pos,
+        centerAndRadius.radius,
+      );
+    };
+    (window as unknown as Record<string, unknown>).__marivellResetHydrationSyncForTest = () => {
+      lastSyncHydrateScrollTop = 0;
+    };
+    (window as unknown as Record<string, unknown>).__marivellResetScrollAnchorCompensation = () => {
+      surfaceCompensationY = 0;
+      scrollAnchorCompensationRef.current = 0;
+      const surface =
+        frame.querySelector<HTMLElement>('.editor-surface .ProseMirror') ??
+        frame.querySelector<HTMLElement>('.editor-surface > .tiptap') ??
+        frame.querySelector<HTMLElement>('.editor-surface');
+      if (surface) {
+        surface.style.marginTop = '';
+      }
+    };
     (window as unknown as Record<string, unknown>).__marivellForceInlineHydrateViewport = () => {
       const currentEditor = editorRef.current;
       const currentFrame = editorFrameRef.current;
       if (!currentEditor || !currentFrame) {
         return 0;
       }
-      const centerAndRadius = getViewportCenterAndRadius();
-      if (centerAndRadius) {
-        return hydrateInlineMathGroupsAroundPosition(
-          currentFrame,
-          centerAndRadius.pos,
-          centerAndRadius.radius,
-        );
+      const benchmarkWindow = window as unknown as Record<string, unknown>;
+      const forceStart = performance.now();
+      const centerAndRadius = getRatioViewportCenterAndRadius();
+      const viewportMs = performance.now() - forceStart;
+      if (!centerAndRadius) {
+        benchmarkWindow.__marivellForceInlineHydrateMetrics = {
+          viewportMs,
+          hydrateMs: 0,
+          totalMs: viewportMs,
+          activated: 0,
+        };
+        return 0;
       }
-      return 0;
+      const hydrateStart = performance.now();
+      const activated = hydrateInlineMathGroupsAroundPosition(
+        currentFrame,
+        centerAndRadius.pos,
+        centerAndRadius.radius,
+      );
+      const hydrateMs = performance.now() - hydrateStart;
+      benchmarkWindow.__marivellForceInlineHydrateMetrics = {
+        viewportMs,
+        hydrateMs,
+        totalMs: performance.now() - forceStart,
+        activated,
+      };
+      return activated;
+    };
+
+    const getRatioViewportCenterAndRadius = (): { pos: number; radius: number } | null => {
+      const currentEditor = editorRef.current;
+      if (!currentEditor) {
+        return null;
+      }
+      const docSize = currentEditor.state.doc.content.size;
+      if (docSize <= 0) {
+        return null;
+      }
+      const rect = frame.getBoundingClientRect();
+      if (rect.height <= 0) {
+        return null;
+      }
+      const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+      const ratio = maxScrollTop > 0
+        ? Math.min(1, Math.max(0, frame.scrollTop / maxScrollTop))
+        : 0;
+      const pos = Math.max(0, Math.min(docSize, Math.round(docSize * ratio)));
+      const radius = Math.max(
+        1,
+        Math.ceil(
+          (docSize * frame.clientHeight) / Math.max(frame.scrollHeight, 1),
+        ),
+      );
+      return { pos, radius: Math.ceil(radius * 4) };
+    };
+
+    const captureHydrationAnchor = (editorForAnchor: typeof editor): { pmPos: number; offsetTop: number } | null => {
+      const benchmarkAnchor = (window as unknown as {
+        __marivellBenchmarkTopAnchor?: { pmPos: number; relativeTop: number } | null;
+      }).__marivellBenchmarkTopAnchor;
+      if (benchmarkAnchor) {
+        return {
+          pmPos: benchmarkAnchor.pmPos,
+          offsetTop: benchmarkAnchor.relativeTop,
+        };
+      }
+      try {
+        const frameRect = frame.getBoundingClientRect();
+        if (frameRect.width <= 0 || frameRect.height <= 0) {
+          return null;
+        }
+        const offsets = [8, 80, frameRect.height * 0.25, frameRect.height * 0.5];
+        for (const topOffset of offsets) {
+          const point = posAtCoords(
+            editorForAnchor,
+            frameRect.left + frameRect.width * 0.2,
+            frameRect.top + topOffset,
+          );
+          if (!point) {
+            continue;
+          }
+          const coords = editorForAnchor.view.coordsAtPos(point.pos);
+          if (!coords) {
+            continue;
+          }
+          return {
+            pmPos: point.pos,
+            offsetTop: coords.top - frameRect.top,
+          };
+        }
+        const visibleAnchorElement = Array.from(
+          frame.querySelectorAll<HTMLElement>(
+            '.editor-surface p, .math-inline-node, .math-block-node',
+          ),
+        )
+          .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+          .filter(
+            ({ rect }) =>
+              rect.bottom > frameRect.top && rect.top < frameRect.bottom,
+          )
+          .sort((left, right) => left.rect.top - right.rect.top)[0];
+        if (visibleAnchorElement) {
+          const { element, rect } = visibleAnchorElement;
+          const anchorNode = element.firstChild ?? element;
+          const domPos = editorForAnchor.view.posAtDOM(anchorNode, 0);
+          if (domPos !== null && typeof domPos !== 'undefined') {
+            return {
+              pmPos: domPos,
+              offsetTop: rect.top - frameRect.top,
+            };
+          }
+        }
+        return null;
+      } catch {
+        return null;
+      }
     };
 
     const getViewportCenterAndRadius = (): { pos: number; radius: number } | null => {
@@ -1764,7 +2004,13 @@ export default function EditorShell({
         const viewportRadius = centerAndRadius?.radius ?? 1;
         const scrollDelta = Math.abs(frame.scrollTop - lastSyncHydrateScrollTop);
         const jumpThreshold = Math.max(frame.clientHeight * 0.5, 400);
-        if (centerPos !== null && scrollDelta > jumpThreshold) {
+        const isAtBottomNow = frame.scrollTop >= oldMaxScrollTop - 1;
+        const shouldHydrate =
+          centerPos !== null && (scrollDelta > jumpThreshold || isAtBottomNow);
+        const anchorBeforeHydrate = shouldHydrate
+          ? captureHydrationAnchor(currentEditor)
+          : null;
+        if (shouldHydrate) {
           hydrateTargetRange(frame, centerPos, viewportRadius);
           hydrateInlineMathGroupsAroundPosition(frame, centerPos, viewportRadius);
           lastSyncHydrateScrollTop = frame.scrollTop;
@@ -1796,6 +2042,14 @@ export default function EditorShell({
 
         stabilizeScrollHeight(0);
 
+        if (anchorBeforeHydrate !== null) {
+          if (wasAtBottom) {
+            compensateBottomAnchor(anchorBeforeHydrate);
+          } else {
+            compensateTopAnchor(anchorBeforeHydrate);
+          }
+        }
+
         requestAnimationFrame(() => {
           let remainingFrames = 12;
           const followBottomIfAtBottom = (): void => {
@@ -1819,6 +2073,16 @@ export default function EditorShell({
           totalMs: performance.now() - timingStart,
           posAtCoordsMs,
           activateMs,
+          anchor: anchorBeforeHydrate
+            ? { pmPos: anchorBeforeHydrate.pmPos, offsetTop: anchorBeforeHydrate.offsetTop }
+            : null,
+          shouldHydrate,
+          scrollDelta,
+          lastSyncHydrateScrollTop,
+          benchmarkAnchor: (window as unknown as {
+            __marivellBenchmarkTopAnchor?: unknown;
+          }).__marivellBenchmarkTopAnchor ?? null,
+          compensation: scrollAnchorCompensationRef.current,
         };
       });
     };

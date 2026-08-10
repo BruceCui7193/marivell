@@ -1,4 +1,4 @@
-import { getHeightCacheKey } from './height-cache';
+import { getHeightCacheKey, setCachedNodeWidth } from './height-cache';
 
 export interface FormulaHeightMeasurementItem {
   key: string;
@@ -267,6 +267,16 @@ function createMeasurementSample(item: FormulaHeightMeasurementItem): {
   preview.innerHTML = item.html;
   wrapper.appendChild(preview);
 
+  // Keep measurement samples independent of the visible editor's
+  // content-visibility optimization. The production rule can return the
+  // intrinsic placeholder height for skipped content, which is not the real
+  // KaTeX box height and would turn into anchor drift on activation.
+  wrapper.style.setProperty('contain', 'none');
+  wrapper.style.setProperty('content-visibility', 'visible');
+  wrapper.style.setProperty('contain-intrinsic-size', 'auto none');
+  preview.style.setProperty('contain', 'none');
+  preview.style.setProperty('content-visibility', 'visible');
+
   return { wrapper, preview };
 }
 
@@ -350,12 +360,19 @@ function flushReads(): void {
     if (!element) {
       continue;
     }
+    const width = Math.max(
+      element.getBoundingClientRect().width,
+      element.parentElement?.getBoundingClientRect().width ?? 0,
+    );
     const height =
       chunk.items[index].display === 'no' && element.parentElement
         ? Math.max(readNodeHeight(element), readNodeHeight(element.parentElement))
         : readNodeHeight(element);
     if (height > 0) {
       chunk.measured[chunk.items[index].key] = height;
+    }
+    if (width > 0) {
+      setCachedNodeWidth(chunk.items[index].key, width);
     }
   }
 

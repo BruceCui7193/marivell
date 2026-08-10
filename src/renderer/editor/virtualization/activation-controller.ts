@@ -709,7 +709,24 @@ export function hydrateTargetRange(
     }
 
     if (distance <= viewportRadius) {
+      const activationStart = performance.now();
       forceActivate(registration.id);
+      if (typeof window !== 'undefined') {
+        const profile = (window as unknown as Record<string, unknown>).__marivellHydrateActivateProfile;
+        if (Array.isArray(profile)) {
+          profile.push({
+            id: registration.id,
+            nodeType: registration.nodeType,
+            ms: performance.now() - activationStart,
+          });
+        } else {
+          (window as unknown as Record<string, unknown>).__marivellHydrateActivateProfile = [{
+            id: registration.id,
+            nodeType: registration.nodeType,
+            ms: performance.now() - activationStart,
+          }];
+        }
+      }
     } else {
       hydrationQueue.enqueue({
         id: registration.id,
@@ -735,8 +752,22 @@ export function hydrateTargetRange(
       continue;
     }
 
+    const activationStart = performance.now();
     forceActivate(task.id);
     activatedCount += 1;
+    if (typeof window !== 'undefined') {
+      const profile = (window as unknown as Record<string, unknown>).__marivellHydrateActivateProfile;
+      const entry = {
+        id: task.id,
+        nodeType: registration.nodeType,
+        ms: performance.now() - activationStart,
+      };
+      if (Array.isArray(profile)) {
+        profile.push(entry);
+      } else {
+        (window as unknown as Record<string, unknown>).__marivellHydrateActivateProfile = [entry];
+      }
+    }
   }
 
   if (hydrationQueue.size > 0 && hydrationFrame === null) {
