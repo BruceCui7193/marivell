@@ -1841,6 +1841,7 @@ export default function EditorShell({
     }
 
     let hydrationFrame: number | null = null;
+    let hydrationInProgress = false;
     let hydrationSettleTimer: ReturnType<typeof setTimeout> | null = null;
     let heightPauseTimer: ReturnType<typeof setTimeout> | null = null;
     let lastSyncHydrateScrollTop = frame.scrollTop;
@@ -2194,7 +2195,19 @@ export default function EditorShell({
       return { pos, radius: fallbackRadius() };
     };
 
-    const performScrollHydration = (): void => {
+    const performScrollHydration = (options?: { settle?: boolean; drain?: boolean }): void => {
+      if (hydrationInProgress) {
+        return;
+      }
+      hydrationInProgress = true;
+      try {
+        runScrollHydration(options);
+      } finally {
+        hydrationInProgress = false;
+      }
+    };
+
+    const runScrollHydration = (options?: { settle?: boolean; drain?: boolean }): void => {
       hydrationFrame = null;
       const currentEditor = editorRef.current;
       if (!currentEditor || sourceModeRef.current) {
@@ -2234,7 +2247,13 @@ export default function EditorShell({
       const hydrateStart = performance.now();
       let activatedBlocks = 0;
       if (shouldHydrate && centerPos !== null) {
-        activatedBlocks = hydrateTargetRange(frame, centerPos, viewportRadius);
+        activatedBlocks = hydrateTargetRange(
+          frame,
+          centerPos,
+          viewportRadius,
+          false,
+          options?.drain === true,
+        );
         activatedInlineGroups += hydrateInlineMathGroupsAroundPosition(
           frame,
           centerPos,
@@ -2252,66 +2271,50 @@ export default function EditorShell({
       const posAtCoordsMs = 0;
       const activateMs = 0;
 
-      const stabilizeScrollHeight = (attempt: number): void => {
-        const userMovedAway =
-          Math.abs(frame.scrollTop - scrollTopBeforeHydrate) >= 1;
-        const currentScrollHeight = frame.scrollHeight;
-        const lostScrollHeight = scrollHeightBeforeHydrate - currentScrollHeight;
-        if (lostScrollHeight > 0 && attempt < 3) {
-          const spacer = getOrCreateEditorScrollSpacer(frame);
-          const currentSpacerHeight = Number.parseFloat(spacer.style.height) || 0;
-          spacer.style.height = `${currentSpacerHeight + lostScrollHeight}px`;
-          const maxScrollTop = Math.max(currentScrollHeight - clientHeight, 0);
-          if (!userMovedAway) {
-            frame.scrollTop = wasAtBottom
-              ? Math.round(maxScrollTop)
-              : Math.min(scrollTopBeforeHydrate, maxScrollTop);
-            lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
+      if (options?.settle !== true) {
+        frame.querySelector<HTMLElement>(':scope > .editor-scroll-spacer')?.remove();
+        const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+        const wasAtTop = scrollTopBeforeHydrate <= 1;
+        if (wasAtTop) {
+          scrollAnchorCompensationRef.current = 0;
+          surfaceCompensationY = 0;
+          const surface =
+            frame.querySelector<HTMLElement>('.editor-surface .ProseMirror') ??
+            frame.querySelector<HTMLElement>('.editor-surface > .tiptap') ??
+            frame.querySelector<HTMLElement>('.editor-surface');
+          if (surface) {
+            surface.style.marginTop = '';
           }
-          requestAnimationFrame(() => stabilizeScrollHeight(attempt + 1));
-          return;
-        }
-
-        if (lostScrollHeight !== 0 && !userMovedAway) {
-          const maxScrollTop = Math.max(currentScrollHeight - clientHeight, 0);
-          frame.scrollTop = wasAtBottom ? Math.round(maxScrollTop) : Math.min(scrollTopBeforeHydrate, maxScrollTop);
-          lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
-        }
-      };
-
-      stabilizeScrollHeight(0);
-
-      if (anchorBeforeHydrate !== null) {
-        if (wasAtBottom) {
-          compensateBottomAnchor(anchorBeforeHydrate);
-        } else {
-          compensateTopAnchor(anchorBeforeHydrate, 0, scrollTopBeforeHydrate);
-        }
-      }
-
-      if (wasAtBottom) {
-        requestAnimationFrame(() => {
-          let remainingFrames = 4;
-          const followBottomIfAtBottom = (): void => {
-            const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
-            const bottomThreshold = Math.max(64, frame.clientHeight * 0.15);
-            if (frame.scrollTop >= maxScrollTop - bottomThreshold) {
-              frame.scrollTop = Math.round(maxScrollTop);
-              lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
-              keepAtBottomRef.current = true;
-              remainingFrames -= 1;
-              if (remainingFrames > 0) {
-                requestAnimationFrame(followBottomIfAtBottom);
-              }
-            } else {
-              keepAtBottomRef.current = false;
+          frame.scrollTop = 0;
+        } else if (wasAtBottom) {
+          scrollAnchorCompensationRef.current = 0;
+          surfaceCompensationY = 0;
+          const surface =
+            frame.querySelector<HTMLElement>('.editor-surface .ProseMirror') ??
+            frame.querySelector<HTMLElement>('.editor-surface > .tiptap') ??
+            frame.querySelector<HTMLElement>('.editor-surface');
+          if (surface) {
+            surface.style.marginTop = '';
+          }
+          frame.scrollTop = Math.round(maxScrollTop);
+        } else if (anchorBeforeHydrate !== null) {
+          surfaceCompensationY = scrollAnchorCompensationRef.current;
+          frame.scrollTop = Math.max(0, Math.min(scrollTopBeforeHydrate, maxScrollTop));
+          try {
+            const frameRect = frame.getBoundingClientRect();
+            const coords = coordsAtPos(currentEditor, anchorBeforeHydrate.pmPos);
+            if (coords) {
+              const delta = (coords.top - frameRect.top) - anchorBeforeHydrate.offsetTop;
+              applySurfaceAnchorCompensation(delta);
             }
-          };
-          followBottomIfAtBottom();
-        });
-      } else {
-        keepAtBottomRef.current = false;
+          } catch {
+            // Anchor compensation is best-effort when PM layout is transient.
+          }
+        }
+        lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
+        lastSyncHydrateScrollTop = frame.scrollTop;
       }
+      keepAtBottomRef.current = false;
       const workMs = performance.now() - timingStart;
       maxHydrateWorkMs = Math.max(maxHydrateWorkMs, workMs);
       scrollHotpathTimings.push({
@@ -2354,7 +2357,10 @@ export default function EditorShell({
       if (hydrationFrame !== null) {
         return;
       }
-      hydrationFrame = requestAnimationFrame(performScrollHydration);
+      hydrationFrame = requestAnimationFrame(() => {
+        hydrationFrame = null;
+        performScrollHydration({ drain: true });
+      });
     };
 
     const hydrateScrollTarget = () => {
@@ -2363,11 +2369,8 @@ export default function EditorShell({
       setHeightMeasurementScrollPaused(true);
       if (heightPauseTimer !== null) {
         clearTimeout(heightPauseTimer);
-      }
-      heightPauseTimer = setTimeout(() => {
         heightPauseTimer = null;
-        setHeightMeasurementScrollPaused(false);
-      }, 120);
+      }
       if (
         hydrationFrame !== null ||
         (lastAnchorRestoredScrollTopRef.current !== null &&
@@ -2377,13 +2380,15 @@ export default function EditorShell({
       }
 
       const scrollDelta = Math.abs(nextScrollTop - lastSyncHydrateScrollTop);
-      if (scrollDelta >= 1000) {
+      const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+      const isEndpointScroll = nextScrollTop <= 1 || nextScrollTop >= maxScrollTop - 1;
+      if (scrollDelta >= 1000 || isEndpointScroll) {
         scheduleHydrationFrame();
       } else if (hydrationSettleTimer === null) {
         hydrationSettleTimer = setTimeout(() => {
           hydrationSettleTimer = null;
           if (hydrationFrame === null && !sourceModeRef.current) {
-            scheduleHydrationFrame();
+            performScrollHydration({ settle: true });
           }
         }, 300);
       }

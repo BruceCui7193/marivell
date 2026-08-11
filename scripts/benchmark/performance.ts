@@ -509,6 +509,9 @@ async function measureScrollJumpScenario(
   inlineHeightAnchor: string | null;
   inlineMathActivateReadyMs: number;
   inlineMathActivateMaxFrameMs: number;
+  inlineMathViewportKatexReadyMs: number;
+  inlineMathViewportKatexMaxFrameMs: number;
+  inlineMathViewportKatexCount: number;
   timedOut: boolean;
 }> {
   const scenarioName = JSON.stringify(scenario);
@@ -580,6 +583,44 @@ async function measureScrollJumpScenario(
         }
       }
       return count;
+    };
+
+    const isInlineMathRealKatex = (element) => {
+      const preview = element.querySelector(':scope > .math-node-preview');
+      if (!preview) {
+        return false;
+      }
+      if (!preview.querySelector('.katex')) {
+        return false;
+      }
+      if (
+        preview.querySelector(
+          '.katex-error, .math-node-empty-hint, .math-node-placeholder-hint',
+        ) !== null
+      ) {
+        return false;
+      }
+      return true;
+    };
+
+    const visibleInlineMathKatexStats = () => {
+      const frameRect = frame.getBoundingClientRect();
+      let total = 0;
+      let realKatex = 0;
+      let notRealKatex = 0;
+      for (const element of frame.querySelectorAll('.math-inline-node')) {
+        const rect = element.getBoundingClientRect();
+        if (rect.bottom <= frameRect.top || rect.top >= frameRect.bottom) {
+          continue;
+        }
+        total += 1;
+        if (isInlineMathRealKatex(element)) {
+          realKatex += 1;
+        } else {
+          notRealKatex += 1;
+        }
+      }
+      return { total, realKatex, notRealKatex };
     };
 
     const getTopAnchor = () => {
@@ -660,6 +701,10 @@ async function measureScrollJumpScenario(
     benchmarkWindow.__marivellBenchmarkTopAnchor = beforeTopAnchor;
     let inlineMathActivateReadyMs = null;
     let inlineMathPlaceholderFirstSeenAt = null;
+    let inlineMathViewportKatexFirstSeenAt = null;
+    let inlineMathViewportKatexReadyMs = null;
+    let inlineMathViewportKatexMaxFrameMs = 0;
+    let inlineMathViewportKatexCount = 0;
     let forceInlineActivated = 0;
     let afterForceInlinePlaceholders = preDispatchInlinePlaceholders;
     let forceInlineMs = 0;
@@ -670,6 +715,11 @@ async function measureScrollJumpScenario(
     frame.dispatchEvent(new Event('scroll'));
     await firstInlineFrame;
     const firstInlinePlaceholders = countInlineMathPlaceholdersForMetric();
+    const firstViewportKatexStats = visibleInlineMathKatexStats();
+    inlineMathViewportKatexCount = firstViewportKatexStats.total;
+    if (firstViewportKatexStats.notRealKatex > 0) {
+      inlineMathViewportKatexFirstSeenAt = performance.now();
+    }
     if (
       preDispatchInlinePlaceholders > 0 &&
       firstInlinePlaceholders === 0 &&
@@ -732,6 +782,31 @@ async function measureScrollJumpScenario(
         timedOut = placeholders !== 0;
         break;
       }
+    }
+
+    const katexDeadline = performance.now() + 15_000;
+    while (
+      visibleInlineMathKatexStats().notRealKatex > 0 &&
+      performance.now() < katexDeadline
+    ) {
+      const frameStart = performance.now();
+      await waitForFrame();
+      const frameMs = performance.now() - frameStart;
+      const katexStats = visibleInlineMathKatexStats();
+      inlineMathViewportKatexCount = katexStats.total;
+      inlineMathViewportKatexMaxFrameMs = Math.max(
+        inlineMathViewportKatexMaxFrameMs,
+        frameMs,
+      );
+      if (inlineMathViewportKatexFirstSeenAt === null && katexStats.notRealKatex > 0) {
+        inlineMathViewportKatexFirstSeenAt = performance.now();
+      }
+    }
+    if (inlineMathViewportKatexFirstSeenAt !== null) {
+      inlineMathViewportKatexReadyMs =
+        performance.now() - inlineMathViewportKatexFirstSeenAt;
+    } else {
+      inlineMathViewportKatexReadyMs = 0;
     }
 
     for (let settleFrame = 0; settleFrame < 3; settleFrame += 1) {
@@ -800,6 +875,10 @@ async function measureScrollJumpScenario(
           : (inlineMathActivateReadyMs ?? 0),
       instrumentedInlineMathReadyMs,
       inlineMathActivateMaxFrameMs,
+      inlineMathViewportKatexReadyMs:
+        inlineMathViewportKatexReadyMs ?? 0,
+      inlineMathViewportKatexMaxFrameMs,
+      inlineMathViewportKatexCount,
       preDispatchInlinePlaceholders,
       firstInlinePlaceholders,
       afterForceInlinePlaceholders,
@@ -823,6 +902,9 @@ async function measureScrollJumpScenario(
     inlineMathActivateReadyMs: number;
     instrumentedInlineMathReadyMs: number;
     inlineMathActivateMaxFrameMs: number;
+    inlineMathViewportKatexReadyMs: number;
+    inlineMathViewportKatexMaxFrameMs: number;
+    inlineMathViewportKatexCount: number;
     preDispatchInlinePlaceholders: number;
     firstInlinePlaceholders: number;
     afterForceInlinePlaceholders: number;
@@ -1665,6 +1747,9 @@ async function main(): Promise<void> {
       const inlineHeightDrifts: Record<string, number | 'n/a'> = {};
       const inlineMathActivateReady: number[] = [];
       const inlineMathActivateMaxFrame: number[] = [];
+      const inlineMathViewportKatexReady: number[] = [];
+      const inlineMathViewportKatexMaxFrame: number[] = [];
+      const inlineMathViewportKatexCounts: number[] = [];
       const scrollJumpScenarios: Array<{ metric: string; scenario: ScrollJumpScenario }> = [
         { metric: 'scroll-jump-bottom', scenario: 'bottom' },
         { metric: 'scroll-jump-middle', scenario: 'middle' },
@@ -1728,11 +1813,26 @@ async function main(): Promise<void> {
               value: round(jump.value.inlineMathActivateMaxFrameMs),
               unit: 'ms',
             },
+            {
+              metric: `${jumpScenario.metric}-inline-math-viewport-katex-ready-ms`,
+              value: round(jump.value.inlineMathViewportKatexReadyMs),
+              unit: 'ms',
+              note: `visible-katex=${jump.value.inlineMathViewportKatexCount}`,
+            },
+            {
+              metric: `${jumpScenario.metric}-inline-math-viewport-katex-max-frame-ms`,
+              value: round(jump.value.inlineMathViewportKatexMaxFrameMs),
+              unit: 'ms',
+              note: `visible-katex=${jump.value.inlineMathViewportKatexCount}`,
+            },
           );
           scrollFirstFrameReady[jumpScenario.metric] = jump.value.firstFrameReady;
           inlineHeightDrifts[jumpScenario.metric] = jump.value.inlineHeightDrift;
           inlineMathActivateReady.push(jump.value.inlineMathActivateReadyMs);
           inlineMathActivateMaxFrame.push(jump.value.inlineMathActivateMaxFrameMs);
+          inlineMathViewportKatexReady.push(jump.value.inlineMathViewportKatexReadyMs);
+          inlineMathViewportKatexMaxFrame.push(jump.value.inlineMathViewportKatexMaxFrameMs);
+          inlineMathViewportKatexCounts.push(jump.value.inlineMathViewportKatexCount);
         } else {
           report.push({
             metric: jumpScenario.metric,
@@ -1780,6 +1880,30 @@ async function main(): Promise<void> {
             : 'n/a',
           unit: 'ms',
           note: `bottom=${inlineMathActivateMaxFrame[0] ?? 'n/a'} middle=${inlineMathActivateMaxFrame[1] ?? 'n/a'} drag=${inlineMathActivateMaxFrame[2] ?? 'n/a'}`,
+        },
+        {
+          metric: 'inline-math-viewport-katex-ready-ms',
+          value: inlineMathViewportKatexReady.length > 0
+            ? round(Math.max(...inlineMathViewportKatexReady))
+            : 'n/a',
+          unit: 'ms',
+          note: `bottom=${inlineMathViewportKatexReady[0] ?? 'n/a'} middle=${inlineMathViewportKatexReady[1] ?? 'n/a'} drag=${inlineMathViewportKatexReady[2] ?? 'n/a'}`,
+        },
+        {
+          metric: 'inline-math-viewport-katex-max-frame-ms',
+          value: inlineMathViewportKatexMaxFrame.length > 0
+            ? round(Math.max(...inlineMathViewportKatexMaxFrame))
+            : 'n/a',
+          unit: 'ms',
+          note: `bottom=${inlineMathViewportKatexMaxFrame[0] ?? 'n/a'} middle=${inlineMathViewportKatexMaxFrame[1] ?? 'n/a'} drag=${inlineMathViewportKatexMaxFrame[2] ?? 'n/a'}`,
+        },
+        {
+          metric: 'inline-math-viewport-katex-count',
+          value: inlineMathViewportKatexCounts.length > 0
+            ? Math.max(...inlineMathViewportKatexCounts)
+            : 0,
+          unit: 'nodes',
+          note: `bottom=${inlineMathViewportKatexCounts[0] ?? 'n/a'} middle=${inlineMathViewportKatexCounts[1] ?? 'n/a'} drag=${inlineMathViewportKatexCounts[2] ?? 'n/a'}`,
         },
       );
 

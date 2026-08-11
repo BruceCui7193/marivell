@@ -702,6 +702,7 @@ export function hydrateTargetRange(
   centerPosition: number,
   radius: number,
   includeAllVirtualNodes = false,
+  drainQueue = false,
 ): number {
   virtualNodePositionIndexTestCounters.hydrateTargetRangeCalls += 1;
   if (typeof window !== 'undefined') {
@@ -785,7 +786,8 @@ export function hydrateTargetRange(
   const activateStart = performance.now();
   let activatedCount = 0;
 
-  while (activatedCount < HYDRATION_BATCH_SIZE) {
+  const batchLimit = drainQueue ? Number.MAX_SAFE_INTEGER : HYDRATION_BATCH_SIZE;
+  while (activatedCount < batchLimit) {
     const task = hydrationQueue.next(centerPosition);
     if (task === null) {
       break;
@@ -816,7 +818,7 @@ export function hydrateTargetRange(
     }
   }
 
-  if (hydrationQueue.size > 0 && hydrationFrame === null) {
+  if (!drainQueue && hydrationQueue.size > 0 && hydrationFrame === null) {
     hydrationFrame = requestAnimationFrame(() => {
       hydrationFrame = null;
       hydrateTargetRange(frame, centerPosition, radius);

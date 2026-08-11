@@ -258,6 +258,18 @@ async function main(): Promise<void> {
           );
         },
       );
+      const visibleInline = nodes.filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.bottom > frameRect.top && rect.top < frameRect.bottom;
+      });
+      const visibleNotReal = visibleInline.filter((element) => {
+        const preview = element.querySelector(':scope > .math-node-preview');
+        const hasKatex = Boolean(preview?.querySelector('.katex'));
+        const hasErrorOrHint = Boolean(
+          preview?.querySelector('.katex-error, .math-node-empty-hint, .math-node-placeholder-hint'),
+        );
+        return !hasKatex || hasErrorOrHint;
+      });
       const offscreen = nodes.filter((element) => {
         const rect = element.getBoundingClientRect();
         return !(rect.bottom > frameRect.top && rect.top < frameRect.bottom);
@@ -266,6 +278,8 @@ async function main(): Promise<void> {
         total: nodes.length,
         visiblePlaceholders: placeholders.length,
         visibleActive: active.length,
+        visibleInlineCount: visibleInline.length,
+        visibleNotRealKatex: visibleNotReal.length,
         offscreenCount: offscreen.length,
         offscreenPlaceholders: offscreen.filter(
           (element) => element.classList.contains('math-inline-node--placeholder'),
@@ -284,7 +298,10 @@ async function main(): Promise<void> {
     );
     assert(
       'initial viewport contains rendered KaTeX inline math',
-      initial.visibleActive >= 1,
+      initial.visibleActive >= 1 &&
+        initial.visibleInlineCount > 0 &&
+        initial.visibleActive === initial.visibleInlineCount &&
+        initial.visibleNotRealKatex === 0,
       JSON.stringify(initial),
     );
     assert(
@@ -388,9 +405,12 @@ async function main(): Promise<void> {
       if (!(frame instanceof HTMLElement)) return false;
       const frameRect = frame.getBoundingClientRect();
       let placeholders = 0;
+      let visibleInlineCount = 0;
+      let visibleNotRealKatex = 0;
       Array.from(frame.querySelectorAll('.math-inline-node')).forEach((node) => {
         const rect = node.getBoundingClientRect();
         if (rect.bottom <= frameRect.top || rect.top >= frameRect.bottom) return;
+        visibleInlineCount += 1;
         const preview = node.querySelector(':scope > .math-node-preview');
         const hasKatex = preview?.querySelector('.katex') !== null;
         const hasHintOrError = preview?.querySelector(
@@ -399,8 +419,11 @@ async function main(): Promise<void> {
         if (!hasKatex && !hasHintOrError && node.classList.contains('math-inline-node--placeholder')) {
           placeholders += 1;
         }
+        if (!hasKatex || hasHintOrError) {
+          visibleNotRealKatex += 1;
+        }
       });
-      return placeholders === 0;
+      return placeholders === 0 && visibleNotRealKatex === 0;
     }, undefined, { timeout: 10_000 }).catch(() => {});
     const fastScrollResult = await handle.page.evaluate(({ beforeHydrateCalls, beforeAnchorTop, anchorPos, targetScrollTop }) => {
       const frame = document.querySelector('.editor-frame');
@@ -441,12 +464,30 @@ async function main(): Promise<void> {
         }
       });
       const drift = Math.abs(frame.scrollTop - targetScrollTop);
+      let visibleInlineCount = 0;
+      let visibleRealKatex = 0;
+      let visibleNotRealKatex = 0;
+      Array.from(frame.querySelectorAll('.math-inline-node')).forEach((node) => {
+        const rect = node.getBoundingClientRect();
+        if (rect.bottom <= frameRect.top || rect.top >= frameRect.bottom) return;
+        visibleInlineCount += 1;
+        const preview = node.querySelector(':scope > .math-node-preview');
+        const hasKatex = preview?.querySelector('.katex') !== null;
+        const hasHintOrError = preview?.querySelector(
+          '.katex-error, .math-node-empty-hint, .math-node-placeholder-hint',
+        ) !== null;
+        if (hasKatex) visibleRealKatex += 1;
+        if (!hasKatex || hasHintOrError) visibleNotRealKatex += 1;
+      });
       return {
         beforeHydrateCalls,
         afterHydrateCalls,
         targetScrollTop,
         finalScrollTop: frame.scrollTop,
         finalPlaceholders: placeholders,
+        visibleInlineCount,
+        visibleRealKatex,
+        visibleNotRealKatex,
         drift,
         anchorConnected: anchor?.isConnected ?? false,
         anchorVisibleAfter: Boolean(anchor),
@@ -460,6 +501,13 @@ async function main(): Promise<void> {
     assert(
       'fast scroll lands with zero visible inline math placeholders',
       fastScrollResult.finalPlaceholders === 0,
+      JSON.stringify(fastScrollResult),
+    );
+    assert(
+      'fast scroll renders real KaTeX for every visible inline math node',
+      fastScrollResult.visibleInlineCount > 0 &&
+        fastScrollResult.visibleRealKatex === fastScrollResult.visibleInlineCount &&
+        fastScrollResult.visibleNotRealKatex === 0,
       JSON.stringify(fastScrollResult),
     );
     assert(

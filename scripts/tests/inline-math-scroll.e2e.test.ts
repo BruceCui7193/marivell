@@ -148,6 +148,7 @@ async function waitForVisualReady(
 interface JumpResult {
   placeholdersAfter: number;
   activeAfter: number;
+  notRealKatexAfter: number;
   anchorDrift: number;
   sawRawPlaceholder: boolean;
   rawToKatexMs: number;
@@ -266,6 +267,21 @@ async function main(): Promise<void> {
         }
         return count;
       };
+      const countNotRealKatex = () => {
+        const currentRect = frame.getBoundingClientRect();
+        let count = 0;
+        for (const element of frame.querySelectorAll('.math-inline-node')) {
+          const rect = element.getBoundingClientRect();
+          if (rect.bottom <= currentRect.top || rect.top >= currentRect.bottom) continue;
+          const preview = element.querySelector(':scope > .math-node-preview');
+          const hasKatex = Boolean(preview?.querySelector('.katex'));
+          const hasErrorOrHint = Boolean(
+            preview?.querySelector('.katex-error, .math-node-empty-hint, .math-node-placeholder-hint'),
+          );
+          if (!hasKatex || hasErrorOrHint) count += 1;
+        }
+        return count;
+      };
 
       let sawRawPlaceholder = false;
       let rawStart = 0;
@@ -316,6 +332,7 @@ async function main(): Promise<void> {
       return {
         placeholdersAfter: countInline(),
         activeAfter: countActive(),
+        notRealKatexAfter: countNotRealKatex(),
         anchorDrift,
         sawRawPlaceholder,
         rawToKatexMs,
@@ -352,6 +369,11 @@ async function main(): Promise<void> {
       assert(
         `scroll to ${name} renders visible .katex inline math`,
         result.activeAfter > 0,
+        JSON.stringify(result),
+      );
+      assert(
+        `scroll to ${name} renders real KaTeX for every visible inline math node`,
+        result.notRealKatexAfter === 0,
         JSON.stringify(result),
       );
       assert(
