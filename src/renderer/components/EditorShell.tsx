@@ -1037,6 +1037,8 @@ export default function EditorShell({
     processRuns: 0,
     processMs: 0,
     editGateSkips: 0,
+    preemptionSkips: 0,
+    lastPreemptedAt: 0,
   });
   const pendingFormulaHtmlChunksRef = useRef<Array<Record<string, string>>>([]);
   const formulaHtmlProcessingScheduledRef = useRef(false);
@@ -1717,6 +1719,21 @@ export default function EditorShell({
         resetFormulaTemplateCacheStatsForTest;
       benchmarkWindow.__marivellFormulaChunkDiagnostics =
         formulaChunkDiagnosticsRef.current;
+      benchmarkWindow.__marivellGetDeferredWorkDiagnostics = () => ({
+        formulaChunkQueueLength: formulaChunkQueueRef.current.length,
+        formulaChunkInFlightCount: formulaChunkInFlightRef.current.size,
+        pendingFormulaHtmlChunks: pendingFormulaHtmlChunksRef.current.length,
+        formulaHtmlProcessingScheduled: formulaHtmlProcessingScheduledRef.current,
+        workerQueueEmpty:
+          formulaChunkQueueRef.current.length === 0 &&
+          formulaChunkInFlightRef.current.size === 0 &&
+          pendingFormulaHtmlChunksRef.current.length === 0 &&
+          !formulaHtmlProcessingScheduledRef.current,
+        preemptionSkips: formulaChunkDiagnosticsRef.current.preemptionSkips,
+        lastPreemptedAt: formulaChunkDiagnosticsRef.current.lastPreemptedAt,
+        pendingVisualDocumentSync: pendingVisualDocumentSyncRef.current !== null,
+        pendingVisualMetaSync: pendingVisualMetaSyncRef.current !== null,
+      });
     }
   }, [editor]);
 
@@ -3043,6 +3060,8 @@ export default function EditorShell({
           1500;
         if (sourceModeRef.current || recentInteraction) {
           formulaChunkDiagnosticsRef.current.editGateSkips += 1;
+          formulaChunkDiagnosticsRef.current.preemptionSkips += 1;
+          formulaChunkDiagnosticsRef.current.lastPreemptedAt = performance.now();
           scheduleFormulaHtmlProcessing(160);
           return;
         }
@@ -3410,13 +3429,6 @@ export default function EditorShell({
         pendingModeSwitchScrollRatioRef.current = null;
         pendingModeSwitchRatioRestoredRef.current = true;
         return;
-      }
-      if (
-        sourceMode &&
-        typeof HTMLTextAreaElement !== 'undefined' &&
-        currentTarget instanceof HTMLTextAreaElement
-      ) {
-        currentTarget.closest('.source-editor')?.classList.remove('source-editor--pending');
       }
       const maxScrollTop = Math.max(
         currentTarget.scrollHeight - currentTarget.clientHeight,
@@ -3990,13 +4002,12 @@ export default function EditorShell({
       markdown: string,
       sourceSelection: SourceSearchMatch,
       visualSelection: { from: number; to: number; kind: 'text' | 'node' } | null,
+      deferSideEffects = false,
     ) => {
       if (!editor) {
         return;
       }
       const stats = computeSourceStats(markdown);
-      onDocumentChange(markdown, stats);
-      onDocumentMetaChange(markdown !== document.savedMarkdown);
       visualMarkdownRef.current = markdown;
       visualStatsRef.current = stats;
       lastEmittedMarkdownRef.current = markdown;
@@ -4015,16 +4026,25 @@ export default function EditorShell({
       } else {
         modeSwitchCacheRef.current = null;
       }
-      setLiveStats((currentStats) => (areStatsEqual(currentStats, stats) ? currentStats : stats));
-      setLiveDirty(markdown !== document.savedMarkdown);
       const nextOutline = profileModeSwitchPhase(
         'source-to-visual-outline',
         () => extractOutline(markdown),
       );
-      setOutline((currentOutline) =>
-        areOutlinesEqual(currentOutline, nextOutline) ? currentOutline : nextOutline,
-      );
-      setVisualSearchRevision((currentRevision) => currentRevision + 1);
+      const applySideEffects = (): void => {
+        onDocumentChange(markdown, stats);
+        onDocumentMetaChange(markdown !== document.savedMarkdown);
+        setLiveStats((currentStats) => (areStatsEqual(currentStats, stats) ? currentStats : stats));
+        setLiveDirty(markdown !== document.savedMarkdown);
+        setOutline((currentOutline) =>
+          areOutlinesEqual(currentOutline, nextOutline) ? currentOutline : nextOutline,
+        );
+        setVisualSearchRevision((currentRevision) => currentRevision + 1);
+      };
+      if (deferSideEffects) {
+        window.setTimeout(applySideEffects, 0);
+      } else {
+        applySideEffects();
+      }
     },
     [document.savedMarkdown, editor, onDocumentChange, onDocumentMetaChange],
   );
@@ -4211,7 +4231,7 @@ export default function EditorShell({
         lastVisualSelectionRef.current = nextVisualSelection;
         profileModeSwitchPhase(
           'source-to-visual-sync-state',
-          () => syncSourceToVisualState(markdown, selection, nextVisualSelection),
+          () => syncSourceToVisualState(markdown, selection, nextVisualSelection, true),
         );
         setSourceMode(false);
         sourceModeRef.current = false;
@@ -4267,7 +4287,7 @@ export default function EditorShell({
             };
             profileModeSwitchPhase(
               'source-to-visual-sync-state',
-              () => syncSourceToVisualState(markdown, selection, null),
+              () => syncSourceToVisualState(markdown, selection, null, true),
             );
             setSourceMode(false);
             sourceModeRef.current = false;
@@ -4307,7 +4327,7 @@ export default function EditorShell({
         };
         profileModeSwitchPhase(
           'source-to-visual-sync-state',
-          () => syncSourceToVisualState(markdown, selection, null),
+          () => syncSourceToVisualState(markdown, selection, null, true),
         );
       };
       if (cacheHit && cachedPreview) {
@@ -4358,13 +4378,11 @@ export default function EditorShell({
 
   const toggleSourceModeWithTransition = useCallback(() => {
     const transitionStart = performance.now();
-    requestAnimationFrame(() => {
-      toggleSourceModePreservingViewport();
-      recordModeSwitchPhase(
-        'overlay-delay',
-        performance.now() - transitionStart,
-      );
-    });
+    toggleSourceModePreservingViewport();
+    recordModeSwitchPhase(
+      'mode-switch-dispatch',
+      performance.now() - transitionStart,
+    );
   }, [toggleSourceModePreservingViewport]);
 
   const jumpSourceToOffset = useCallback((start: number, end = start) => {

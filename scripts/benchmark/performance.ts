@@ -317,6 +317,436 @@ async function measureVisualEdit(page: Page): Promise<{
   });
 }
 
+interface UiffClickResult {
+  x: number;
+  y: number;
+  selectionExists: boolean;
+  selectedPos: number | null;
+  mappedPos: number | null;
+  deviationPx: number;
+}
+
+interface UiffInputResult {
+  ms: number;
+  applied: boolean;
+}
+
+interface UiffViewportResult {
+  placeholderCount: number;
+  visibleFormulaCount: number;
+  visibleRealKatexCount: number;
+  real: boolean;
+}
+
+interface UiffOverlayResult {
+  overlayCount: number;
+  hitEditor: boolean;
+  hitElement: string | null;
+  noOverlay: boolean;
+}
+
+interface UiffCoordsResult {
+  sampled: number;
+  nonNull: number;
+  points: Array<{ x: number; y: number; pos: number | null }>;
+}
+
+interface UiffScrollResult {
+  stableFrames: number;
+  scrollTop: number;
+  layoutShiftEntries: number;
+  layoutShiftCumulative: number;
+  layoutShiftSupported: boolean;
+  stable: boolean;
+}
+
+interface FirstFrameContractResult {
+  click: UiffClickResult;
+  input: UiffInputResult;
+  viewport: UiffViewportResult;
+  overlay: UiffOverlayResult;
+  coords: UiffCoordsResult;
+  scroll: UiffScrollResult;
+  passed: boolean;
+}
+
+async function measureFirstFrameContract(page: Page): Promise<FirstFrameContractResult> {
+  const clickTarget = await page.evaluate(() => {
+    const frame = document.querySelector<HTMLElement>('.editor-frame');
+    if (!frame) {
+      throw new Error('editor frame missing');
+    }
+    const frameRect = frame.getBoundingClientRect();
+    const editor = window.__marivellEditor as {
+      view?: {
+        coordsAtPos: (pos: number) => { left: number; top: number; bottom: number } | null;
+        posAtCoords: (coords: { left: number; top: number }) => { pos: number; inside: number } | null;
+      };
+    };
+    const candidates = Array.from(
+      frame.querySelectorAll<HTMLElement>(
+        '.editor-surface p, .editor-surface li, .editor-surface blockquote, .editor-surface h1, .editor-surface h2, .editor-surface h3',
+      ),
+    )
+      .filter((element) => (element.textContent ?? '').trim().length > 0)
+      .sort((left, right) => {
+        const leftBody = left.matches('p, li, blockquote') ? 0 : 1;
+        const rightBody = right.matches('p, li, blockquote') ? 0 : 1;
+        return leftBody !== rightBody
+          ? leftBody - rightBody
+          : left.getBoundingClientRect().top - right.getBoundingClientRect().top;
+      });
+    for (const element of candidates) {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode();
+      while (node) {
+        const text = node.nodeValue ?? '';
+        const match = text.search(/\S/);
+        if (match >= 0) {
+          const range = document.createRange();
+          range.setStart(node, match);
+          range.setEnd(node, match + 1);
+          const rect = range.getBoundingClientRect();
+          if (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            rect.bottom > frameRect.top &&
+            rect.top < frameRect.bottom &&
+            rect.right > frameRect.left &&
+            rect.left < frameRect.right
+          ) {
+            const pointPos = editor?.view?.posAtCoords({
+              left: rect.left + 0.5,
+              top: rect.top + rect.height / 2,
+            });
+            const coords = pointPos
+              ? editor?.view?.coordsAtPos(pointPos.pos) ?? null
+              : null;
+            if (coords) {
+              return {
+                x: coords.left,
+                y: coords.top + Math.max(1, (coords.bottom - coords.top) / 2),
+              };
+            }
+          }
+        }
+        node = walker.nextNode();
+      }
+    }
+    throw new Error('no visible text target');
+  });
+  await page.mouse.click(clickTarget.x, clickTarget.y);
+  await page.waitForTimeout(80);
+  const click = await page.evaluate((point) => {
+    const editor = window.__marivellEditor as {
+      state: { selection: { from: number } };
+      view: {
+        coordsAtPos: (pos: number) => { left: number; top: number; right: number; bottom: number } | null;
+        posAtCoords: (coords: { left: number; top: number }) => { pos: number; inside: number } | null;
+      };
+    };
+    const selection = editor?.state.selection;
+    const pointPos = editor?.view.posAtCoords({ left: point.x, top: point.y }) ?? null;
+    const coords = pointPos ? editor?.view.coordsAtPos(pointPos.pos) ?? null : null;
+    return {
+      x: point.x,
+      y: point.y,
+      selectionExists: Boolean(selection && selection.from >= 0),
+      selectedPos: selection?.from ?? null,
+      mappedPos: pointPos?.pos ?? null,
+      deviationPx: coords
+        ? Math.max(
+            Math.abs(coords.left - point.x),
+            Math.abs(coords.right - point.x),
+            Math.abs((coords.top + coords.bottom) / 2 - point.y),
+          )
+        : Number.POSITIVE_INFINITY,
+    };
+  }, clickTarget);
+
+  const cdpSession = await page.context().newCDPSession(page);
+  const inputStart = performance.now();
+  const inputBefore = await page.evaluate(() => {
+    const editor = window.__marivellEditor as {
+      state: { doc: { content: { size: number }; descendants: (fn: (node: { isTextblock?: boolean; textContent?: string }, pos: number) => boolean | void) => void } };
+      commands: { focus: () => boolean; setTextSelection: (pos: number) => boolean };
+    };
+    if (!editor) {
+      throw new Error('editor missing');
+    }
+    let from = -1;
+    editor.state.doc.descendants((node, pos) => {
+      if (from !== -1) {
+        return false;
+      }
+      if (node.isTextblock && node.textContent) {
+        from = pos + 1;
+        return false;
+      }
+      return true;
+    });
+    if (from === -1) {
+      throw new Error('no text block');
+    }
+    editor.commands.setTextSelection(from);
+    editor.commands.focus();
+    return { before: editor.state.doc.content.size };
+  });
+  await cdpSession.send('Input.insertText', { text: 'x' });
+  const inputPoll = await page.evaluate(async (before) => {
+    const start = performance.now();
+    const deadline = start + 5000;
+    while (performance.now() < deadline) {
+      const editor = window.__marivellEditor as {
+        state?: { doc?: { content?: { size?: number } } };
+      };
+      if (
+        editor?.state?.doc?.content &&
+        typeof editor.state.doc.content.size === 'number' &&
+        editor.state.doc.content.size === before + 1
+      ) {
+        return { applied: true, ms: performance.now() - start };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    return { applied: false, ms: performance.now() - start };
+  }, inputBefore.before);
+  const inputMs = performance.now() - inputStart;
+  await page.evaluate(() => {
+    const editor = window.__marivellEditor as {
+      commands: { undo: () => boolean };
+    };
+    editor?.commands.undo();
+  });
+  await cdpSession.detach().catch(() => {});
+  const input: UiffInputResult = {
+    ms: inputMs,
+    applied: inputPoll.applied,
+  };
+
+  const viewport = await page.evaluate((): UiffViewportResult => {
+    const frame = document.querySelector<HTMLElement>('.editor-frame');
+    if (!frame) {
+      throw new Error('editor frame missing');
+    }
+    const frameRect = frame.getBoundingClientRect();
+    const placeholderSelector = [
+      '.math-inline-node--placeholder',
+      '.math-block-node-placeholder',
+      '.image-node__placeholder',
+      '.mermaid-node__placeholder',
+      '.html-block-placeholder',
+      '.code-block-node--placeholder',
+      '.mermaid-node__empty',
+    ].join(',');
+    const visibleFormulas = Array.from(
+      frame.querySelectorAll<HTMLElement>('.math-inline-node, .math-block-node'),
+    ).filter((element) => {
+      const rect = element.getBoundingClientRect();
+      return (
+        rect.bottom > frameRect.top &&
+        rect.top < frameRect.bottom &&
+        rect.right > frameRect.left &&
+        rect.left < frameRect.right
+      );
+    });
+    const visibleRealKatexCount = visibleFormulas.filter((element) =>
+      element.querySelector('.math-node-preview .katex, .katex'),
+    ).length;
+    const placeholderCount = Array.from(frame.querySelectorAll<HTMLElement>(placeholderSelector)).filter(
+      (element) => {
+        const rect = element.getBoundingClientRect();
+        return (
+          rect.bottom > frameRect.top &&
+          rect.top < frameRect.bottom &&
+          rect.right > frameRect.left &&
+          rect.left < frameRect.right
+        );
+      },
+    ).length;
+    return {
+      placeholderCount,
+      visibleFormulaCount: visibleFormulas.length,
+      visibleRealKatexCount,
+      real: visibleFormulas.length > 0 && visibleRealKatexCount === visibleFormulas.length && placeholderCount === 0,
+    };
+  });
+
+  const overlay = await page.evaluate((): UiffOverlayResult => {
+    const frame = document.querySelector<HTMLElement>('.editor-frame');
+    if (!frame) {
+      throw new Error('editor frame missing');
+    }
+    const overlayCount = document.querySelectorAll(
+      '.editor-loading, .editor-loading--mode-switch',
+    ).length;
+    const rect = frame.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    const isSource = frame.classList.contains('is-source');
+    const hitEditor = Boolean(
+      hit &&
+        frame.contains(hit) &&
+        (isSource
+          ? hit.closest('.source-editor__input') !== null
+          : hit.closest('.editor-surface, .ProseMirror') !== null),
+    );
+    return {
+      overlayCount,
+      hitEditor,
+      hitElement: hit ? `${hit.tagName.toLowerCase()}.${String(hit.className).split(' ').join('.')}` : null,
+      noOverlay: overlayCount === 0 && hitEditor,
+    };
+  });
+
+  const coords = await page.evaluate((): UiffCoordsResult => {
+    const frame = document.querySelector<HTMLElement>('.editor-frame');
+    const editor = window.__marivellEditor as {
+      view?: { posAtCoords: (coords: { left: number; top: number }) => { pos: number } | null };
+    };
+    if (!frame || !editor?.view) {
+      throw new Error('editor frame/view missing');
+    }
+    const rect = frame.getBoundingClientRect();
+    const samplePoints = [
+      { x: rect.left + rect.width * 0.25, y: rect.top + rect.height * 0.15 },
+      { x: rect.left + rect.width * 0.75, y: rect.top + rect.height * 0.35 },
+      { x: rect.left + rect.width * 0.5, y: rect.top + rect.height * 0.5 },
+      { x: rect.left + rect.width * 0.25, y: rect.top + rect.height * 0.7 },
+      { x: rect.left + rect.width * 0.75, y: rect.top + rect.height * 0.8 },
+    ];
+    const points = samplePoints.map((point) => ({
+      x: point.x,
+      y: point.y,
+      pos: editor.view?.posAtCoords({ left: point.x, top: point.y })?.pos ?? null,
+    }));
+    return {
+      sampled: points.length,
+      nonNull: points.filter((point) => point.pos !== null).length,
+      points,
+    };
+  });
+
+  const scroll = await page.evaluate((): Promise<UiffScrollResult> => {
+    const frame = document.querySelector<HTMLElement>('.editor-frame');
+    if (!(frame instanceof HTMLElement)) {
+      throw new Error('editor frame missing');
+    }
+    return (async () => {
+      const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+      const target = maxScrollTop * 0.4;
+      const layoutShifts: Array<{ value: number }> = [];
+      let layoutObserver: PerformanceObserver | null = null;
+      try {
+        layoutObserver = new PerformanceObserver((list) => {
+          for (const entry of list.getEntries()) {
+            layoutShifts.push({ value: (entry as PerformanceEntry & { value?: number }).value ?? 0 });
+          }
+        });
+        layoutObserver.observe({ type: 'layout-shift' });
+      } catch {
+        // Chromium normally exposes layout-shift; older test builds may not.
+      }
+      frame.scrollTop = target;
+      frame.dispatchEvent(new Event('scroll'));
+      const settleDeadline = performance.now() + 3000;
+      let previousTop = frame.scrollTop;
+      let settleFrames = 0;
+      while (performance.now() < settleDeadline && settleFrames < 3) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        const nextTop = frame.scrollTop;
+        if (nextTop === previousTop) {
+          settleFrames += 1;
+        } else {
+          settleFrames = 0;
+          previousTop = nextTop;
+        }
+      }
+      const firstTop = frame.scrollTop;
+      const shiftsBeforeIdle = layoutShifts.length;
+      let stableFrames = 0;
+      for (let index = 0; index < 10; index += 1) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        if (frame.scrollTop === firstTop) {
+          stableFrames += 1;
+        }
+      }
+      const idleShifts = layoutShifts.slice(shiftsBeforeIdle);
+      layoutObserver?.disconnect();
+      return {
+        stableFrames,
+        scrollTop: firstTop,
+        layoutShiftEntries: idleShifts.length,
+        layoutShiftCumulative: idleShifts.reduce((total, entry) => total + entry.value, 0),
+        layoutShiftSupported: layoutObserver !== null,
+        stable: stableFrames === 10 && idleShifts.length === 0,
+      };
+    })();
+  });
+
+  const passed =
+    click.selectionExists &&
+    click.deviationPx <= 4 &&
+    input.applied &&
+    input.ms <= 100 &&
+    viewport.real &&
+    overlay.noOverlay &&
+    coords.nonNull === coords.sampled &&
+    scroll.stable;
+
+  return { click, input, viewport, overlay, coords, scroll, passed };
+}
+
+async function measureBackgroundReadiness(
+  page: Page,
+  expectedUnique: number | null = null,
+): Promise<Record<string, unknown>> {
+  return page.evaluate((expected) => {
+    const target = window as unknown as Record<string, unknown>;
+    const frame = document.querySelector<HTMLElement>('.editor-frame');
+    const frameRect = frame?.getBoundingClientRect();
+    const offscreenSyntaxDecorationCount =
+      frameRect && frame
+        ? Array.from(frame.querySelectorAll<HTMLElement>('[class*="math-syntax-"]')).filter(
+            (element) => {
+              const rect = element.getBoundingClientRect();
+              return !(
+                rect.bottom > frameRect.top &&
+                rect.top < frameRect.bottom &&
+                rect.right > frameRect.left &&
+                rect.left < frameRect.right
+              );
+            },
+          ).length
+        : -1;
+    return {
+      deferred:
+        typeof target.__marivellGetDeferredWorkDiagnostics === 'function'
+          ? (
+              target.__marivellGetDeferredWorkDiagnostics as () => Record<string, unknown>
+            )()
+          : null,
+      heightCache:
+        typeof target.__marivellGetNodeHeightCacheStats === 'function'
+          ? (
+              target.__marivellGetNodeHeightCacheStats as () => Record<string, unknown>
+            )()
+          : null,
+      expectedUnique: expected,
+      inline:
+        typeof target.__marivellGetInlineMathHeightPrefetchStats === 'function'
+          ? (
+              target.__marivellGetInlineMathHeightPrefetchStats as () => Record<string, unknown>
+            )()
+          : null,
+      syntax: target.__marivellMathSyntaxDiagnostics ?? null,
+      placeholderCount: document.querySelectorAll(
+        '.math-inline-node--placeholder, .math-block-node-placeholder, .image-node__placeholder, .mermaid-node__placeholder, .html-block-placeholder, .code-block-node--placeholder, .mermaid-node__empty',
+      ).length,
+      offscreenSyntaxDecorationCount,
+    };
+  }, expectedUnique);
+}
+
 async function runVisualInteractionSuite(
   page: Page,
 ): Promise<Record<string, { ms: number; applied: boolean; error?: string; detail?: string }>> {
@@ -2281,6 +2711,139 @@ async function main(): Promise<void> {
             }
           : { metric: 'context-menu-open', value: 'timeout', unit: `${interactionTimeoutMs}ms` },
       );
+
+      const uiff = await withTimeout(
+        measureFirstFrameContract(handle.page),
+        interactionTimeoutMs,
+        'first-frame-contract',
+      );
+      if (uiff.ok) {
+        const contract = uiff.value;
+        report.push(
+          {
+            metric: 'uiff-click-selection-deviation-px',
+            value: round(contract.click.deviationPx),
+            unit: 'px',
+            note: `exists=${contract.click.selectionExists} mapped=${contract.click.mappedPos} selected=${contract.click.selectedPos}`,
+          },
+          {
+            metric: 'uiff-cdp-insert-x-ms',
+            value: round(contract.input.ms),
+            unit: 'ms',
+            note: `applied=${contract.input.applied}`,
+          },
+          {
+            metric: 'uiff-viewport-real',
+            value: contract.viewport.real,
+            unit: 'boolean',
+            note: `visible=${contract.viewport.visibleFormulaCount} katex=${contract.viewport.visibleRealKatexCount} placeholders=${contract.viewport.placeholderCount}`,
+          },
+          {
+            metric: 'uiff-scroll-stable',
+            value: contract.scroll.stable,
+            unit: 'boolean',
+            note: `frames=${contract.scroll.stableFrames} layout-shift=${round(contract.scroll.layoutShiftCumulative)} entries=${contract.scroll.layoutShiftEntries} supported=${contract.scroll.layoutShiftSupported}`,
+          },
+          {
+            metric: 'uiff-no-overlay',
+            value: contract.overlay.noOverlay,
+            unit: 'boolean',
+            note: `overlays=${contract.overlay.overlayCount} hitEditor=${contract.overlay.hitEditor} hit=${contract.overlay.hitElement}`,
+          },
+          {
+            metric: 'uiff-coords-available',
+            value: contract.coords.nonNull === contract.coords.sampled,
+            unit: 'boolean',
+            note: `sampled=${contract.coords.sampled} nonNull=${contract.coords.nonNull} points=${JSON.stringify(contract.coords.points)}`,
+          },
+          {
+            metric: 'uiff-passed',
+            value: contract.passed,
+            unit: 'boolean',
+            note: JSON.stringify(contract),
+          },
+        );
+      } else {
+        report.push({
+          metric: 'uiff-passed',
+          value: 'timeout',
+          unit: `${interactionTimeoutMs}ms`,
+        });
+      }
+
+      const bfr = await withTimeout(
+        measureBackgroundReadiness(handle.page, formulaUnique),
+        interactionTimeoutMs,
+        'background-full-readiness',
+      );
+      if (bfr.ok) {
+        const deferred = bfr.value.deferred as Record<string, unknown> | null;
+        const cache = bfr.value.heightCache as Record<string, unknown> | null;
+        const inline = bfr.value.inline as Record<string, unknown> | null;
+        const syntax = bfr.value.syntax as Record<string, unknown> | null;
+        const placeholderCount = bfr.value.placeholderCount;
+        const offscreenSyntaxDecorationCount = bfr.value.offscreenSyntaxDecorationCount;
+        const expectedUnique = bfr.value.expectedUnique;
+        const cacheSize =
+          typeof cache?.size === 'number' ? cache.size : null;
+        report.push(
+          {
+            metric: 'bfr-worker-queue-empty',
+            value:
+              typeof deferred?.workerQueueEmpty === 'boolean'
+                ? deferred.workerQueueEmpty
+                : 'n/a',
+            unit: 'boolean',
+            note: JSON.stringify(deferred),
+          },
+          {
+            metric: 'bfr-pending-inline-height-measurements',
+            value:
+              typeof inline?.pendingHeightMeasurements === 'number'
+                ? inline.pendingHeightMeasurements
+                : 'n/a',
+            unit: 'keys',
+          },
+          {
+            metric: 'bfr-placeholders',
+            value: typeof placeholderCount === 'number' ? placeholderCount : 'n/a',
+            unit: 'nodes',
+          },
+          {
+            metric: 'bfr-syntax-decoration-span-count',
+            value:
+              typeof syntax?.spanCount === 'number' ? syntax.spanCount : 'n/a',
+            unit: 'spans',
+            note: JSON.stringify(syntax),
+          },
+          {
+            metric: 'bfr-offscreen-syntax-decoration-count',
+            value:
+              typeof offscreenSyntaxDecorationCount === 'number'
+                ? offscreenSyntaxDecorationCount
+                : 'n/a',
+            unit: 'spans',
+            note: 'default track keeps syntax decoration scoped to viewport/selection',
+          },
+          {
+            metric: 'bfr-height-cache-coverage',
+            value:
+              typeof expectedUnique === 'number' &&
+              expectedUnique > 0 &&
+              cacheSize !== null
+                ? round((cacheSize / expectedUnique) * 100)
+                : 'n/a',
+            unit: 'percent',
+            note: JSON.stringify(cache),
+          },
+        );
+      } else {
+        report.push({
+          metric: 'bfr-worker-queue-empty',
+          value: 'timeout',
+          unit: `${interactionTimeoutMs}ms`,
+        });
+      }
     }
   } finally {
     // SIGKILL avoids the app's unsaved-changes close prompt after the edit benchmark.

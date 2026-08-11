@@ -333,14 +333,6 @@ const SourceEditor = forwardRef<HTMLTextAreaElement, SourceEditorProps>(function
     if (textarea && textarea.value !== value) {
       textarea.value = value;
     }
-    const root = rootRef.current;
-    if (root && root.classList.contains('source-editor--pending')) {
-      requestAnimationFrame(() => {
-        if (root.isConnected) {
-          root.classList.remove('source-editor--pending');
-        }
-      });
-    }
   }, [value]);
 
   useLayoutEffect(() => {
@@ -491,7 +483,7 @@ const SourceEditor = forwardRef<HTMLTextAreaElement, SourceEditorProps>(function
     performance.now() - renderStart,
   );
   return (
-    <div className="source-editor source-editor--pending" ref={rootRef}>
+    <div className="source-editor" ref={rootRef}>
       <div className="source-editor__gutter" aria-hidden="true" ref={gutterRef}>
         <div
           className="source-editor__gutter-window"
