@@ -1128,6 +1128,7 @@ async function measureScrollJumpScenario(
   currentMaxScrollTop: number;
   timings: Record<string, unknown> | null;
   hydrateTimings: Record<string, unknown> | null;
+  visibleFallbackTimings: Record<string, unknown> | null;
   placeholderDetails: string[];
   firstFrameReady: boolean;
   inlineHeightDrift: number | 'n/a';
@@ -1399,7 +1400,9 @@ async function measureScrollJumpScenario(
         firstFramePlaceholders = placeholders;
         if (placeholders > 0) {
           firstFramePlaceholderDetails = Array.from(
-            frame.querySelectorAll(placeholderSelectors.join(',')),
+            frame.querySelectorAll(
+              placeholderSelectors.join(',') + ',.math-inline-node--placeholder',
+            ),
           )
             .filter((element) => {
               const rect = element.getBoundingClientRect();
@@ -1515,6 +1518,7 @@ async function measureScrollJumpScenario(
       currentMaxScrollTop,
       timings: window.__marivellPhase4Timings ?? null,
       hydrateTimings: window.__marivellPhase4HydrateTimings ?? null,
+      visibleFallbackTimings: window.__marivellVisibleFallbackTimings ?? null,
       placeholderDetails: firstFramePlaceholderDetails,
       firstFrameReady: firstFramePlaceholders === 0,
       inlineHeightDrift,
@@ -1554,6 +1558,7 @@ async function measureScrollJumpScenario(
     scrollTopDrift: number;
     targetScrollTop: number;
     scrollHeight: number;
+    visibleFallbackTimings: Record<string, unknown> | null;
     firstFrameReady: boolean;
     inlineHeightDrift: number | 'n/a';
     inlineHeightDriftNote: string;
@@ -2602,6 +2607,11 @@ async function runBenchmark(): Promise<void> {
               value: jump.value.firstFrameReady,
               unit: 'boolean',
               note: `first-frame-placeholders=${jump.value.firstFramePlaceholders}`,
+            },
+            {
+              metric: `${jumpScenario.metric}-visible-fallback`,
+              value: JSON.stringify(jump.value.visibleFallbackTimings),
+              unit: 'json',
             },
             {
               metric: `${jumpScenario.metric}-inline-height-drift`,

@@ -70,6 +70,13 @@ export interface InlineMathScrollAnchorProvider {
   restore(anchor: { pmPos: number; offsetTop: number; scrollTop?: number; atBottom?: boolean }): void;
 }
 
+export interface InlineMathViewportScanStats {
+  scanned: number;
+  visible: number;
+  prepared: number;
+  activated: number;
+}
+
 interface InlineMathGroup {
   id: string;
   key: string;
@@ -1060,11 +1067,19 @@ export function activateInlineMathGroupsInViewport(
   margin = 1600,
   centerPosition?: number,
   positionRadius?: number,
+  stats?: InlineMathViewportScanStats | null,
+  allowLayoutRetry = true,
+  skipAnchorRestore = false,
 ): number {
   const sorted = getSortedGroups();
   if (!frame || typeof IntersectionObserver === 'undefined') {
     const anchor = inlineMathScrollAnchorProvider?.capture() ?? null;
     const activated = withInlineMathActivationMeasurement(() => {
+      if (stats) {
+        stats.scanned = sorted.length;
+        stats.visible = sorted.length;
+        stats.activated = sorted.length;
+      }
       for (const group of sorted) {
         activateGroup(group);
       }
@@ -1079,6 +1094,7 @@ export function activateInlineMathGroupsInViewport(
   const firstGroup = sorted[0];
   const firstElement = firstGroup ? getGroupElement(firstGroup) : null;
   if (
+    allowLayoutRetry &&
     firstElement &&
     firstElement.isConnected &&
     firstElement.getBoundingClientRect().height <= 0
@@ -1143,6 +1159,9 @@ export function activateInlineMathGroupsInViewport(
   const prefetchBottom = frameRect.bottom + margin;
   const toActivate: InlineMathGroup[] = [];
   for (const group of sorted) {
+    if (stats) {
+      stats.scanned += 1;
+    }
     const element = getGroupElement(group);
     if (!element.isConnected) {
       continue;
@@ -1159,10 +1178,16 @@ export function activateInlineMathGroupsInViewport(
       continue;
     }
     if (relation === 'prefetch') {
+      if (stats) {
+        stats.prepared += 1;
+      }
       if (!group.active) {
         prepareGroup(group);
       }
       continue;
+    }
+    if (stats) {
+      stats.visible += 1;
     }
     if (!group.active) {
       toActivate.push(group);
@@ -1174,7 +1199,9 @@ export function activateInlineMathGroupsInViewport(
     }
   }
   if (toActivate.length > 0) {
-    const anchor = inlineMathScrollAnchorProvider?.capture() ?? null;
+    const anchor = skipAnchorRestore
+      ? null
+      : inlineMathScrollAnchorProvider?.capture() ?? null;
     const activated = withInlineMathActivationMeasurement(() => {
       for (const group of toActivate) {
         activateGroup(group);
@@ -1183,6 +1210,9 @@ export function activateInlineMathGroupsInViewport(
     });
     if (anchor !== null) {
       inlineMathScrollAnchorProvider?.restore(anchor);
+    }
+    if (stats) {
+      stats.activated = toActivate.length;
     }
     return activated;
   }

@@ -298,6 +298,69 @@ export function extractOutlineFromEditor(editor: TiptapEditor): OutlineItem[] {
   return items;
 }
 
+export interface VisibleViewportFallbackTimings {
+  fallbackMs: number;
+  virtualMs: number;
+  inlineMs: number;
+  activatedVirtualNodes: number;
+  activatedInlineGroups: number;
+  scannedVirtualNodes: number;
+  scannedInlineGroups: number;
+  visibleVirtualNodes: number;
+  visibleInlineGroups: number;
+  frameScrollTop: number;
+  targetScrollTop: number;
+}
+
+export interface VisibleViewportFallbackOptions {
+  rootMargin?: number;
+  inlineMargin?: number;
+  targetScrollTop?: number;
+  includeInlineMath?: boolean;
+}
+
+export function hydrateVisibleViewportFallback(
+  frame: HTMLElement,
+  options: VisibleViewportFallbackOptions = {},
+): VisibleViewportFallbackTimings {
+  const startedAt = performance.now();
+  const virtualScanStartedAt = performance.now();
+  const virtualStats = { scanned: 0, visible: 0, activated: 0 };
+  forceActivateViewport(frame, options.rootMargin ?? 800, virtualStats, true);
+  const virtualMs = performance.now() - virtualScanStartedAt;
+
+  const inlineScanStartedAt = performance.now();
+  const inlineStats = { scanned: 0, visible: 0, prepared: 0, activated: 0 };
+  if (options.includeInlineMath !== false) {
+    activateInlineMathGroupsInViewport(
+      frame,
+      options.inlineMargin ?? 1600,
+      undefined,
+      undefined,
+      inlineStats,
+      false,
+      true,
+    );
+  }
+  const inlineMs = performance.now() - inlineScanStartedAt;
+
+  const timings: VisibleViewportFallbackTimings = {
+    fallbackMs: performance.now() - startedAt,
+    virtualMs,
+    inlineMs,
+    activatedVirtualNodes: virtualStats.activated,
+    activatedInlineGroups: inlineStats.activated,
+    scannedVirtualNodes: virtualStats.scanned,
+    scannedInlineGroups: inlineStats.scanned,
+    visibleVirtualNodes: virtualStats.visible,
+    visibleInlineGroups: inlineStats.visible,
+    frameScrollTop: frame.scrollTop,
+    targetScrollTop: options.targetScrollTop ?? frame.scrollTop,
+  };
+  (window as unknown as Record<string, unknown>).__marivellVisibleFallbackTimings = timings;
+  return timings;
+}
+
 function areStatsEqual(left: DocumentStats, right: DocumentStats): boolean {
   return (
     left.words === right.words &&
@@ -2448,6 +2511,10 @@ export default function EditorShell({
       const viewportRadius = Math.ceil(
         (centerAndRadius?.radius ?? cheapCenterAndRadius?.radius ?? 1) * 1.5,
       );
+      let visibleFallbackTimings: VisibleViewportFallbackTimings | null = null;
+      let anchorCompensationAttempts = 0;
+      let anchorCoordsOk = false;
+      let lastAnchorCompensationDelta: number | null = null;
       let activatedInlineGroups = 0;
       const anchorStart = performance.now();
       const anchorBeforeHydrate = shouldHydrate
@@ -2472,6 +2539,13 @@ export default function EditorShell({
             viewportRadius,
           );
         }
+        lastSyncHydrateScrollTop = frame.scrollTop;
+      }
+      if (options?.largeJump === true) {
+        visibleFallbackTimings = hydrateVisibleViewportFallback(frame, {
+          targetScrollTop: scrollTopBeforeHydrate,
+          includeInlineMath: !deferInlineMathHydrationForNextScroll,
+        });
         lastSyncHydrateScrollTop = frame.scrollTop;
       }
       const inlineGroupDiagnostics = (window as unknown as Record<string, unknown>)
@@ -2538,8 +2612,11 @@ export default function EditorShell({
               if (!coords) {
                 break;
               }
+              anchorCoordsOk = true;
+              anchorCompensationAttempts += 1;
               const delta =
                 (coords.top - frameRect.top) - anchorBeforeHydrate.offsetTop;
+              lastAnchorCompensationDelta = delta;
               if (Math.abs(delta) < 0.5) {
                 break;
               }
@@ -2547,6 +2624,51 @@ export default function EditorShell({
             }
           } catch {
             // Anchor compensation is best-effort when PM layout is transient.
+          }
+          if (anchorCompensationAttempts === 0 && anchorBeforeHydrate !== null) {
+            const deferredAnchor = anchorBeforeHydrate;
+            const deferredTarget = scrollTopBeforeHydrate;
+            const editorForCompensation = currentEditor;
+            requestAnimationFrame(() => {
+              if (!frame.isConnected || !editorForCompensation) {
+                return;
+              }
+              try {
+                const frameRect = frame.getBoundingClientRect();
+                const coords = coordsAtPos(editorForCompensation, deferredAnchor.pmPos);
+                let anchorTop: number | null = coords?.top ?? null;
+                if (anchorTop === null) {
+                  try {
+                    const domPosition =
+                      editorForCompensation.view.domAtPos(deferredAnchor.pmPos);
+                    const anchorElement =
+                      domPosition.node.nodeType === Node.ELEMENT_NODE
+                        ? domPosition.node
+                        : domPosition.node.parentElement;
+                    anchorTop =
+                      anchorElement instanceof Element
+                        ? anchorElement.getBoundingClientRect().top
+                        : null;
+                  } catch {
+                    anchorTop = null;
+                  }
+                }
+                if (anchorTop === null) {
+                  return;
+                }
+                const delta =
+                  (anchorTop - frameRect.top) - deferredAnchor.offsetTop;
+                applySurfaceAnchorCompensation(delta);
+                const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+                const pinnedScrollTop = Math.max(0, Math.min(deferredTarget, maxScrollTop));
+                if (Math.abs(frame.scrollTop - pinnedScrollTop) >= 0.01) {
+                  frame.scrollTop = pinnedScrollTop;
+                }
+                lastAnchorRestoredScrollTopRef.current = pinnedScrollTop;
+              } catch {
+                // Deferred compensation is best-effort after the first frame.
+              }
+            });
           }
         }
         lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
@@ -2563,6 +2685,7 @@ export default function EditorShell({
         hydrateMs: Math.round(hydrateMs * 10) / 10,
         activatedBlocks,
         activatedInlineGroups,
+        visibleFallbackTimings,
         inlineGroupDiagnostics,
         scrollDelta: Math.round(scrollDelta),
         shouldHydrate,
@@ -2581,6 +2704,10 @@ export default function EditorShell({
           __marivellBenchmarkTopAnchor?: unknown;
         }).__marivellBenchmarkTopAnchor ?? null,
         compensation: scrollAnchorCompensationRef.current,
+        visibleFallbackTimings,
+        anchorCompensationAttempts,
+        anchorCoordsOk,
+        lastAnchorCompensationDelta,
       };
     };
 

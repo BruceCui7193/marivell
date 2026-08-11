@@ -64,7 +64,10 @@ import {
   restoreSourceScrollAnchor,
   restoreVisualScrollAnchor,
 } from '../../src/renderer/editor/scroll-anchor';
-import { extractOutlineFromEditor } from '../../src/renderer/components/EditorShell';
+import {
+  extractOutlineFromEditor,
+  hydrateVisibleViewportFallback,
+} from '../../src/renderer/components/EditorShell';
 import { buildClipboardPayload } from '../../src/renderer/editor/clipboard';
 import { pasteClipboardPayload } from '../../src/renderer/editor/plugins/markdown-paste';
 import {
@@ -2113,6 +2116,178 @@ for (const chain of chainSources) {
     }
     globals.requestAnimationFrame = previousRaf;
     globals.cancelAnimationFrame = previousCancelRaf;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Real-viewport fallback must rescue placeholders missed by a cheap center
+// ---------------------------------------------------------------------------
+{
+  const globals = globalThis as Record<string, unknown>;
+  const previousIntersectionObserver = globals.IntersectionObserver;
+  const previousRequestAnimationFrame = globals.requestAnimationFrame;
+  const previousCancelAnimationFrame = globals.cancelAnimationFrame;
+
+  class FakeIntersectionObserver {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+  globals.IntersectionObserver = FakeIntersectionObserver as unknown as typeof IntersectionObserver;
+  globals.requestAnimationFrame = (callback: FrameRequestCallback) => setTimeout(callback, 0);
+  globals.cancelAnimationFrame = (id: number) => clearTimeout(id);
+  resetActivationControllerForTest();
+  resetInlineMathGroupRegistryForTest();
+
+  const frame = document.createElement('div');
+  frame.className = 'editor-frame';
+  frame.scrollTop = 222;
+  document.body.appendChild(frame);
+  const mockRect = (
+    top: number,
+    bottom: number,
+    left = 0,
+    right = 800,
+  ): DOMRect => ({
+    x: left,
+    y: top,
+    top,
+    left,
+    right,
+    bottom,
+    width: Math.max(0, right - left),
+    height: Math.max(0, bottom - top),
+    toJSON: () => ({}),
+  } as DOMRect);
+  frame.getBoundingClientRect = () => mockRect(0, 500);
+
+  const editorHost = document.createElement('div');
+  frame.appendChild(editorHost);
+  const editor = new Editor({
+    element: editorHost,
+    extensions: createEditorExtensions({
+      onUploadImage: async () => ({ src: 'x.png', absolutePath: 'x.png' }),
+      onResolveImageSource: (src) => src,
+    }),
+    content: parseMarkdown('$a$ first line\n\n$b$ second line\n'),
+  });
+
+  const virtualActivated = [0, 0, 0];
+  const unregisters: Array<() => void> = [];
+  try {
+    const specs = [
+      { top: 100, bottom: 160 },
+      { top: 2000, bottom: 2060 },
+      { top: -2000, bottom: -1940 },
+    ];
+    for (let index = 0; index < specs.length; index += 1) {
+      const element = document.createElement('div');
+      element.className = 'visible-fallback-virtual';
+      frame.appendChild(element);
+      element.getBoundingClientRect = () => mockRect(specs[index]!.top, specs[index]!.bottom);
+      unregisters.push(
+        registerVirtualNodeView(`visible-fallback-virtual-${index}`, element, {
+          activate: () => {
+            virtualActivated[index] += 1;
+          },
+          deactivate: () => {},
+        }),
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const paragraphs = Array.from(editorHost.querySelectorAll<HTMLElement>('p'));
+    assert(
+      'visible fallback test has two inline math paragraphs',
+      paragraphs.length === 2,
+      `paragraphs=${paragraphs.length}`,
+    );
+    paragraphs[0]!.getBoundingClientRect = () => mockRect(100, 160);
+    paragraphs[1]!.getBoundingClientRect = () => mockRect(2500, 2560);
+    const inlineNodes = Array.from(editorHost.querySelectorAll<HTMLElement>('.math-inline-node'));
+    assert(
+      'visible fallback test has two inline math nodes',
+      inlineNodes.length === 2,
+      `inline=${inlineNodes.length}`,
+    );
+    const firstInline = inlineNodes[0]!;
+    const secondInline = inlineNodes[1]!;
+    const beforePlaceholders = inlineNodes.filter((node) =>
+      node.classList.contains('math-inline-node--placeholder'),
+    ).length;
+    assert(
+      'visible fallback starts with inline placeholders',
+      beforePlaceholders === 2,
+      `placeholders=${beforePlaceholders}`,
+    );
+
+    hydrateTargetRange(frame, 1_000_000, 1);
+    hydrateInlineMathGroupsAroundPosition(frame, 1_000_000, 1);
+    assert(
+      'wrong cheap center does not activate visible virtual nodes',
+      virtualActivated.every((count) => count === 0),
+      `activated=${virtualActivated.join(',')}`,
+    );
+    assert(
+      'wrong cheap center leaves visible inline math placeholder inactive',
+      firstInline.classList.contains('math-inline-node--placeholder'),
+      firstInline.className,
+    );
+
+    const fallback = hydrateVisibleViewportFallback(frame, { targetScrollTop: 222 });
+    assert(
+      'visible fallback activates only viewport virtual nodes',
+      virtualActivated[0] === 1 && virtualActivated[1] === 0 && virtualActivated[2] === 0,
+      `activated=${virtualActivated.join(',')}`,
+    );
+    assert(
+      'visible fallback activates only viewport inline math group',
+      !firstInline.classList.contains('math-inline-node--placeholder') &&
+        secondInline.classList.contains('math-inline-node--placeholder'),
+      `first=${firstInline.className} second=${secondInline.className}`,
+    );
+    assert(
+      'visible fallback reports scan and activation counts',
+      fallback.activatedVirtualNodes === 1 &&
+        fallback.activatedInlineGroups === 1 &&
+        fallback.scannedVirtualNodes === 3 &&
+        fallback.scannedInlineGroups === 2 &&
+        fallback.frameScrollTop === 222 &&
+        fallback.targetScrollTop === 222,
+      JSON.stringify(fallback),
+    );
+    const publishedTimings = (window as unknown as Record<string, unknown>)
+      .__marivellVisibleFallbackTimings as Record<string, unknown> | undefined;
+    assert(
+      'visible fallback publishes diagnostics',
+      publishedTimings !== undefined &&
+        publishedTimings.fallbackMs >= 0 &&
+        publishedTimings.activatedVirtualNodes === 1,
+      JSON.stringify(publishedTimings),
+    );
+  } finally {
+    for (const unregister of unregisters) {
+      unregister();
+    }
+    editor.destroy();
+    frame.remove();
+    resetActivationControllerForTest();
+    resetInlineMathGroupRegistryForTest();
+    if (previousIntersectionObserver === undefined) {
+      delete globals.IntersectionObserver;
+    } else {
+      globals.IntersectionObserver = previousIntersectionObserver;
+    }
+    if (previousRequestAnimationFrame === undefined) {
+      delete globals.requestAnimationFrame;
+    } else {
+      globals.requestAnimationFrame = previousRequestAnimationFrame;
+    }
+    if (previousCancelAnimationFrame === undefined) {
+      delete globals.cancelAnimationFrame;
+    } else {
+      globals.cancelAnimationFrame = previousCancelAnimationFrame;
+    }
   }
 }
 

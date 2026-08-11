@@ -34,6 +34,12 @@ export interface ScrollAnchorProvider {
   restore(anchor: ScrollAnchorSnapshot): void;
 }
 
+export interface VirtualViewportScanStats {
+  scanned: number;
+  visible: number;
+  activated: number;
+}
+
 export const VIRTUAL_ACTIVATION_BATCH_SIZE = 24;
 const HYDRATION_BATCH_SIZE = 128;
 const IO_HYDRATION_PRIORITY = 10;
@@ -971,17 +977,25 @@ export function forceDeactivateAllVirtualNodes(): number {
   return deactivatedCount;
 }
 
-export function forceActivateViewport(container: HTMLElement, rootMargin = 800): number {
+export function forceActivateViewport(
+  container: HTMLElement,
+  rootMargin = 800,
+  stats?: VirtualViewportScanStats | null,
+  skipAnchorRestore = false,
+): number {
   if (typeof IntersectionObserver === 'undefined') {
     return 0;
   }
-  return withScrollAnchorRestore(() => {
+  const scanAndActivate = (): number => {
     let activatedCount = 0;
     const containerRect = container.getBoundingClientRect();
     const top = containerRect.top - rootMargin;
     const bottom = containerRect.bottom + rootMargin;
 
     for (const registration of Array.from(virtualNodes.values())) {
+      if (stats) {
+        stats.scanned += 1;
+      }
       if (!registration.element.isConnected) {
         continue;
       }
@@ -991,7 +1005,13 @@ export function forceActivateViewport(container: HTMLElement, rootMargin = 800):
         continue;
       }
 
+      if (stats) {
+        stats.visible += 1;
+      }
       if (!registration.active) {
+        if (stats) {
+          stats.activated += 1;
+        }
         forceActivate(registration.id);
       } else {
         registration.activate();
@@ -1000,7 +1020,9 @@ export function forceActivateViewport(container: HTMLElement, rootMargin = 800):
     }
 
     return activatedCount;
-  });
+  };
+
+  return skipAnchorRestore ? scanAndActivate() : withScrollAnchorRestore(scanAndActivate);
 }
 
 export function hydrateVisibleAroundRatio(
