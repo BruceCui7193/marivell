@@ -158,6 +158,11 @@ interface JumpResult {
   hydrateTimings: Record<string, unknown> | null;
   phaseTimings: Record<string, unknown> | null;
   centerDebug: { center: number | null; top: number | null; bottom: number | null; scrollTop: number };
+  templateCacheHits: number;
+  templateCacheMisses: number;
+  templateBytes: number;
+  katexInjectP95Ms: number;
+  katexInjectMaxMs: number;
 }
 
 async function main(): Promise<void> {
@@ -211,6 +216,9 @@ async function main(): Promise<void> {
       const benchmarkWindow = window;
       if (typeof benchmarkWindow.__marivellResetInlineMathActivationMetrics === 'function') {
         benchmarkWindow.__marivellResetInlineMathActivationMetrics();
+      }
+      if (typeof benchmarkWindow.__marivellResetFormulaTemplateCacheStatsForTest === 'function') {
+        benchmarkWindow.__marivellResetFormulaTemplateCacheStatsForTest();
       }
 
       const frameRect = frame.getBoundingClientRect();
@@ -328,6 +336,10 @@ async function main(): Promise<void> {
         !afterTopAnchor.element.isConnected
           ? 99
           : Math.abs(afterTopAnchor.relativeTop - beforeTopAnchor.relativeTop);
+      const templateCacheStats =
+        typeof benchmarkWindow.__marivellGetFormulaTemplateCacheStats === 'function'
+          ? benchmarkWindow.__marivellGetFormulaTemplateCacheStats()
+          : null;
 
       return {
         placeholdersAfter: countInline(),
@@ -344,6 +356,11 @@ async function main(): Promise<void> {
         hydrateTimings: null,
         phaseTimings: null,
         centerDebug: { center: null, top: null, bottom: null, scrollTop: frame.scrollTop },
+        templateCacheHits: templateCacheStats?.hits ?? 0,
+        templateCacheMisses: templateCacheStats?.misses ?? 0,
+        templateBytes: templateCacheStats?.bytes ?? 0,
+        katexInjectP95Ms: templateCacheStats?.injectP95Ms ?? 0,
+        katexInjectMaxMs: templateCacheStats?.injectMaxMs ?? 0,
       };
     })()`;
 
@@ -360,6 +377,13 @@ async function main(): Promise<void> {
           (window as unknown as {
             __marivellDeactivateAllInlineMathGroups?: () => number;
           }).__marivellDeactivateAllInlineMathGroups?.();
+        });
+      }
+      if (name === 'raw-fallback-middle') {
+        await handle.page.evaluate(() => {
+          (window as unknown as {
+            __marivellResetFormulaTemplateCacheForTest?: () => void;
+          }).__marivellResetFormulaTemplateCacheForTest?.();
         });
       }
       const jump = await withTimeout(
@@ -416,6 +440,19 @@ async function main(): Promise<void> {
         result.maxActivationFrameMs <= 4,
         JSON.stringify(result),
       );
+      assert(
+        `scroll to ${name} uses the formula template cache when a placeholder is replaced`,
+        !result.sawRawPlaceholder ||
+          result.templateCacheHits + result.templateCacheMisses > 0,
+        JSON.stringify(result),
+      );
+      if (name === 'raw-fallback-middle') {
+        assert(
+          `raw fallback builds a formula template lazily`,
+          result.templateCacheMisses > 0 && result.templateBytes > 0,
+          JSON.stringify(result),
+        );
+      }
     }
 
     const dragScript = `(async () => {

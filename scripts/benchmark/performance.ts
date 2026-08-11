@@ -560,6 +560,12 @@ async function measureScrollJumpScenario(
   inlineMathViewportKatexReadyMs: number;
   inlineMathViewportKatexMaxFrameMs: number;
   inlineMathViewportKatexCount: number;
+  templateCacheHits: number;
+  templateCacheMisses: number;
+  templateBytes: number;
+  katexInjectP50Ms: number;
+  katexInjectP95Ms: number;
+  katexInjectMaxMs: number;
   timedOut: boolean;
 }> {
   const scenarioName = JSON.stringify(scenario);
@@ -730,6 +736,9 @@ async function measureScrollJumpScenario(
     if (typeof benchmarkWindow.__marivellResetInlineMathActivationMetrics === 'function') {
       benchmarkWindow.__marivellResetInlineMathActivationMetrics();
     }
+    if (typeof benchmarkWindow.__marivellResetFormulaTemplateCacheStatsForTest === 'function') {
+      benchmarkWindow.__marivellResetFormulaTemplateCacheStatsForTest();
+    }
     const start = performance.now();
     if (typeof benchmarkWindow.__marivellResetHydrationSyncForTest === 'function') {
       benchmarkWindow.__marivellResetHydrationSyncForTest();
@@ -899,6 +908,10 @@ async function measureScrollJumpScenario(
       benchmarkWindow.__marivellInlineMathActivationMaxFrameMs ?? 0;
     const instrumentedInlineMathReadyMs =
       benchmarkWindow.__marivellInlineMathActivationReadyMs ?? 0;
+    const templateCacheStats =
+      typeof benchmarkWindow.__marivellGetFormulaTemplateCacheStats === 'function'
+        ? benchmarkWindow.__marivellGetFormulaTemplateCacheStats()
+        : null;
     return {
       jumpReadyMs: performance.now() - start,
       firstFramePlaceholders,
@@ -927,6 +940,12 @@ async function measureScrollJumpScenario(
         inlineMathViewportKatexReadyMs ?? 0,
       inlineMathViewportKatexMaxFrameMs,
       inlineMathViewportKatexCount,
+      templateCacheHits: templateCacheStats?.hits ?? 0,
+      templateCacheMisses: templateCacheStats?.misses ?? 0,
+      templateBytes: templateCacheStats?.bytes ?? 0,
+      katexInjectP50Ms: templateCacheStats?.injectP50Ms ?? 0,
+      katexInjectP95Ms: templateCacheStats?.injectP95Ms ?? 0,
+      katexInjectMaxMs: templateCacheStats?.injectMaxMs ?? 0,
       preDispatchInlinePlaceholders,
       firstInlinePlaceholders,
       afterForceInlinePlaceholders,
@@ -953,6 +972,12 @@ async function measureScrollJumpScenario(
     inlineMathViewportKatexReadyMs: number;
     inlineMathViewportKatexMaxFrameMs: number;
     inlineMathViewportKatexCount: number;
+    templateCacheHits: number;
+    templateCacheMisses: number;
+    templateBytes: number;
+    katexInjectP50Ms: number;
+    katexInjectP95Ms: number;
+    katexInjectMaxMs: number;
     preDispatchInlinePlaceholders: number;
     firstInlinePlaceholders: number;
     afterForceInlinePlaceholders: number;
@@ -1823,6 +1848,12 @@ async function main(): Promise<void> {
       const inlineMathViewportKatexReady: number[] = [];
       const inlineMathViewportKatexMaxFrame: number[] = [];
       const inlineMathViewportKatexCounts: number[] = [];
+      const templateCacheHits: number[] = [];
+      const templateCacheMisses: number[] = [];
+      const templateBytes: number[] = [];
+      const katexInjectP50Ms: number[] = [];
+      const katexInjectP95Ms: number[] = [];
+      const katexInjectMaxMs: number[] = [];
       const scrollJumpScenarios: Array<{ metric: string; scenario: ScrollJumpScenario }> = [
         { metric: 'scroll-jump-bottom', scenario: 'bottom' },
         { metric: 'scroll-jump-middle', scenario: 'middle' },
@@ -1898,6 +1929,36 @@ async function main(): Promise<void> {
               unit: 'ms',
               note: `visible-katex=${jump.value.inlineMathViewportKatexCount}`,
             },
+            {
+              metric: `${jumpScenario.metric}-template-cache-hits`,
+              value: jump.value.templateCacheHits,
+              unit: 'hits',
+            },
+            {
+              metric: `${jumpScenario.metric}-template-cache-misses`,
+              value: jump.value.templateCacheMisses,
+              unit: 'misses',
+            },
+            {
+              metric: `${jumpScenario.metric}-template-bytes`,
+              value: jump.value.templateBytes,
+              unit: 'bytes',
+            },
+            {
+              metric: `${jumpScenario.metric}-katex-inject-p50-ms`,
+              value: round(jump.value.katexInjectP50Ms),
+              unit: 'ms',
+            },
+            {
+              metric: `${jumpScenario.metric}-katex-inject-p95-ms`,
+              value: round(jump.value.katexInjectP95Ms),
+              unit: 'ms',
+            },
+            {
+              metric: `${jumpScenario.metric}-katex-inject-max-ms`,
+              value: round(jump.value.katexInjectMaxMs),
+              unit: 'ms',
+            },
           );
           scrollFirstFrameReady[jumpScenario.metric] = jump.value.firstFrameReady;
           inlineHeightDrifts[jumpScenario.metric] = jump.value.inlineHeightDrift;
@@ -1906,6 +1967,12 @@ async function main(): Promise<void> {
           inlineMathViewportKatexReady.push(jump.value.inlineMathViewportKatexReadyMs);
           inlineMathViewportKatexMaxFrame.push(jump.value.inlineMathViewportKatexMaxFrameMs);
           inlineMathViewportKatexCounts.push(jump.value.inlineMathViewportKatexCount);
+          templateCacheHits.push(jump.value.templateCacheHits);
+          templateCacheMisses.push(jump.value.templateCacheMisses);
+          templateBytes.push(jump.value.templateBytes);
+          katexInjectP50Ms.push(jump.value.katexInjectP50Ms);
+          katexInjectP95Ms.push(jump.value.katexInjectP95Ms);
+          katexInjectMaxMs.push(jump.value.katexInjectMaxMs);
         } else {
           report.push({
             metric: jumpScenario.metric,
@@ -1977,6 +2044,52 @@ async function main(): Promise<void> {
             : 0,
           unit: 'nodes',
           note: `bottom=${inlineMathViewportKatexCounts[0] ?? 'n/a'} middle=${inlineMathViewportKatexCounts[1] ?? 'n/a'} drag=${inlineMathViewportKatexCounts[2] ?? 'n/a'}`,
+        },
+        {
+          metric: 'template-cache-hits',
+          value: templateCacheHits.length > 0
+            ? templateCacheHits.reduce((total, value) => total + value, 0)
+            : 0,
+          unit: 'hits',
+          note: `bottom=${templateCacheHits[0] ?? 'n/a'} middle=${templateCacheHits[1] ?? 'n/a'} drag=${templateCacheHits[2] ?? 'n/a'}`,
+        },
+        {
+          metric: 'template-cache-misses',
+          value: templateCacheMisses.length > 0
+            ? templateCacheMisses.reduce((total, value) => total + value, 0)
+            : 0,
+          unit: 'misses',
+          note: `bottom=${templateCacheMisses[0] ?? 'n/a'} middle=${templateCacheMisses[1] ?? 'n/a'} drag=${templateCacheMisses[2] ?? 'n/a'}`,
+        },
+        {
+          metric: 'template-bytes',
+          value: templateBytes.length > 0 ? Math.max(...templateBytes) : 0,
+          unit: 'bytes',
+          note: `bottom=${templateBytes[0] ?? 'n/a'} middle=${templateBytes[1] ?? 'n/a'} drag=${templateBytes[2] ?? 'n/a'}`,
+        },
+        {
+          metric: 'katex-inject-p50-ms',
+          value: katexInjectP50Ms.length > 0
+            ? round(Math.max(...katexInjectP50Ms))
+            : 0,
+          unit: 'ms',
+          note: `bottom=${round(katexInjectP50Ms[0] ?? 0)} middle=${round(katexInjectP50Ms[1] ?? 0)} drag=${round(katexInjectP50Ms[2] ?? 0)}`,
+        },
+        {
+          metric: 'katex-inject-p95-ms',
+          value: katexInjectP95Ms.length > 0
+            ? round(Math.max(...katexInjectP95Ms))
+            : 0,
+          unit: 'ms',
+          note: `bottom=${round(katexInjectP95Ms[0] ?? 0)} middle=${round(katexInjectP95Ms[1] ?? 0)} drag=${round(katexInjectP95Ms[2] ?? 0)}`,
+        },
+        {
+          metric: 'katex-inject-max-ms',
+          value: katexInjectMaxMs.length > 0
+            ? round(Math.max(...katexInjectMaxMs))
+            : 0,
+          unit: 'ms',
+          note: `bottom=${round(katexInjectMaxMs[0] ?? 0)} middle=${round(katexInjectMaxMs[1] ?? 0)} drag=${round(katexInjectMaxMs[2] ?? 0)}`,
         },
       );
 

@@ -8,6 +8,10 @@ import {
   subscribeNodeHeightCacheSeeded,
 } from '../virtualization/height-cache';
 import {
+  cloneFormulaTemplateContent,
+  recordKatexInjectMs,
+} from '../virtualization/formula-template-cache';
+import {
   getFormulaHeightKey,
   isHeightMeasurementScrollPaused,
   isHeightMeasurementSuspended,
@@ -300,6 +304,14 @@ export const MathInline = Node.create({
             mathLog('rendered:', text, 'children:', html.length);
           }
 
+          const templateClone = cloneFormulaTemplateContent(
+            getFormulaCacheKey(text, display),
+            html,
+          );
+          if (templateClone !== null) {
+            return templateClone;
+          }
+
           const template = document.createElement('template');
           template.innerHTML = html;
           fragment.append(...Array.from(template.content.childNodes));
@@ -315,20 +327,25 @@ export const MathInline = Node.create({
       const renderPreview = (text: string) => {
         if (text === lastRenderedText) return;
         lastRenderedText = text;
-        const display = isBlock ? 'yes' : 'no';
-        const cacheKey = getFormulaCacheKey(text, display);
-        const cachedHtml =
-          getCachedFormulaHtml(text, display) ?? getPreparedInlineFormulaHtml(cacheKey);
-        if (cachedHtml !== null) {
-          const preparedFragment = getPreparedInlineFormulaFragment(cacheKey);
-          if (preparedFragment !== null) {
-            previewDOM.replaceChildren(preparedFragment);
+        const injectStart = performance.now();
+        try {
+          const display = isBlock ? 'yes' : 'no';
+          const cacheKey = getFormulaCacheKey(text, display);
+          const cachedHtml =
+            getCachedFormulaHtml(text, display) ?? getPreparedInlineFormulaHtml(cacheKey);
+          if (cachedHtml !== null) {
+            const preparedFragment = getPreparedInlineFormulaFragment(cacheKey, cachedHtml);
+            if (preparedFragment !== null) {
+              previewDOM.replaceChildren(preparedFragment);
+            } else {
+              previewDOM.innerHTML = cachedHtml;
+            }
           } else {
-            previewDOM.innerHTML = cachedHtml;
+            previewDOM.replaceChildren(buildPreviewFragment(text));
           }
-          return;
+        } finally {
+          recordKatexInjectMs(performance.now() - injectStart);
         }
-        previewDOM.replaceChildren(buildPreviewFragment(text));
       };
 
       const isBlockMathSelected = (): boolean => {

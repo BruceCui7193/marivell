@@ -1,4 +1,8 @@
 import { getCachedFormulaHtml, getFormulaCacheKey } from '../math-render-cache';
+import {
+  cloneFormulaTemplateContent,
+  resetFormulaTemplateCacheForTest,
+} from './formula-template-cache';
 import type { FormulaIndexEntry } from '../markdown.worker';
 import {
   getCachedNodeHeight,
@@ -1263,20 +1267,31 @@ export function getPreparedInlineFormulaHtml(key: string): string | null {
   return preparedFormulaHtml.get(key) ?? null;
 }
 
-export function getPreparedInlineFormulaFragment(key: string): DocumentFragment | null {
+export function getPreparedInlineFormulaFragment(
+  key: string,
+  html?: string | null,
+): DocumentFragment | null {
+  const templateClone = cloneFormulaTemplateContent(
+    key,
+    html ?? preparedFormulaHtml.get(key) ?? null,
+  );
+  if (templateClone !== null) {
+    return templateClone;
+  }
+
   const cached = preparedFormulaFragments.get(key);
   if (cached) {
     preparedFormulaFragments.delete(key);
     preparedFormulaFragments.set(key, cached);
     return cached.cloneNode(true) as DocumentFragment;
   }
-  const html = preparedFormulaHtml.get(key);
-  if (typeof html !== 'string' || !html || typeof document === 'undefined') {
+  const sourceHtml = html ?? preparedFormulaHtml.get(key);
+  if (typeof sourceHtml !== 'string' || !sourceHtml || typeof document === 'undefined') {
     return null;
   }
   try {
     const template = document.createElement('template');
-    template.innerHTML = html;
+    template.innerHTML = sourceHtml;
     const fragment = document.createDocumentFragment();
     fragment.append(...Array.from(template.content.childNodes));
     preparedFormulaFragments.set(key, fragment);
@@ -1559,6 +1574,7 @@ export function getInlineMathHeightPrefetchStatsForTest(): {
 }
 
 export function resetInlineMathGroupRegistryForTest(): void {
+  resetFormulaTemplateCacheForTest();
   preparedFormulaFragments.clear();
   for (const group of Array.from(groups.values())) {
     if (group.paragraph !== null) {

@@ -81,6 +81,11 @@ import {
   getNodeHeightCacheStatsForTest,
 } from '../editor/virtualization/height-cache';
 import {
+  getFormulaTemplateCacheStatsForTest,
+  resetFormulaTemplateCacheForTest,
+  resetFormulaTemplateCacheStatsForTest,
+} from '../editor/virtualization/formula-template-cache';
+import {
   getEditorWidthBucketDiagnostics,
   resetEditorEnvironmentKeyCache,
   setHeightMeasurementScrollPaused,
@@ -1703,6 +1708,12 @@ export default function EditorShell({
         getNodeHeightCacheStatsForTest;
       benchmarkWindow.__marivellGetInlineMathHeightPrefetchStats =
         getInlineMathHeightPrefetchStatsForTest;
+      benchmarkWindow.__marivellGetFormulaTemplateCacheStats =
+        getFormulaTemplateCacheStatsForTest;
+      benchmarkWindow.__marivellResetFormulaTemplateCacheForTest =
+        resetFormulaTemplateCacheForTest;
+      benchmarkWindow.__marivellResetFormulaTemplateCacheStatsForTest =
+        resetFormulaTemplateCacheStatsForTest;
       benchmarkWindow.__marivellFormulaChunkDiagnostics =
         formulaChunkDiagnosticsRef.current;
     }
@@ -2455,9 +2466,11 @@ export default function EditorShell({
       const nextScrollTop = frame.scrollTop;
       const largeBurst = lastScrollBurstWasLarge;
       lastScrollBurstWasLarge = false;
+      const isTopEndpoint = nextScrollTop <= 1;
       const isBottomEndpoint =
         lastKnownMaxScrollTop > 0 &&
         nextScrollTop >= lastKnownMaxScrollTop - 1;
+      const isEndpointScroll = isTopEndpoint || isBottomEndpoint;
       if (hydrationFrame !== null) {
         cancelAnimationFrame(hydrationFrame);
         hydrationFrame = null;
@@ -2466,7 +2479,7 @@ export default function EditorShell({
       if (sourceModeRef.current) {
         return;
       }
-      if (largeBurst) {
+      if (largeBurst || isEndpointScroll) {
         performScrollHydration({
           settle: !isBottomEndpoint,
           drain: true,
