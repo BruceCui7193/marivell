@@ -350,6 +350,28 @@ Stage 3 在干净基线 `2fcdd9c` 上完成了一次独立调查并记录于 `do
 3. 重试离屏 Host 时同时验证 memory、GC、visual→source 不得回归；
 4. 如果仍无法达标，再评估更低层 PM DOM 策略并暂停与用户讨论。
 
+### 2.4.9 Stage 3 后续执行拆分（2026-08-11）
+
+#### 2.4.9.1 Stage 3a：源码模式视觉 Host DOM 降本
+
+离屏 Host 实验显示进入源码模式后视觉 host 子树约 277,916 个节点，远高于初始视觉模式 45,967，这是 mode-switch 仍慢的直接前提。Stage 3a 必须先把源码模式下视觉 host 的 DOM 数压到 100k 以下（以实际可维护基线为准），并记录：
+
+- 源码模式下视觉 host 子树 DOM 分类（p/div/span/pre/img/svg、KaTeX、syntax decoration、contentDOM、placeholder）；
+- 进入源码模式后 DOM 从 45k 增长到 277k 的具体来源；
+- 离屏时不可见公式/预览是否被错误全部激活；
+- 是否可以使用现有 activation/placeholder 机制把离屏视觉 host 的 KaTeX preview、syntax decoration、NodeView 内容降为轻量状态，同时保留 PM contentDOM 和选区/IME/复制粘贴能力。
+
+约束：不卸载普通段落、不把 inlineMath contentDOM 替换为无文本占位、不在 inline 元素上使用 content-visibility/contain:paint、不删除现有硬门禁。
+
+#### 2.4.9.2 Stage 3b：DOM 降本后重试离屏视觉 Host
+
+Stage 3a 达成后，再按 2.4.7 重试离屏 Host。验收仍为 source→visual <1000ms、visual→source <1000ms，并增加：
+
+- 源码模式视觉 host DOM 不重新膨胀；
+- visual→source 不回归；
+- memory/GC 不恶化；
+- 所有 mode-switch/caret/Undo/Redo/marker 测试通过。
+
 ### 2.5 Stage 4：条件性 React NodeView 优化
 
 #### 2.5.1 触发条件
