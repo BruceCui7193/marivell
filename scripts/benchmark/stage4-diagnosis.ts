@@ -301,6 +301,7 @@ async function measureWithObservers(
     const stage4Before = window.__stage4Stats?.snapshot?.() ?? null;
     const mathBefore = window.__stage4MathStats ? { ...window.__stage4MathStats } : null;
     const heightBefore = window.__stage4HeightStats ? { ...window.__stage4HeightStats } : null;
+    const widthBucketBefore = window.__marivellGetEditorWidthBucketDiagnostics?.() ?? null;
     const mutations = { childListAdded: 0, childListRemoved: 0, attributes: 0, characterData: 0 };
     const nodeViewSelectors = '.code-block-node,.image-node,.mermaid-node,.footnote-definition-node,.html-block';
     const nodeViewMutations = {
@@ -373,6 +374,7 @@ async function measureWithObservers(
     const stage4After = window.__stage4Stats?.snapshot?.() ?? null;
     const mathAfter = window.__stage4MathStats ? { ...window.__stage4MathStats } : null;
     const heightAfter = window.__stage4HeightStats ? { ...window.__stage4HeightStats } : null;
+    const widthBucketAfter = window.__marivellGetEditorWidthBucketDiagnostics?.() ?? null;
     const wallMs = performance.now() - start;
     const longTasks = (window.__stage4LongTasks ?? []).slice(longBefore);
     return {
@@ -387,6 +389,16 @@ async function measureWithObservers(
           : null,
         mathStats: mathBefore && mathAfter ? { before: mathBefore, after: mathAfter } : null,
         heightStats: heightBefore && heightAfter ? { before: heightBefore, after: heightAfter } : null,
+        widthBucket: widthBucketBefore && widthBucketAfter
+          ? {
+              before: widthBucketBefore,
+              after: widthBucketAfter,
+              delta: {
+                calls: widthBucketAfter.calls - widthBucketBefore.calls,
+                layoutReads: widthBucketAfter.layoutReads - widthBucketBefore.layoutReads,
+              },
+            }
+          : null,
         nodeViewMutations,
       },
       error,

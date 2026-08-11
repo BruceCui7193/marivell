@@ -15,18 +15,25 @@ export interface FormulaHeightSource {
 const WIDTH_BUCKET_SIZE = 160;
 
 let editorSurfaceCache: HTMLElement | null = null;
+let editorFrameCache: HTMLElement | null = null;
 let editorSurfaceCacheWidth = -1;
 let editorWidthBucketCache: number | null = null;
+let editorWidthBucketCalls = 0;
+let editorWidthBucketLayoutReads = 0;
 
 export function getEditorWidthBucket(element?: HTMLElement | null): number {
+  editorWidthBucketCalls += 1;
   const frame = element?.closest('.editor-frame') as HTMLElement | null;
   if (
     editorSurfaceCache?.isConnected === false ||
-    (frame !== null && editorSurfaceCache?.closest('.editor-frame') !== frame)
+    frame !== editorFrameCache
   ) {
+    editorFrameCache = frame;
     editorSurfaceCache = null;
     editorSurfaceCacheWidth = -1;
     editorWidthBucketCache = null;
+  } else if (editorWidthBucketCache !== null) {
+    return editorWidthBucketCache;
   }
   const editorSurface =
     editorSurfaceCache ??
@@ -48,10 +55,8 @@ export function getEditorWidthBucket(element?: HTMLElement | null): number {
       : 0) ||
     (typeof window !== 'undefined' ? window.innerWidth : 0) ||
     800;
+  editorWidthBucketLayoutReads += 1;
   const bucket = Math.max(1, Math.floor(width / WIDTH_BUCKET_SIZE));
-  if (editorWidthBucketCache !== null && editorSurfaceCacheWidth === width) {
-    return editorWidthBucketCache;
-  }
   editorSurfaceCacheWidth = width;
   editorWidthBucketCache = bucket;
   return bucket;
@@ -65,6 +70,10 @@ export function resetEditorEnvironmentKeyCache(): void {
   cachedEditorThemeKey = null;
   cachedEditorZoomKey = null;
   cachedEditorFontVersionKey = null;
+  editorFrameCache = null;
+  editorSurfaceCache = null;
+  editorSurfaceCacheWidth = -1;
+  editorWidthBucketCache = null;
 }
 
 export function getEditorThemeKey(): string {
@@ -231,6 +240,17 @@ export function setHeightMeasurementSuspended(suspended: boolean): void {
   if (suspended) {
     cancelPendingMeasurements();
   }
+}
+
+export function isHeightMeasurementSuspended(): boolean {
+  return measurementSuspended;
+}
+
+export function getEditorWidthBucketDiagnostics(): { calls: number; layoutReads: number } {
+  return {
+    calls: editorWidthBucketCalls,
+    layoutReads: editorWidthBucketLayoutReads,
+  };
 }
 
 function ensureMeasurementLayer(): HTMLDivElement | null {

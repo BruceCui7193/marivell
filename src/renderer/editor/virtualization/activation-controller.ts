@@ -601,6 +601,9 @@ export function forceDeactivateAllVirtualNodes(): number {
       registration.state = 'placeholder';
       registration.deactivate();
       deactivatedCount += 1;
+    } else if (registration.nodeType === 'inlineMath') {
+      registration.state = 'placeholder';
+      registration.deactivate();
     }
   }
   if (pendingActivations.size === 0 && pendingActivationFrame !== null) {
@@ -698,6 +701,7 @@ export function hydrateTargetRange(
   frame: HTMLElement,
   centerPosition: number,
   radius: number,
+  includeAllVirtualNodes = false,
 ): number {
   virtualNodePositionIndexTestCounters.hydrateTargetRangeCalls += 1;
   if (typeof window !== 'undefined') {
@@ -740,10 +744,11 @@ export function hydrateTargetRange(
       continue;
     }
     if (
-      registration.nodeType === 'image' ||
-      registration.nodeType === 'mermaidBlock' ||
-      registration.nodeType === 'htmlBlock' ||
-      registration.nodeType === 'codeBlock'
+      !includeAllVirtualNodes &&
+      (registration.nodeType === 'image' ||
+        registration.nodeType === 'mermaidBlock' ||
+        registration.nodeType === 'htmlBlock' ||
+        registration.nodeType === 'codeBlock')
     ) {
       continue;
     }

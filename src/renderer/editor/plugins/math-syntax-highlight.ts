@@ -499,8 +499,8 @@ export const MathSyntaxHighlight = Extension.create({
 
           const scheduleViewportUpdate = (): void => {
             viewportScrollEventCount += 1;
-            if (rafId !== null) return;
             pendingViewportScrollTop = ((frame ?? view.dom) as HTMLElement).scrollTop;
+            if (rafId !== null) return;
             rafId = requestAnimationFrame(() => {
               rafId = null;
               viewportRafCount += 1;
@@ -521,9 +521,13 @@ export const MathSyntaxHighlight = Extension.create({
               }
               lastViewportFrom = -1;
               lastViewportTo = -1;
+              if (frame) {
+                pendingViewportScrollTop = frame.scrollTop;
+              }
               const result = updateViewport();
               publishViewportDiagnostics();
               if (result === 'dispatched' || result === 'empty') {
+                pendingViewportScrollTop = null;
                 needsViewportRefreshAfterDocChange = false;
                 return;
               }

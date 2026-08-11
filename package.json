@@ -24,7 +24,7 @@
     "build:dir": "electron-vite build && electron-builder --dir --config electron-builder.config.mjs --publish never",
     "preview": "electron-vite preview",
     "install:linux": "npm run build:linux:dir && bash scripts/install-linux.sh",
-    "test:e2e": "tsx scripts/tests/mode-switch-scroll.e2e.test.ts && tsx scripts/tests/caret-alignment.e2e.test.ts && tsx scripts/tests/inline-math-lazy.e2e.test.ts && tsx scripts/tests/inline-math-scroll.e2e.test.ts && tsx scripts/tests/export-hydrate.e2e.test.ts && tsx scripts/tests/math-layout.e2e.test.ts && tsx scripts/tests/math-syntax-scoped.e2e.test.ts && tsx scripts/tests/visual-host-dom.e2e.test.ts && tsx scripts/tests/mode-switch-incremental.e2e.test.ts"
+    "test:e2e": "tsx scripts/tests/mode-switch-scroll.e2e.test.ts && tsx scripts/tests/caret-alignment.e2e.test.ts && tsx scripts/tests/inline-math-lazy.e2e.test.ts && tsx scripts/tests/inline-math-scroll.e2e.test.ts && tsx scripts/tests/export-hydrate.e2e.test.ts && tsx scripts/tests/math-layout.e2e.test.ts && tsx scripts/tests/math-syntax-scoped.e2e.test.ts && tsx scripts/tests/visual-host-dom.e2e.test.ts && tsx scripts/tests/mode-switch-large.e2e.test.ts && tsx scripts/tests/mode-switch-incremental.e2e.test.ts"
   },
   "dependencies": {
     "@aarkue/tiptap-math-extension": "^1.4.0",

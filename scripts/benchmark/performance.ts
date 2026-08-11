@@ -194,7 +194,14 @@ async function measureModeSwitch(
   targetMode: 'source' | 'visual',
   expectedTextLength: number,
   timeoutMs: number,
-): Promise<{ switchMs: number; timedOut: boolean; note: string }> {
+): Promise<{
+  switchMs: number;
+  timedOut: boolean;
+  note: string;
+  widthBucketCalls?: number;
+  widthBucketLayoutReads?: number;
+  hydrateTargetRangeCalls?: number;
+}> {
   const targetIsSource = targetMode === 'source';
   const script = `(async () => {
     const frame = document.querySelector('.editor-frame');
@@ -202,6 +209,8 @@ async function measureModeSwitch(
       return { switchMs: 0, timedOut: true, note: 'editor frame missing' };
     }
 
+    const widthBucketBefore = window.__marivellGetEditorWidthBucketDiagnostics?.() ?? null;
+    const hydrateBefore = window.__marivellHydrateTargetRangeCalls ?? 0;
     const start = performance.now();
     const currentlySource = frame.classList.contains('is-source');
     if (currentlySource !== ${targetIsSource}) {
@@ -255,10 +264,21 @@ async function measureModeSwitch(
 
       if (loaded) {
         await doubleRaf();
+        const widthBucketAfter = window.__marivellGetEditorWidthBucketDiagnostics?.() ?? null;
         return {
           switchMs: performance.now() - start,
           timedOut: false,
           note: currentIsSource ? 'source-ready' : 'visual-ready',
+          widthBucketCalls:
+            widthBucketBefore && widthBucketAfter
+              ? widthBucketAfter.calls - widthBucketBefore.calls
+              : undefined,
+          widthBucketLayoutReads:
+            widthBucketBefore && widthBucketAfter
+              ? widthBucketAfter.layoutReads - widthBucketBefore.layoutReads
+              : undefined,
+          hydrateTargetRangeCalls:
+            (window.__marivellHydrateTargetRangeCalls ?? 0) - hydrateBefore,
         };
       }
     }
@@ -1467,6 +1487,27 @@ async function main(): Promise<void> {
             unit: 'ms',
             note: switchResult.value.note,
           });
+          if (typeof switchResult.value.widthBucketCalls === 'number') {
+            report.push({
+              metric: `${modeStep.metric}-width-bucket-calls`,
+              value: switchResult.value.widthBucketCalls,
+              unit: 'calls',
+            });
+          }
+          if (typeof switchResult.value.widthBucketLayoutReads === 'number') {
+            report.push({
+              metric: `${modeStep.metric}-width-bucket-layout-reads`,
+              value: switchResult.value.widthBucketLayoutReads,
+              unit: 'reads',
+            });
+          }
+          if (typeof switchResult.value.hydrateTargetRangeCalls === 'number') {
+            report.push({
+              metric: `${modeStep.metric}-hydrate-target-range-calls`,
+              value: switchResult.value.hydrateTargetRangeCalls,
+              unit: 'calls',
+            });
+          }
         } else {
           report.push({
             metric: modeStep.metric,

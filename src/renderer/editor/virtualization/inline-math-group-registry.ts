@@ -11,6 +11,7 @@ import {
 import {
   buildFormulaHeightMeasurementItems,
   getFormulaHeightKey,
+  isHeightMeasurementSuspended,
   measureFormulaHeights,
 } from './height-measurer';
 
@@ -443,6 +444,9 @@ export function syncInlineMathPlaceholderKey(registration: InlineMathRegistratio
 }
 
 function refreshPlaceholderHeights(seededKeys: string[] | null): void {
+  if (isHeightMeasurementSuspended()) {
+    return;
+  }
   if (seededKeys !== null && seededKeys.length > 0) {
     for (const key of seededKeys) {
       const registrations = placeholderRegistrationsByHeightKey.get(key);
@@ -873,6 +877,8 @@ export function deactivateAllInlineMathGroups(): number {
         hadActive = true;
         registration.active = false;
         registration.deactivate();
+      } else if (!registration.destroyed && !registration.active) {
+        registration.preview.remove();
       }
     }
     group.active = false;

@@ -387,6 +387,32 @@ Stage 3a 达成后，再按 2.4.7 重试离屏 Host。验收仍为 source→visu
 `mode-switch-source-to-visual-ms` 为 1,536.3 ms，仍未达到 `<1000ms` 预算。
 代码已回退，失败数据保留；下一阶段需先与用户确认采用更低层 PM DOM 策略或其它布局策略，不再继续硬试当前离屏 Host。
 
+#### 2.4.9.3 Stage 3c：模式切换 layout 读取与长任务降本
+
+Stage 3c 在 `b20e69b` 上继续保留 `display:none`，不再尝试离屏 Host。定位到
+`visual→source` 约 5.9 万次 layout 读取的主要来源是隐藏公式降级时反复读取
+宽度 bucket，以及源码模式隐藏 host 仍保留 7.2k 个公式 preview 元素；
+`source→visual` 的 2.5k 次 rect 读取来自 `forceActivateViewport` 全量扫描。
+
+实现：
+
+- `getEditorWidthBucket` 按 editor frame 缓存并在命中时直接返回，避免每次
+  placeholder 降级都走 `clientWidth`/rect fallback。
+- 源码模式隐藏期间移除 block/inline math 的 preview DOM，保留
+  `.math-node-content`、普通段落与 PM 文本。
+- 切回视觉时改用 PM position index 的 `hydrateTargetRange` +
+  `hydrateInlineMathGroupsAroundPosition`，不再全量读取虚拟节点 rect。
+- 增加 block math height key 缓存，并修复延迟 top-anchor compensation 覆盖
+  新滚动目标的问题。
+
+大文件结果记录在 `docs/performance-benchmark.md`：源码模式视觉 host DOM 从
+39,065 降到 24,573，`visual→source` 从 Stage 3a 的 1,890.7ms 降到
+1,303.0ms，`source→visual` 从 1,563.7ms 降到 1,209.8ms；Stage 4 诊断复测
+为 1,266.8ms / 1,143.7ms。mode-switch 的 width-bucket layout reads 已接近 0，
+硬门禁 `scrollDriftPx=0`、`viewportPlaceholders=0`、`inline-height-drift=0`
+通过。`<1000ms` 软预算仍未稳定达到，但已明显下降；下一阶段若要继续压到
+1000ms 以下，需要更低层 PM DOM 策略或其它布局策略。
+
 ### 2.5 Stage 4：条件性 React NodeView 优化
 
 #### 2.5.1 触发条件
@@ -642,6 +668,7 @@ Stage 4a 已执行，详细数据见 `docs/performance-stage4-diagnosis.md` 与
 - Stage 2b：`90d4bae perf: optimize typing and scroll hot paths with scoped incremental decorations`
 - Stage 3 调查：`cbd8080 docs: record Stage 3 mode-switch investigation`
 - Stage 3 代码：用户已批准离屏视觉 Host，离屏 Host 与测试已实现；官方 benchmark 仍高于 `<1000ms`，且 visual→source 明显回归，代码已回退，失败数据保留在 `docs/performance-benchmark.md`。下一步必须先降低大文档 DOM/布局成本，再重试离屏 Host。
+- Stage 3c：当前工作区实现（未 commit），保留 `display:none`；源码模式视觉 host DOM 降至 24,573，`visual→source`/`source→visual` 相对 Stage 3a 明显下降，硬门禁通过，`<1000ms` 软预算未稳定达到。
 - Stage 4a 诊断：当前 commit `7c5a399`，React NodeView 不是主瓶颈，Stage 4b 不触发；诊断保留在 `docs/performance-stage4-diagnosis.md`。
 - 当前分支：`perf/performance-optimization`
 - Git 要求：每个阶段独立 commit；失败实验保留文档；`perf-report.json` 不提交；发布前是否 push 由用户决定。

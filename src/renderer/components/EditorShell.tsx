@@ -80,6 +80,7 @@ import {
   getNodeHeightCacheSizeForTest,
 } from '../editor/virtualization/height-cache';
 import {
+  getEditorWidthBucketDiagnostics,
   resetEditorEnvironmentKeyCache,
   setHeightMeasurementSuspended,
 } from '../editor/virtualization/height-measurer';
@@ -1615,6 +1616,8 @@ export default function EditorShell({
       benchmarkWindow.__marivellEditor = editor;
       benchmarkWindow.__marivellClearFormulaHtmlCache = clearFormulaHtmlCache;
       benchmarkWindow.__marivellNodeHeightCacheSize = getNodeHeightCacheSizeForTest();
+      benchmarkWindow.__marivellGetEditorWidthBucketDiagnostics =
+        getEditorWidthBucketDiagnostics;
     }
   }, [editor]);
 
@@ -1844,13 +1847,16 @@ export default function EditorShell({
         return;
       }
       try {
+        const stillAtTargetScroll =
+          typeof scrollTopTarget !== 'number' ||
+          Math.abs(frame.scrollTop - scrollTopTarget) < 1;
         const frameRect = frame.getBoundingClientRect();
         const coords = coordsAtPos(currentEditor, anchor.pmPos);
         if (coords) {
           const delta = (coords.top - frameRect.top) - anchor.offsetTop;
           applySurfaceAnchorCompensation(delta);
         }
-        if (typeof scrollTopTarget === 'number') {
+        if (typeof scrollTopTarget === 'number' && stillAtTargetScroll) {
           const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
           const pinnedScrollTop = Math.min(scrollTopTarget, maxScrollTop);
           frame.scrollTop = pinnedScrollTop;
@@ -1865,8 +1871,10 @@ export default function EditorShell({
               return;
             }
             const latestMax = Math.max(frame.scrollHeight - frame.clientHeight, 0);
-            frame.scrollTop = Math.min(scrollTopTarget, latestMax);
-            lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
+            if (Math.abs(frame.scrollTop - scrollTopTarget) < 1) {
+              frame.scrollTop = Math.min(scrollTopTarget, latestMax);
+              lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
+            }
             const latestEditor = editorRef.current;
             if (!latestEditor) {
               return;
@@ -2169,23 +2177,29 @@ export default function EditorShell({
         const activateMs = 0;
 
         const stabilizeScrollHeight = (attempt: number): void => {
+          const userMovedAway =
+            Math.abs(frame.scrollTop - scrollTopBeforeHydrate) >= 1;
           const lostScrollHeight = scrollHeightBeforeHydrate - frame.scrollHeight;
           if (lostScrollHeight > 0 && attempt < 3) {
             const spacer = getOrCreateEditorScrollSpacer(frame);
             const currentSpacerHeight = Number.parseFloat(spacer.style.height) || 0;
             spacer.style.height = `${currentSpacerHeight + lostScrollHeight}px`;
             const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
-            frame.scrollTop = wasAtBottom
-              ? Math.round(maxScrollTop)
-              : Math.min(scrollTopBeforeHydrate, maxScrollTop);
-            lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
+            if (!userMovedAway) {
+              frame.scrollTop = wasAtBottom
+                ? Math.round(maxScrollTop)
+                : Math.min(scrollTopBeforeHydrate, maxScrollTop);
+              lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
+            }
             requestAnimationFrame(() => stabilizeScrollHeight(attempt + 1));
             return;
           }
 
           const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
-          frame.scrollTop = wasAtBottom ? Math.round(maxScrollTop) : Math.min(scrollTopBeforeHydrate, maxScrollTop);
-          lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
+          if (!userMovedAway) {
+            frame.scrollTop = wasAtBottom ? Math.round(maxScrollTop) : Math.min(scrollTopBeforeHydrate, maxScrollTop);
+            lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
+          }
         };
 
         stabilizeScrollHeight(0);
@@ -2955,8 +2969,10 @@ export default function EditorShell({
       coords.top < frameRect.top - 1 ||
       coords.bottom > frameRect.bottom + 1;
 
-    if (sourceCaretMovedRef.current || caretOutside) {
+    if (sourceCaretMovedRef.current) {
       pendingModeSwitchScrollRatioRef.current = null;
+      scrollPosIntoView(editor, selection.from);
+    } else if (pendingModeSwitchScrollRatioRef.current === null && caretOutside) {
       scrollPosIntoView(editor, selection.from);
     }
     sourceCaretMovedRef.current = false;
@@ -2995,10 +3011,51 @@ export default function EditorShell({
     requestMathSyntaxViewportRefresh();
     const frame = editorFrameRef.current;
     if (frame) {
-      forceActivateViewport(frame, 1600);
-      activateInlineMathGroupsInViewport(frame, 1600);
+      let centerPosition: number | null = null;
+      let positionRadius: number | null = null;
+      try {
+        const rect = frame.getBoundingClientRect();
+        const centerX = rect.left + rect.width / 2;
+        const center = posAtCoords(editor, centerX, rect.top + rect.height / 2);
+        const top = posAtCoords(editor, centerX, rect.top + 1);
+        const bottom = posAtCoords(editor, centerX, rect.bottom - 1);
+        if (center && top && bottom && rect.height > 0) {
+          centerPosition = center.pos;
+          positionRadius = Math.max(
+            1,
+            Math.ceil(
+              Math.max(
+                center.pos - top.pos,
+                bottom.pos - center.pos,
+                bottom.pos - top.pos,
+              ),
+            ),
+          );
+        }
+      } catch {
+        // The ratio fallback below is enough for a transient first-frame layout.
+      }
+      if (centerPosition === null || positionRadius === null) {
+        const docSize = editor.state.doc.content.size;
+        const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+        const ratio = maxScrollTop > 0
+          ? Math.min(1, Math.max(0, frame.scrollTop / maxScrollTop))
+          : 0;
+        centerPosition = Math.max(0, Math.min(docSize, Math.round(docSize * ratio)));
+        positionRadius = Math.max(
+          1,
+          Math.ceil(
+            (docSize * frame.clientHeight) / Math.max(frame.scrollHeight, 1),
+          ),
+        );
+      }
+      hydrateTargetRange(frame, centerPosition, positionRadius, true);
+      hydrateInlineMathGroupsAroundPosition(
+        frame,
+        centerPosition,
+        positionRadius,
+      );
     }
-    editor.view.dispatch(editor.state.tr);
   }, [editor, sourceMode]);
 
   useLayoutEffect(() => {
@@ -3639,7 +3696,6 @@ export default function EditorShell({
           externalUpdateRef.current = false;
         }
         pendingVisualSelectionRestoreRef.current = false;
-        pendingModeSwitchScrollRatioRef.current = null;
         lastModeSwitchSourceSelectionRef.current = {
           start: selection.start,
           end: selection.end,

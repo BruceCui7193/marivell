@@ -7,7 +7,10 @@ import {
   getCachedNodeWidth,
   subscribeNodeHeightCacheSeeded,
 } from '../virtualization/height-cache';
-import { getFormulaHeightKey } from '../virtualization/height-measurer';
+import {
+  getFormulaHeightKey,
+  isHeightMeasurementSuspended,
+} from '../virtualization/height-measurer';
 import {
   forceActivate,
   registerVirtualNodeView,
@@ -49,6 +52,9 @@ interface BlockMathPlaceholderView {
 const blockMathPlaceholderViews = new Set<BlockMathPlaceholderView>();
 
 function refreshBlockMathPlaceholderHeights(): void {
+  if (isHeightMeasurementSuspended()) {
+    return;
+  }
   for (const view of blockMathPlaceholderViews) {
     if (!view.dom.classList.contains('math-block-node-placeholder')) {
       continue;
@@ -192,10 +198,20 @@ export const MathInline = Node.create({
       const previewDOM = document.createElement('span');
       previewDOM.className = 'math-node-preview';
       previewDOM.setAttribute('contenteditable', 'false');
+      let blockHeightKeyCache: string | null = null;
+      let blockHeightKeyText: string | null = null;
+      const getCachedBlockMathHeightKey = (): string => {
+        const textKey = `${node.attrs?.display === 'yes' ? 'yes' : 'no'}\u0000${node.textContent}`;
+        if (blockHeightKeyCache === null || blockHeightKeyText !== textKey) {
+          blockHeightKeyCache = getBlockMathHeightKey(node, dom);
+          blockHeightKeyText = textKey;
+        }
+        return blockHeightKeyCache;
+      };
       const placeholderView: BlockMathPlaceholderView = {
         dom,
         preview: previewDOM,
-        getKey: () => getBlockMathHeightKey(node, dom),
+        getKey: getCachedBlockMathHeightKey,
       };
       blockMathPlaceholderViews.add(placeholderView);
 
@@ -209,8 +225,14 @@ export const MathInline = Node.create({
       let inlineHeightKeyText: string | null = null;
       let inlineSizingKey = '';
 
+      const ensurePreviewAttached = (): void => {
+        if (previewDOM.parentNode !== dom) {
+          dom.appendChild(previewDOM);
+        }
+      };
+
       const getBlockPreviewHeight = (): number => {
-        const cachedHeight = getCachedNodeHeight(getBlockMathHeightKey(node, dom));
+        const cachedHeight = getCachedNodeHeight(getCachedBlockMathHeightKey());
         return cachedHeight ?? BLOCK_MATH_DEFAULT_HEIGHT;
       };
 
@@ -218,6 +240,13 @@ export const MathInline = Node.create({
         blockPreviewActive = false;
         lastRenderedText = null;
         dom.classList.add('math-block-node-placeholder');
+        if (isHeightMeasurementSuspended()) {
+          previewDOM.replaceChildren();
+          previewDOM.remove();
+          return;
+        }
+        ensurePreviewAttached();
+        previewDOM.style.display = '';
         const blockPreviewHeight = getBlockPreviewHeight();
         previewDOM.style.boxSizing = 'border-box';
         previewDOM.style.overflow = 'hidden';
@@ -326,9 +355,11 @@ export const MathInline = Node.create({
       };
 
       const activateBlockPreview = (): void => {
-        const cachedHeight = getCachedNodeHeight(getBlockMathHeightKey(node, dom));
+        const cachedHeight = getCachedNodeHeight(getCachedBlockMathHeightKey());
         dom.classList.remove('math-block-node-placeholder');
         blockPreviewActive = true;
+        ensurePreviewAttached();
+        previewDOM.style.display = '';
         renderPreview(node.textContent);
         const activeHeight = cachedHeight ?? BLOCK_MATH_DEFAULT_HEIGHT;
         previewDOM.style.boxSizing = 'border-box';
@@ -418,10 +449,17 @@ export const MathInline = Node.create({
         inlinePreviewActive = false;
         lastRenderedText = null;
         dom.classList.add('math-inline-node--placeholder');
+        if (isHeightMeasurementSuspended()) {
+          previewDOM.replaceChildren();
+          previewDOM.remove();
+          return;
+        }
         if (inlineRegistration) {
           syncInlineMathPlaceholderKey(inlineRegistration);
         }
+        ensurePreviewAttached();
         previewDOM.replaceChildren();
+        previewDOM.style.display = 'inline-block';
         const hint = document.createElement('span');
         hint.className = 'math-inline-placeholder-hint';
         hint.textContent = `$${node.textContent}$`;
@@ -435,8 +473,10 @@ export const MathInline = Node.create({
         if (inlineRegistration) {
           syncInlineMathPlaceholderKey(inlineRegistration);
         }
+        ensurePreviewAttached();
         renderPreview(node.textContent);
         resetInlineActiveSizing();
+        previewDOM.style.display = 'inline-block';
         const cachedHtml = getCachedFormulaHtml(node.textContent, 'no');
         const inlineHeightKey = getInlineHeightKey();
         if (cachedHtml && getCachedNodeHeight(inlineHeightKey) === null) {
@@ -506,7 +546,7 @@ export const MathInline = Node.create({
           {
             nodeType: 'inlineMath',
             contentHash: () => `${node.attrs.display}:${node.textContent}`,
-            heightKey: () => getBlockMathHeightKey(node, dom),
+            heightKey: getCachedBlockMathHeightKey,
             getPosition: () => {
               try {
                 return getPos?.() ?? null;

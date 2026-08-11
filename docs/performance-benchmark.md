@@ -916,3 +916,64 @@ layout/parse and mode-switch work remain the dominant costs.
 Scroll hydration on a separate un-instrumented run: `maxHydrateWorkMs=839.9`,
 first hydrate `centerMs=265.1 / anchorMs=76.1 / hydrateMs=425.4`,
 `inlineMathActivationReadyMs=0.5`, and no React NodeView work.
+
+## Stage 3c Mode-Switch Layout Reads and Long-Task Reduction (2026-08-11)
+
+Stage 3c ran from commit `b20e69b` and kept the Stage 3a `display:none`
+hidden visual host. The root causes found for the large-file mode-switch cost:
+
+1. `getEditorWidthBucket()` recomputed the width bucket on every hidden math
+   NodeView call even after the bucket was cached. In the first Stage 3c
+   benchmark run this still generated about 52,405 calls during
+   `visual→source`, and the earlier Stage 4a instrumentation counted 59,713
+   layout reads on the same path.
+2. Source→visual reactivation called `forceActivateViewport()`, which read a
+   `getBoundingClientRect()` for every registered virtual node (about 2.5k
+   reads on the large file).
+3. The source-mode hidden host still retained 7.2k formula preview elements
+   even after Stage 3a removed KaTeX and syntax spans.
+4. Delayed top-anchor compensation could restore a stale scroll target after
+   the user or benchmark had already scrolled elsewhere.
+
+Implementation changes:
+
+- Cache the editor width bucket by editor frame and return it before any
+  `clientWidth`/`getBoundingClientRect` fallback read; reset the cache with the
+  other environment keys.
+- While height measurement is suspended, hidden math placeholders remove their
+  preview DOM instead of keeping empty preview elements; contentDOM and all PM
+  text stay intact.
+- Source→visual reactivation now uses the PM position index through
+  `hydrateTargetRange(..., includeAllVirtualNodes=true)` and
+  `hydrateInlineMathGroupsAroundPosition()` instead of the full virtual-node
+  rect scan.
+- Block math height keys are cached per NodeView, removing the repeated
+  `refreshBlockMathPlaceholderHeights` key reconstruction.
+- Top-anchor compensation and scroll stabilization no longer override a scroll
+  position that has moved away from their captured target.
+- MathSyntaxHighlight keeps the latest scrollTop even when a viewport rAF is
+  already queued, preventing a stale scroll restore.
+
+Latest large-file benchmark (`/home/crh/下载/barfoot_ser24/barfoot_ser24.md`):
+
+| Metric | Stage 3a baseline | Stage 3c run |
+| --- | ---: | ---: |
+| mode-switch-visual-to-source-ms | 1,890.7 | 1,303.0 |
+| mode-switch-source-to-visual-ms | 1,563.7 | 1,209.8 |
+| visual-to-source width-bucket-calls | n/a (Stage 4a layout reads 59,713) | 1 |
+| source-to-visual width-bucket-calls | n/a | 5 |
+| mode-switch-source-host-dom-count | 39,065 | 24,573 |
+| mode-switch-source-host-text-node-count | 23,729 | 16,483 |
+| mode-switch-source-host-katex-count | 0 | 0 |
+| mode-switch-source-host-syntax-span-count | 0 | 0 |
+| scrollDriftPx | 0 | 0 |
+| viewportPlaceholders | 0 | 0 |
+| inline-height-drift | 0 | bottom=0 middle=0 drag=0 |
+| inlineMathActivateReadyMs | 2.7 | 2.2 |
+
+Stage 4 diagnosis on the same final code measured `visual→source` at
+1,266.8 ms with 897 ms long-task total, and `source→visual` at 1,143.7 ms with
+744 ms long-task total. Width-bucket calls and layout reads in both mode-switch
+paths are effectively zero. The `<1000ms` soft mode-switch budget is not met on
+every run yet, but both paths improved substantially from the Stage 3a
+benchmark and the hard drift/placeholder gates pass.
