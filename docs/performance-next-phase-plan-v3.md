@@ -585,6 +585,14 @@ D8 先采 3 轮基线，D9 与 U5 强制为 hard gate。
 - U1 依赖 U3.0 坐标引擎和模型驱动剪贴板。
 - D9 依赖全部默认轨阶段。
 
+### 8.3 Electron 性能任务独占约束
+
+- 同一时间只允许一个 Electron 性能任务（`npm run benchmark` 或会启动 Electron 的 PoC）运行。
+- 大文件 benchmark 必须独占运行；主代理调度前必须确认所有子代理已结束、无残留 marivell Electron 进程。
+- 任何性能数据必须在无并发测量任务的环境下采集；数据报告必须注明运行时的独占/非独占状态。
+- 子代理禁止并行启动多个 Electron 性能测量，也禁止自己嵌套子代理。
+- `scripts/benchmark/exclusive-run.ts` 提供可复用的锁与残留进程预检；会启动 Electron 的性能脚本应复用该机制，而不是绕过锁启动第二个 Electron。
+
 ## 9. Git 与版本管理
 
 - Default Track 每个 Stage 独立 commit。

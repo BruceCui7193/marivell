@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright-core';
+import { acquireExclusiveBenchmarkRun } from './exclusive-run';
 
 const execFileAsync = promisify(execFile);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -2075,7 +2076,7 @@ function formatEntries(entries: ReportEntry[]): string {
     .join('\n');
 }
 
-async function main(): Promise<void> {
+async function runBenchmark(): Promise<void> {
   const markdownPath = process.argv[2] || defaultMarkdownPath;
   if (!fs.existsSync(markdownPath)) {
     throw new Error(`benchmark markdown not found: ${markdownPath}`);
@@ -2106,6 +2107,12 @@ async function main(): Promise<void> {
   const report: ReportEntry[] = [];
   const perfBudget = readPerfBudget();
   const spawnWallStart = handle.spawnedAt;
+  report.push({
+    metric: 'exclusive-run',
+    value: true,
+    unit: 'bool',
+    note: 'lock acquired and no marivell temp Electron/POC process detected',
+  });
 
   try {
     const ready = await withTimeout(
@@ -2964,6 +2971,15 @@ async function main(): Promise<void> {
   const output = { metrics: report, budget: budgetComparison };
   fs.writeFileSync(outputPath, JSON.stringify(output, null, 2), 'utf8');
   console.log(`\nSaved machine-readable report to ${outputPath}`);
+}
+
+async function main(): Promise<void> {
+  const exclusiveRun = await acquireExclusiveBenchmarkRun();
+  try {
+    await runBenchmark();
+  } finally {
+    await exclusiveRun.release();
+  }
 }
 
 void main().catch((error) => {
