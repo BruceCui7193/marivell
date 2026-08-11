@@ -56,11 +56,16 @@ import {
 import {
   forceHydrateAll,
   forceActivateViewport,
+  forceDeactivateAllVirtualNodes,
   hydrateTargetRange,
   resumeScrollAnchorProvider,
   setScrollAnchorProvider,
   suspendScrollAnchorProvider,
 } from '../editor/virtualization/activation-controller';
+import {
+  clearMathSyntaxDecorations,
+  requestMathSyntaxViewportRefresh,
+} from '../editor/plugins/math-syntax-highlight';
 import {
   coordsAtPos,
   forceActivateAtCoords,
@@ -74,7 +79,10 @@ import {
   clearNodeHeightCache,
   getNodeHeightCacheSizeForTest,
 } from '../editor/virtualization/height-cache';
-import { resetEditorEnvironmentKeyCache } from '../editor/virtualization/height-measurer';
+import {
+  resetEditorEnvironmentKeyCache,
+  setHeightMeasurementSuspended,
+} from '../editor/virtualization/height-measurer';
 import {
   clearFormulaHtmlCache,
   getCachedFormulaHtml,
@@ -84,6 +92,7 @@ import {
 import {
   activateInlineMathGroupsInViewport,
   countInlineMathPlaceholdersInPositionRange,
+  deactivateAllInlineMathGroups,
   hydrateInlineMathGroupsAroundPosition,
   prepareInlineMathForFormulaHtml,
   setInlineMathPrefetchRequester,
@@ -764,6 +773,8 @@ const EditorViewport = memo(function EditorViewport({
       {searchPanel}
       <div
         ref={editorHostRef}
+        className="editor-host"
+        data-mode={sourceMode ? 'source' : 'visual'}
         onContextMenu={onVisualContextMenu}
         style={
           sourceMode
@@ -952,6 +963,7 @@ export default function EditorShell({
   const pendingVisualMetaSyncRef = useRef<number | null>(null);
   const pendingVisualDocumentSyncRef = useRef<IdleHandle | null>(null);
   const pendingModeSwitchScrollRatioRef = useRef<number | null>(null);
+  const pendingModeSwitchRatioRestoredRef = useRef(false);
   const pendingSourceSelectionRef = useRef<SourceSearchMatch | null>(null);
   const skipSourceDraftExternalSyncRef = useRef(false);
   const suppressSourceSelectRef = useRef(false);
@@ -2129,6 +2141,7 @@ export default function EditorShell({
         const centerMs = performance.now() - centerStart;
         const centerPos = centerAndRadius?.pos ?? cheapCenterAndRadius?.pos ?? null;
         const viewportRadius = centerAndRadius?.radius ?? cheapCenterAndRadius?.radius ?? 1;
+        let activatedInlineGroups = 0;
         const anchorStart = performance.now();
         const anchorBeforeHydrate = shouldHydrate
           ? (anchorCaptureCount += 1, captureHydrationAnchor(currentEditor))
@@ -2136,10 +2149,9 @@ export default function EditorShell({
         const anchorMs = performance.now() - anchorStart;
         const hydrateStart = performance.now();
         let activatedBlocks = 0;
-        let activatedInlineGroups = 0;
         if (shouldHydrate && centerPos !== null) {
           activatedBlocks = hydrateTargetRange(frame, centerPos, viewportRadius);
-          activatedInlineGroups = hydrateInlineMathGroupsAroundPosition(
+          activatedInlineGroups += hydrateInlineMathGroupsAroundPosition(
             frame,
             centerPos,
             viewportRadius,
@@ -2965,7 +2977,29 @@ export default function EditorShell({
     const maxScrollTop = Math.max(target.scrollHeight - target.clientHeight, 0);
     target.scrollTop = maxScrollTop * ratio;
     pendingModeSwitchScrollRatioRef.current = null;
+    pendingModeSwitchRatioRestoredRef.current = true;
   }, [document.markdown, sourceDraft, sourceMode]);
+
+  useLayoutEffect(() => {
+    if (!editor) {
+      return;
+    }
+    if (sourceMode) {
+      setHeightMeasurementSuspended(true);
+      clearMathSyntaxDecorations(editor.view);
+      forceDeactivateAllVirtualNodes();
+      deactivateAllInlineMathGroups();
+      return;
+    }
+    setHeightMeasurementSuspended(false);
+    requestMathSyntaxViewportRefresh();
+    const frame = editorFrameRef.current;
+    if (frame) {
+      forceActivateViewport(frame, 1600);
+      activateInlineMathGroupsInViewport(frame, 1600);
+    }
+    editor.view.dispatch(editor.state.tr);
+  }, [editor, sourceMode]);
 
   useLayoutEffect(() => {
     if (sourceMode || !editor || !pendingVisualSelectionRestoreRef.current) {
@@ -2994,6 +3028,12 @@ export default function EditorShell({
         source: sourceSelection,
         visual: lastVisualSelectionRef.current,
       };
+    }
+    if (pendingModeSwitchRatioRestoredRef.current) {
+      pendingModeSwitchRatioRestoredRef.current = false;
+      sourceCaretMovedRef.current = false;
+      externalUpdateRef.current = false;
+      return;
     }
     scrollPosIntoView(editor, editor.state.selection.from);
     sourceCaretMovedRef.current = false;
@@ -3446,6 +3486,7 @@ export default function EditorShell({
   );
 
   const toggleSourceModePreservingViewport = useCallback(() => {
+    pendingModeSwitchRatioRestoredRef.current = false;
     captureModeSwitchScrollRatio();
     const currentSourceMode = sourceModeRef.current;
     if (currentSourceMode && editor) {

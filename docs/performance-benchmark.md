@@ -775,6 +775,48 @@ run because it did not meet the mode-switch budget and regressed
 visual-to-source. The DOM/layout/memory numbers above are kept as a failed
 experiment record for the next Stage 3 attempt.
 
+## Stage 3a Visual Host DOM Reduction Result (2026-08-11)
+
+Stage 3a kept the source-mode visual host on `display: none`, but stopped
+keeping invisible formula previews, KaTeX HTML, syntax decoration, and the
+formula height-measurement layer as full DOM in the hidden host. On entering
+source mode the app clears math syntax decoration, deactivates block and
+inline math NodeViews to existing lightweight placeholder state, and suspends
+hidden height measurement. On returning to visual mode it reactivates the
+viewport (including block NodeViews) and resumes measurement.
+
+Latest large-file run after Stage 3a, same file and machine as the failed
+offscreen run:
+
+| Metric | Stage 3 offscreen run | Stage 3a run |
+| --- | ---: | ---: |
+| mode-switch-visual-to-source-ms | 3,148.3 ms | 1,890.7 ms |
+| mode-switch-source-to-visual-ms | 3,226.1 ms | 1,563.7 ms |
+| mode-switch-no-reparse | true | true |
+| mode-switch-source-host-dom-count | 277,916 nodes | 39,065 nodes |
+| mode-switch-source-host-text-node-count | n/a | 23,729 nodes |
+| mode-switch-source-host-layout-active | true | false (`display: none`) |
+| mode-switch-source-host-katex-count | n/a | 0 |
+| mode-switch-source-host-syntax-span-count | n/a | 0 |
+| mode-switch-source-host-inline-active | n/a | 0 |
+| mode-switch-source-host-inline-placeholder | n/a | 4,864 |
+| scrollDriftPx | 0 | 0 |
+| viewportPlaceholders | 0 | 0 |
+| inline-height-drift | 0 | 0 |
+| inline-math-activate-ready-ms | 3.5 ms | 2.7 ms |
+
+Source-mode `.editor-host` class snapshot: `p=6,383`, `div=2,618`,
+`span=26,875`, `img=108`, `math-node-content=7,246`,
+`math-node-preview=7,246`, `math-inline-node=4,864`,
+`math-block-node=2,382`, all math previews in placeholder state, and zero
+KaTeX/syntax decoration nodes.
+
+Status: Stage 3a DOM reduction is complete and covered by the new
+`scripts/tests/visual-host-dom.e2e.test.ts`. The mode-switch latency is still
+above the Stage 3 budget, so Stage 3b should retry the offscreen host only
+after confirming the reduced host does not regress memory/GC or mode-switch
+behavior.
+
 ## Stage 2b Typing and Scroll Soft-Metric Optimization (2026-08-11)
 
 Stage 2b targeted ordinary typing, MathSyntaxHighlight viewport updates, and

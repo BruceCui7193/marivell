@@ -1176,6 +1176,123 @@ async function measureDomSnapshot(page: Page): Promise<ReportEntry[]> {
   ];
 }
 
+async function measureVisualHostDomSnapshot(page: Page): Promise<ReportEntry[]> {
+  const snapshot = await page.evaluate(() => {
+    const host = document.querySelector<HTMLElement>('.editor-host');
+    if (!host) {
+      return null;
+    }
+    const all = Array.from(host.querySelectorAll('*'));
+    const tags: Record<string, number> = {};
+    const classes: Record<string, number> = {};
+    const classNames = [
+      'math-inline-node',
+      'math-block-node',
+      'math-node-content',
+      'math-node-preview',
+      'math-inline-node--placeholder',
+      'math-block-node-placeholder',
+      'katex',
+      'math-syntax-cmd',
+      'math-syntax-brace',
+      'math-syntax-special',
+      'math-syntax-comment',
+      'image-node',
+      'code-block-node',
+      'mermaid-node',
+    ];
+    for (const element of all) {
+      const tag = element.tagName.toLowerCase();
+      tags[tag] = (tags[tag] ?? 0) + 1;
+      for (const className of classNames) {
+        if (element.classList.contains(className)) {
+          classes[className] = (classes[className] ?? 0) + 1;
+        }
+      }
+    }
+    let textNodes = 0;
+    const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      textNodes += 1;
+    }
+    const inlineMathNodes = Array.from(host.querySelectorAll<HTMLElement>('.math-inline-node'));
+    const inlinePreviewActive = inlineMathNodes.filter((node) =>
+      node.querySelector(':scope > .math-node-preview .katex'),
+    ).length;
+    const inlinePreviewPlaceholder = inlineMathNodes.filter((node) =>
+      node.classList.contains('math-inline-node--placeholder'),
+    ).length;
+    return {
+      elements: all.length,
+      textNodes,
+      tags,
+      classes,
+      inlineMathNodeCount: inlineMathNodes.length,
+      inlinePreviewActive,
+      inlinePreviewPlaceholder,
+      katexCount: host.querySelectorAll('.math-node-preview .katex').length,
+      syntaxCount: host.querySelectorAll('[class*="math-syntax-"]').length,
+      display: host.style.display,
+      visibility: host.style.visibility,
+    };
+  });
+  if (!snapshot) {
+    return [
+      {
+        metric: 'mode-switch-source-host-dom-count',
+        value: 'missing',
+        unit: 'nodes',
+        note: '.editor-host not found',
+      },
+    ];
+  }
+  return [
+    {
+      metric: 'mode-switch-source-host-dom-count',
+      value: snapshot.elements,
+      unit: 'nodes',
+      note: `.editor-host subtree; display=${snapshot.display}; visibility=${snapshot.visibility}`,
+    },
+    {
+      metric: 'mode-switch-source-host-text-node-count',
+      value: snapshot.textNodes,
+      unit: 'nodes',
+    },
+    {
+      metric: 'mode-switch-source-host-tags',
+      value: JSON.stringify(snapshot.tags),
+      unit: 'json',
+    },
+    {
+      metric: 'mode-switch-source-host-classes',
+      value: JSON.stringify(snapshot.classes),
+      unit: 'json',
+    },
+    {
+      metric: 'mode-switch-source-host-inline-active',
+      value: snapshot.inlinePreviewActive,
+      unit: 'nodes',
+      note: '.math-inline-node with rendered .katex',
+    },
+    {
+      metric: 'mode-switch-source-host-inline-placeholder',
+      value: snapshot.inlinePreviewPlaceholder,
+      unit: 'nodes',
+      note: '.math-inline-node--placeholder',
+    },
+    {
+      metric: 'mode-switch-source-host-katex-count',
+      value: snapshot.katexCount,
+      unit: 'nodes',
+    },
+    {
+      metric: 'mode-switch-source-host-syntax-span-count',
+      value: snapshot.syntaxCount,
+      unit: 'nodes',
+    },
+  ];
+}
+
 function round(value: number): number {
   return Math.round(value * 10) / 10;
 }
@@ -1357,6 +1474,10 @@ async function main(): Promise<void> {
             unit: `${modeSwitchTimeoutMs}ms`,
             note: switchResult.ok ? switchResult.value.note : undefined,
           });
+        }
+
+        if (modeStep.targetMode === 'source') {
+          report.push(...(await measureVisualHostDomSnapshot(handle.page)));
         }
 
         if (modeStep.targetMode === 'visual') {

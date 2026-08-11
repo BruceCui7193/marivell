@@ -591,7 +591,31 @@ export function forceHydrateAll(): number {
   });
 }
 
+export function forceDeactivateAllVirtualNodes(): number {
+  let deactivatedCount = 0;
+  for (const [id, registration] of Array.from(virtualNodes)) {
+    cancelPendingActivation(id);
+    registration.forceActive = false;
+    if (registration.active) {
+      registration.active = false;
+      registration.state = 'placeholder';
+      registration.deactivate();
+      deactivatedCount += 1;
+    }
+  }
+  if (pendingActivations.size === 0 && pendingActivationFrame !== null) {
+    if (typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(pendingActivationFrame);
+    }
+    pendingActivationFrame = null;
+  }
+  return deactivatedCount;
+}
+
 export function forceActivateViewport(container: HTMLElement, rootMargin = 800): number {
+  if (typeof IntersectionObserver === 'undefined') {
+    return 0;
+  }
   return withScrollAnchorRestore(() => {
     let activatedCount = 0;
     const containerRect = container.getBoundingClientRect();

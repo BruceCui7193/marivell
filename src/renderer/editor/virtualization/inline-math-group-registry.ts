@@ -864,6 +864,26 @@ function activateGroup(group: InlineMathGroup): void {
   }
 }
 
+export function deactivateAllInlineMathGroups(): number {
+  let deactivatedCount = 0;
+  for (const group of Array.from(groups.values())) {
+    let hadActive = false;
+    for (const registration of group.formulas) {
+      if (!registration.destroyed && registration.active) {
+        hadActive = true;
+        registration.active = false;
+        registration.deactivate();
+      }
+    }
+    group.active = false;
+    group.requested = false;
+    if (hadActive) {
+      deactivatedCount += 1;
+    }
+  }
+  return deactivatedCount;
+}
+
 type GroupViewportRelation = 'visible' | 'prefetch' | 'none';
 
 function getGroupViewportRelation(

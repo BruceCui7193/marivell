@@ -196,6 +196,7 @@ let pendingReadChunk: PendingReadChunk | null = null;
 let measurementLayer: HTMLDivElement | null = null;
 let writeTimer: ReturnType<typeof setTimeout> | null = null;
 let readTimer: ReturnType<typeof setTimeout> | null = null;
+let measurementSuspended = false;
 
 function cleanupMeasurementLayer(): void {
   if (!measurementLayer) {
@@ -206,8 +207,37 @@ function cleanupMeasurementLayer(): void {
   measurementLayer = null;
 }
 
+function cancelPendingMeasurements(): void {
+  if (writeTimer !== null) {
+    clearTimeout(writeTimer);
+    writeTimer = null;
+  }
+  if (readTimer !== null) {
+    clearTimeout(readTimer);
+    readTimer = null;
+  }
+  const queued = writeQueue.splice(0);
+  const pending = pendingReadChunk;
+  pendingReadChunk = null;
+  cleanupMeasurementLayer();
+  for (const chunk of queued) {
+    chunk.resolve({});
+  }
+  pending?.resolve({});
+}
+
+export function setHeightMeasurementSuspended(suspended: boolean): void {
+  measurementSuspended = suspended;
+  if (suspended) {
+    cancelPendingMeasurements();
+  }
+}
+
 function ensureMeasurementLayer(): HTMLDivElement | null {
   try {
+    if (measurementSuspended) {
+      return null;
+    }
     if (measurementLayer?.isConnected) {
       return measurementLayer;
     }
@@ -293,6 +323,13 @@ function readNodeHeight(element: HTMLElement): number {
 }
 
 function scheduleWrite(): void {
+  if (measurementSuspended) {
+    const queued = writeQueue.splice(0);
+    for (const chunk of queued) {
+      chunk.resolve({});
+    }
+    return;
+  }
   if (writeTimer !== null || writeQueue.length === 0) {
     return;
   }
@@ -427,6 +464,7 @@ export function measureFormulaHeights(
 }
 
 export function resetHeightMeasurerForTest(): void {
+  measurementSuspended = false;
   resetEditorEnvironmentKeyCache();
   editorSurfaceCache = null;
   editorSurfaceCacheWidth = -1;

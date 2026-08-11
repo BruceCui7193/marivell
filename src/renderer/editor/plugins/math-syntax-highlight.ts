@@ -52,6 +52,10 @@ export function requestMathSyntaxViewportRefresh(): void {
   needsViewportRefreshAfterDocChange = true;
 }
 
+export function clearMathSyntaxDecorations(view: EditorView): void {
+  view.dispatch(view.state.tr.setMeta(mathSyntaxKey, { type: 'clear' }));
+}
+
 function clampDocPos(doc: ProseMirrorNode, pos: number): number {
   return Math.max(0, Math.min(doc.content.size, pos));
 }
@@ -349,7 +353,23 @@ export const MathSyntaxHighlight = Extension.create({
           apply(tr, oldState, _oldState, newState): MathSyntaxState {
             const meta = tr.getMeta(mathSyntaxKey) as
               | { type: 'viewport'; range: MathSyntaxRange }
+              | { type: 'clear' }
               | undefined;
+
+            if (meta?.type === 'clear') {
+              lastViewportFrom = -1;
+              lastViewportTo = -1;
+              pendingViewportScrollTop = null;
+              const next: MathSyntaxState = {
+                set: DecorationSet.empty,
+                ranges: [],
+                fullBuildCount: oldState.fullBuildCount,
+                localBuildCount: oldState.localBuildCount,
+                spanCount: 0,
+              };
+              setDiagnostics(next);
+              return next;
+            }
 
             if (meta?.type === 'viewport') {
               lastViewportFrom = meta.range.from;

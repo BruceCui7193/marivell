@@ -363,6 +363,15 @@ Stage 3 在干净基线 `2fcdd9c` 上完成了一次独立调查并记录于 `do
 
 约束：不卸载普通段落、不把 inlineMath contentDOM 替换为无文本占位、不在 inline 元素上使用 content-visibility/contain:paint、不删除现有硬门禁。
 
+2026-08-11 已执行 Stage 3a。实现保留 `display:none` 的隐藏 Host，在源码模式进入时：
+
+- 清空视觉 Host 的 `.math-syntax-*` decoration；
+- 通过现有 activation/placeholder 机制把 block/inline math NodeView 降为轻量 placeholder；
+- 暂停隐藏状态下的公式高度测量层，避免 `.height-measurer` 内的 KaTeX 样本继续占用视觉 Host；
+- 切回视觉时按视口重新激活公式，并保留 PM contentDOM、普通段落、selection/IME/复制粘贴路径。
+
+大文件实测（`barfoot_ser24.md`，本 commit 工作区）源码模式 `.editor-host` 子树为 39,065 个元素、23,729 个文本节点，`.katex` 与 `.math-syntax-*` 均为 0，完整数据记录于 `docs/performance-benchmark.md`。
+
 #### 2.4.9.2 Stage 3b：DOM 降本后重试离屏视觉 Host
 
 Stage 3a 达成后，再按 2.4.7 重试离屏 Host。验收仍为 source→visual <1000ms、visual→source <1000ms，并增加：

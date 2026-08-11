@@ -451,8 +451,7 @@ export const MathInline = Node.create({
       };
 
       const deactivateInlinePreview = (): void => {
-        // Once an inline formula has KaTeX in the DOM it stays active to avoid
-        // a placeholder/KaTeX flicker when scrolling back to it.
+        showInlinePlaceholder();
       };
 
       const isInlineEditing = (): boolean => {
