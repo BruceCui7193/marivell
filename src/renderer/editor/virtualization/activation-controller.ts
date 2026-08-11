@@ -1147,19 +1147,13 @@ export function hydrateTargetRange(
 
   const batchLimit = drainQueue ? Number.MAX_SAFE_INTEGER : HYDRATION_BATCH_SIZE;
   while (activatedCount < batchLimit) {
-    const task = hydrationQueue.next(centerPosition);
+    const task = drainQueue
+      ? hydrationQueue.nextWithin(drainRadius, centerPosition)
+      : hydrationQueue.next(centerPosition);
     if (task === null) {
       break;
     }
-    if (Math.abs(task.position - centerPosition) > drainRadius) {
-      if (drainQueue) {
-        hydrationQueue.enqueue({
-          id: task.id,
-          position: task.position,
-          priority: task.priority,
-        });
-        break;
-      }
+    if (!drainQueue && Math.abs(task.position - centerPosition) > drainRadius) {
       continue;
     }
     drainedTasks += 1;

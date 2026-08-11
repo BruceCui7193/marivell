@@ -17,6 +17,7 @@ interface InternalHydrationTask extends HydrationTask {
 export interface HydrationQueue {
   enqueue(task: HydrationTaskInput): void;
   next(centerPosition?: number): HydrationTask | null;
+  nextWithin(maxDistance: number, centerPosition?: number): HydrationTask | null;
   evictOutside(maxDistance: number, centerPosition?: number): number;
   clear(): void;
   readonly size: number;
@@ -28,6 +29,48 @@ export function createHydrationQueue(): HydrationQueue {
 
   const distanceTo = (task: InternalHydrationTask, centerPosition: number): number =>
     Math.abs(task.position - centerPosition);
+
+  const takeBest = (
+    centerPosition: number,
+    maxDistance: number | null,
+  ): HydrationTask | null => {
+    let best: InternalHydrationTask | null = null;
+
+    for (const task of tasks.values()) {
+      if (maxDistance !== null && distanceTo(task, centerPosition) > maxDistance) {
+        continue;
+      }
+      if (best === null) {
+        best = task;
+        continue;
+      }
+
+      const bestDistance = distanceTo(best, centerPosition);
+      const taskDistance = distanceTo(task, centerPosition);
+      const betterDistance = taskDistance < bestDistance;
+      const betterPriority =
+        taskDistance === bestDistance && task.priority > best.priority;
+      const newerTask =
+        taskDistance === bestDistance &&
+        task.priority === best.priority &&
+        task.sequence > best.sequence;
+
+      if (betterDistance || betterPriority || newerTask) {
+        best = task;
+      }
+    }
+
+    if (best === null) {
+      return null;
+    }
+
+    tasks.delete(best.id);
+    return {
+      id: best.id,
+      position: best.position,
+      priority: best.priority,
+    };
+  };
 
   return {
     enqueue(task) {
@@ -45,39 +88,11 @@ export function createHydrationQueue(): HydrationQueue {
     },
 
     next(centerPosition = 0) {
-      let best: InternalHydrationTask | null = null;
+      return takeBest(centerPosition, null);
+    },
 
-      for (const task of tasks.values()) {
-        if (best === null) {
-          best = task;
-          continue;
-        }
-
-        const bestDistance = distanceTo(best, centerPosition);
-        const taskDistance = distanceTo(task, centerPosition);
-        const betterDistance = taskDistance < bestDistance;
-        const betterPriority =
-          taskDistance === bestDistance && task.priority > best.priority;
-        const newerTask =
-          taskDistance === bestDistance &&
-          task.priority === best.priority &&
-          task.sequence > best.sequence;
-
-        if (betterDistance || betterPriority || newerTask) {
-          best = task;
-        }
-      }
-
-      if (best === null) {
-        return null;
-      }
-
-      tasks.delete(best.id);
-      return {
-        id: best.id,
-        position: best.position,
-        priority: best.priority,
-      };
+    nextWithin(maxDistance, centerPosition = 0) {
+      return takeBest(centerPosition, maxDistance);
     },
 
     evictOutside(maxDistance, centerPosition = 0) {

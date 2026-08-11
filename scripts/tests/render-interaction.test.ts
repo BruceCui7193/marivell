@@ -2016,6 +2016,107 @@ for (const chain of chainSources) {
 }
 
 // ---------------------------------------------------------------------------
+// Virtual node hydration: drainQueue consumes every in-radius task
+// ---------------------------------------------------------------------------
+{
+  const globals = globalThis as Record<string, unknown>;
+  const previousIntersectionObserver = globals.IntersectionObserver;
+  const previousRaf = globals.requestAnimationFrame;
+  const previousCancelRaf = globals.cancelAnimationFrame;
+  const rafCallbacks: FrameRequestCallback[] = [];
+  class FakeIntersectionObserver {
+    private callback: IntersectionObserverCallback;
+    readonly root: Element | null = null;
+
+    constructor(callback: IntersectionObserverCallback) {
+      this.callback = callback;
+    }
+
+    observe(target: Element): void {
+      const entry = {
+        target,
+        isIntersecting: true,
+      } as unknown as IntersectionObserverEntry;
+      this.callback([entry], this as unknown as IntersectionObserver);
+    }
+
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+  globals.IntersectionObserver = FakeIntersectionObserver as unknown as typeof IntersectionObserver;
+  globals.requestAnimationFrame = (callback: FrameRequestCallback) => {
+    rafCallbacks.push(callback);
+    return rafCallbacks.length;
+  };
+  globals.cancelAnimationFrame = () => {};
+  resetActivationControllerForTest();
+
+  const unregisters: Array<() => void> = [];
+  const activated: string[] = [];
+  try {
+    const register = (id: string, position: number): void => {
+      const element = document.createElement('div');
+      element.className = 'hydrate-drain-test';
+      unregisters.push(
+        registerVirtualNodeView(id, element, {
+          activate: () => activated.push(id),
+          deactivate: () => {},
+        }, { getPosition: () => position }),
+      );
+    };
+    register('hydrate-drain-far', -80);
+    register('hydrate-drain-near', 40);
+
+    // The IO callbacks above seed the queue with a far task followed by a near task.
+    hydrateTargetRange(
+      document.createElement('div'),
+      0,
+      50,
+      false,
+      true,
+    );
+
+    const timings = (globalThis.window as unknown as Record<string, unknown>)
+      .__marivellPhase4HydrateTimings as
+      | {
+          queueSizeBefore: number;
+          queueSizeAfter: number;
+          drainedTasks: number;
+          drainRadius: number;
+        }
+      | null;
+
+    assert(
+      'hydrateTargetRange drainQueue activates all in-radius queued nodes',
+      activated.includes('hydrate-drain-near') &&
+        !activated.includes('hydrate-drain-far'),
+      `activated=${JSON.stringify(activated)}`,
+    );
+    assert(
+      'hydrateTargetRange drainQueue leaves out-of-radius nodes queued',
+      timings !== null &&
+        timings.queueSizeBefore === 2 &&
+        timings.drainedTasks === 1 &&
+        timings.queueSizeAfter === 1 &&
+        timings.drainRadius === 75,
+      JSON.stringify(timings),
+    );
+  } finally {
+    for (const unregister of unregisters) {
+      unregister();
+    }
+    resetActivationControllerForTest();
+    if (previousIntersectionObserver === undefined) {
+      delete globals.IntersectionObserver;
+    } else {
+      globals.IntersectionObserver = previousIntersectionObserver;
+    }
+    globals.requestAnimationFrame = previousRaf;
+    globals.cancelAnimationFrame = previousCancelRaf;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Inline math registry: interaction must not full-traverse/rebuild (Phase C)
 // ---------------------------------------------------------------------------
 {

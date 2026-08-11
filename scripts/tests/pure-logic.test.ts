@@ -510,6 +510,63 @@ section('hydration queue');
 
 {
   const queue = createHydrationQueue();
+  queue.enqueue({ id: 'far', position: 500 });
+  queue.enqueue({ id: 'closest', position: 10 });
+  queue.enqueue({ id: 'inside-old', position: 30, priority: 0 });
+  queue.enqueue({ id: 'inside-new', position: 30, priority: 0 });
+  queue.enqueue({ id: 'inside-high', position: 30, priority: 1 });
+  queue.enqueue({ id: 'near', position: 90 });
+  queue.enqueue({ id: 'edge', position: 100 });
+  assertEqual(
+    'hydration queue nextWithin drains closest in-radius task first',
+    queue.nextWithin(100, 0)?.id,
+    'closest',
+  );
+  assertEqual(
+    'hydration queue nextWithin drains same-distance priority before LIFO',
+    queue.nextWithin(100, 0)?.id,
+    'inside-high',
+  );
+  assertEqual(
+    'hydration queue nextWithin drains same-distance LIFO after priority',
+    queue.nextWithin(100, 0)?.id,
+    'inside-new',
+  );
+  assertEqual(
+    'hydration queue nextWithin drains older same-distance task after LIFO',
+    queue.nextWithin(100, 0)?.id,
+    'inside-old',
+  );
+  assertEqual(
+    'hydration queue nextWithin drains remaining nearer in-radius task',
+    queue.nextWithin(100, 0)?.id,
+    'near',
+  );
+  assertEqual(
+    'hydration queue nextWithin includes exact radius boundary',
+    queue.nextWithin(100, 0)?.id,
+    'edge',
+  );
+  assertEqual(
+    'hydration queue nextWithin returns null after in-radius tasks are drained',
+    queue.nextWithin(100, 0)?.id ?? null,
+    null,
+  );
+  assertEqual(
+    'hydration queue nextWithin leaves out-of-radius tasks queued',
+    queue.size,
+    1,
+  );
+  assertEqual(
+    'hydration queue nextWithin preserves out-of-radius task order',
+    queue.next(0)?.id,
+    'far',
+  );
+  assertEqual('hydration queue empties after outside task is consumed', queue.size, 0);
+}
+
+{
+  const queue = createHydrationQueue();
   queue.enqueue({ id: 'inside', position: 20 });
   queue.enqueue({ id: 'edge', position: 50 });
   queue.enqueue({ id: 'outside', position: 100 });
