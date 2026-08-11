@@ -1845,6 +1845,14 @@ export default function EditorShell({
     let hydrationSettleTimer: ReturnType<typeof setTimeout> | null = null;
     let heightPauseTimer: ReturnType<typeof setTimeout> | null = null;
     let lastSyncHydrateScrollTop = frame.scrollTop;
+    let lastRecordedScrollTop = frame.scrollTop;
+    let lastScrollBurstWasLarge = false;
+    let deferInlineMathHydrationForNextScroll = false;
+    let lastKnownMaxScrollTop = Math.max(
+      frame.scrollHeight - frame.clientHeight,
+      0,
+    );
+    let scrollHydrationAnchorForFallback: { pmPos: number; offsetTop: number } | null = null;
     let surfaceCompensationY = scrollAnchorCompensationRef.current;
     let scrollEventCount = 0;
     let hydrateRunCount = 0;
@@ -2005,7 +2013,9 @@ export default function EditorShell({
         if (typeof anchor.scrollTop === 'number') {
           const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
           const snappedScrollTop = Math.max(0, Math.min(anchor.scrollTop, maxScrollTop));
-          frame.scrollTop = snappedScrollTop;
+          if (Math.abs(frame.scrollTop - snappedScrollTop) >= 0.01) {
+            frame.scrollTop = snappedScrollTop;
+          }
           lastAnchorRestoredScrollTopRef.current = snappedScrollTop;
         }
       },
@@ -2049,6 +2059,13 @@ export default function EditorShell({
     (window as unknown as Record<string, unknown>).__marivellResetHydrationSyncForTest = () => {
       lastSyncHydrateScrollTop = 0;
     };
+    (window as unknown as Record<string, unknown>).__marivellSetDeferInlineMathHydrationForNextScroll = (
+      value: boolean,
+    ) => {
+      deferInlineMathHydrationForNextScroll = value;
+    };
+    (window as unknown as Record<string, unknown>).__marivellDeactivateAllInlineMathGroups =
+      deactivateAllInlineMathGroups;
     (window as unknown as Record<string, unknown>).__marivellResetScrollAnchorCompensation = () => {
       surfaceCompensationY = 0;
       scrollAnchorCompensationRef.current = 0;
@@ -2207,6 +2224,49 @@ export default function EditorShell({
       }
     };
 
+    const runSettleFallbackScan = (): void => {
+      const currentEditor = editorRef.current;
+      if (!currentEditor || sourceModeRef.current || hydrationInProgress) {
+        return;
+      }
+      const centerAndRadius = getCheapViewportCenterAndRadius();
+      if (!centerAndRadius) {
+        return;
+      }
+      const radius = Math.max(1, Math.ceil(centerAndRadius.radius * 2));
+      hydrateTargetRange(frame, centerAndRadius.pos, radius, false, true);
+      if (!deferInlineMathHydrationForNextScroll) {
+        hydrateInlineMathGroupsAroundPosition(
+          frame,
+          centerAndRadius.pos,
+          radius,
+        );
+      }
+
+      const anchor =
+        scrollHydrationAnchorForFallback ??
+        captureHydrationAnchor(currentEditor);
+      if (anchor === null) {
+        return;
+      }
+      try {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const frameRect = frame.getBoundingClientRect();
+          const coords = coordsAtPos(currentEditor, anchor.pmPos);
+          if (!coords) {
+            break;
+          }
+          const delta = (coords.top - frameRect.top) - anchor.offsetTop;
+          if (Math.abs(delta) < 0.5) {
+            break;
+          }
+          applySurfaceAnchorCompensation(delta);
+        }
+      } catch {
+        // Anchor compensation is best-effort when PM layout is transient.
+      }
+    };
+
     const runScrollHydration = (options?: { settle?: boolean; drain?: boolean }): void => {
       hydrationFrame = null;
       const currentEditor = editorRef.current;
@@ -2243,6 +2303,7 @@ export default function EditorShell({
       const anchorBeforeHydrate = shouldHydrate
         ? (anchorCaptureCount += 1, captureHydrationAnchor(currentEditor))
         : null;
+      scrollHydrationAnchorForFallback = anchorBeforeHydrate;
       const anchorMs = performance.now() - anchorStart;
       const hydrateStart = performance.now();
       let activatedBlocks = 0;
@@ -2254,11 +2315,13 @@ export default function EditorShell({
           false,
           options?.drain === true,
         );
-        activatedInlineGroups += hydrateInlineMathGroupsAroundPosition(
-          frame,
-          centerPos,
-          viewportRadius,
-        );
+        if (!deferInlineMathHydrationForNextScroll) {
+          activatedInlineGroups += hydrateInlineMathGroupsAroundPosition(
+            frame,
+            centerPos,
+            viewportRadius,
+          );
+        }
         lastSyncHydrateScrollTop = frame.scrollTop;
       }
       const inlineGroupDiagnostics = (window as unknown as Record<string, unknown>)
@@ -2268,6 +2331,10 @@ export default function EditorShell({
       const hydrateMs = performance.now() - hydrateStart;
       const wasAtBottom = isAtBottomNow;
       keepAtBottomRef.current = wasAtBottom;
+      lastKnownMaxScrollTop = Math.max(
+        frame.scrollHeight - frame.clientHeight,
+        0,
+      );
       const posAtCoordsMs = 0;
       const activateMs = 0;
 
@@ -2285,7 +2352,9 @@ export default function EditorShell({
           if (surface) {
             surface.style.marginTop = '';
           }
-          frame.scrollTop = 0;
+          if (frame.scrollTop !== 0) {
+            frame.scrollTop = 0;
+          }
         } else if (wasAtBottom) {
           scrollAnchorCompensationRef.current = 0;
           surfaceCompensationY = 0;
@@ -2296,15 +2365,34 @@ export default function EditorShell({
           if (surface) {
             surface.style.marginTop = '';
           }
-          frame.scrollTop = Math.round(maxScrollTop);
+          const bottomScrollTop = Math.round(maxScrollTop);
+          if (Math.abs(frame.scrollTop - bottomScrollTop) >= 0.01) {
+            frame.scrollTop = bottomScrollTop;
+          }
         } else if (anchorBeforeHydrate !== null) {
           surfaceCompensationY = scrollAnchorCompensationRef.current;
-          frame.scrollTop = Math.max(0, Math.min(scrollTopBeforeHydrate, maxScrollTop));
+          const pinnedScrollTop = Math.max(
+            0,
+            Math.min(scrollTopBeforeHydrate, maxScrollTop),
+          );
+          if (Math.abs(frame.scrollTop - pinnedScrollTop) >= 0.01) {
+            frame.scrollTop = pinnedScrollTop;
+          }
           try {
-            const frameRect = frame.getBoundingClientRect();
-            const coords = coordsAtPos(currentEditor, anchorBeforeHydrate.pmPos);
-            if (coords) {
-              const delta = (coords.top - frameRect.top) - anchorBeforeHydrate.offsetTop;
+            for (let attempt = 0; attempt < 3; attempt += 1) {
+              const frameRect = frame.getBoundingClientRect();
+              const coords = coordsAtPos(
+                currentEditor,
+                anchorBeforeHydrate.pmPos,
+              );
+              if (!coords) {
+                break;
+              }
+              const delta =
+                (coords.top - frameRect.top) - anchorBeforeHydrate.offsetTop;
+              if (Math.abs(delta) < 0.5) {
+                break;
+              }
               applySurfaceAnchorCompensation(delta);
             }
           } catch {
@@ -2363,9 +2451,45 @@ export default function EditorShell({
       });
     };
 
+    const hydrateScrollEnd = (): void => {
+      const nextScrollTop = frame.scrollTop;
+      const largeBurst = lastScrollBurstWasLarge;
+      lastScrollBurstWasLarge = false;
+      const isBottomEndpoint =
+        lastKnownMaxScrollTop > 0 &&
+        nextScrollTop >= lastKnownMaxScrollTop - 1;
+      if (hydrationFrame !== null) {
+        cancelAnimationFrame(hydrationFrame);
+        hydrationFrame = null;
+      }
+      clearHydrationSettleTimer();
+      if (sourceModeRef.current) {
+        return;
+      }
+      if (largeBurst) {
+        performScrollHydration({
+          settle: !isBottomEndpoint,
+          drain: true,
+        });
+        runSettleFallbackScan();
+        deferInlineMathHydrationForNextScroll = false;
+        return;
+      }
+      hydrationSettleTimer = setTimeout(() => {
+        hydrationSettleTimer = null;
+        if (hydrationFrame === null && !sourceModeRef.current) {
+          deferInlineMathHydrationForNextScroll = false;
+          performScrollHydration({ settle: true, drain: true });
+          runSettleFallbackScan();
+        }
+      }, 300);
+    };
+
     const hydrateScrollTarget = () => {
       scrollEventCount += 1;
       const nextScrollTop = frame.scrollTop;
+      const previousScrollTop = lastRecordedScrollTop;
+      lastRecordedScrollTop = nextScrollTop;
       setHeightMeasurementScrollPaused(true);
       if (heightPauseTimer !== null) {
         clearTimeout(heightPauseTimer);
@@ -2379,23 +2503,31 @@ export default function EditorShell({
         return;
       }
 
-      const scrollDelta = Math.abs(nextScrollTop - lastSyncHydrateScrollTop);
-      const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
-      const isEndpointScroll = nextScrollTop <= 1 || nextScrollTop >= maxScrollTop - 1;
-      if (scrollDelta >= 1000 || isEndpointScroll) {
+      const burstDelta = Math.abs(nextScrollTop - previousScrollTop);
+      const isEndpointScroll =
+        nextScrollTop <= 1 ||
+        (lastKnownMaxScrollTop > 0 &&
+          nextScrollTop >= lastKnownMaxScrollTop - 1);
+      lastScrollBurstWasLarge = burstDelta >= 1000 || isEndpointScroll;
+      if (burstDelta >= 1000 || isEndpointScroll) {
         scheduleHydrationFrame();
-      } else if (hydrationSettleTimer === null) {
+      } else {
+        clearHydrationSettleTimer();
         hydrationSettleTimer = setTimeout(() => {
           hydrationSettleTimer = null;
           if (hydrationFrame === null && !sourceModeRef.current) {
+            deferInlineMathHydrationForNextScroll = false;
             performScrollHydration({ settle: true });
+            runSettleFallbackScan();
           }
         }, 300);
       }
     };
     frame.addEventListener('scroll', hydrateScrollTarget, { passive: true });
+    frame.addEventListener('scrollend', hydrateScrollEnd, { passive: true });
     return () => {
       frame.removeEventListener('scroll', hydrateScrollTarget);
+      frame.removeEventListener('scrollend', hydrateScrollEnd);
       clearHydrationSettleTimer();
       if (heightPauseTimer !== null) {
         clearTimeout(heightPauseTimer);

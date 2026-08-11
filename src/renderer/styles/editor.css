@@ -1522,6 +1522,12 @@
   padding: 28px 0 40px;
 }
 
+.editor-frame:not(.is-source) .editor-host {
+  transform: translateZ(0);
+  will-change: transform;
+  contain: layout style;
+}
+
 .editor-frame.is-source {
   padding: 0;
 }

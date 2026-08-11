@@ -442,10 +442,38 @@ async function measureVisualScroll(page: Page): Promise<{
   avgFrameMs: number | null;
   maxFrameMs: number | null;
   scrollHeight: number;
+  scrollFrameDomMutations: number[];
+  scrollFrameRectReads: number[];
+  scrollFramePosAtCoordsCalls: number[];
 }> {
   const script = `(async () => {
     const frame = document.querySelector('.editor-frame');
     if (!frame) throw new Error('editor frame missing');
+    const originalGetBoundingClientRect = Element.prototype.getBoundingClientRect;
+    const benchmarkEditor = window.__marivellEditor;
+    const originalPosAtCoords = benchmarkEditor?.view?.posAtCoords;
+    let rectReads = 0;
+    let posAtCoordsCalls = 0;
+    Element.prototype.getBoundingClientRect = function (...args) {
+      rectReads += 1;
+      return originalGetBoundingClientRect.apply(this, args);
+    };
+    if (benchmarkEditor?.view && typeof originalPosAtCoords === 'function') {
+      benchmarkEditor.view.posAtCoords = function (...args) {
+        posAtCoordsCalls += 1;
+        return originalPosAtCoords.apply(this, args);
+      };
+    }
+    let currentFrameMutations = 0;
+    const mutationObserver = new MutationObserver((records) => {
+      currentFrameMutations += records.length;
+    });
+    mutationObserver.observe(frame, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      characterData: true,
+    });
     const start = performance.now();
     let eventAt = null;
     const onScroll = () => {
@@ -458,8 +486,14 @@ async function measureVisualScroll(page: Page): Promise<{
     const scrollResponseMs = eventAt === null ? null : eventAt - start;
 
     const deltas = [];
+    const scrollFrameDomMutations = [];
+    const scrollFrameRectReads = [];
+    const scrollFramePosAtCoordsCalls = [];
     let previous = performance.now();
     for (let index = 0; index < 20; index += 1) {
+      const mutationsBefore = currentFrameMutations;
+      const rectReadsBefore = rectReads;
+      const posAtCoordsBefore = posAtCoordsCalls;
       frame.scrollTop = Math.min(
         frame.scrollHeight,
         frame.scrollTop + frame.clientHeight * 0.2,
@@ -467,21 +501,35 @@ async function measureVisualScroll(page: Page): Promise<{
       await new Promise((resolve) => requestAnimationFrame(resolve));
       const now = performance.now();
       deltas.push(now - previous);
+      scrollFrameDomMutations.push(currentFrameMutations - mutationsBefore);
+      scrollFrameRectReads.push(rectReads - rectReadsBefore);
+      scrollFramePosAtCoordsCalls.push(posAtCoordsCalls - posAtCoordsBefore);
       previous = now;
     }
 
+    mutationObserver.disconnect();
+    Element.prototype.getBoundingClientRect = originalGetBoundingClientRect;
+    if (
+      benchmarkEditor?.view &&
+      typeof originalPosAtCoords === 'function'
+    ) {
+      benchmarkEditor.view.posAtCoords = originalPosAtCoords;
+    }
     const avgFrameMs = deltas.length > 0
       ? deltas.reduce((sum, delta) => sum + delta, 0) / deltas.length
       : null;
     const maxFrameMs = deltas.length > 0 ? Math.max(...deltas) : null;
-    return { scrollResponseMs, avgFrameMs, maxFrameMs, scrollHeight: frame.scrollHeight };
+    return {
+      scrollResponseMs,
+      avgFrameMs,
+      maxFrameMs,
+      scrollHeight: frame.scrollHeight,
+      scrollFrameDomMutations,
+      scrollFrameRectReads,
+      scrollFramePosAtCoordsCalls,
+    };
   })()`;
-  return page.evaluate(script) as Promise<{
-    scrollResponseMs: number | null;
-    avgFrameMs: number | null;
-    maxFrameMs: number | null;
-    scrollHeight: number;
-  }>;
+  return page.evaluate(script) as ReturnType<typeof measureVisualScroll>;
 }
 
 type ScrollJumpScenario = 'bottom' | 'middle' | 'drag';
@@ -1742,6 +1790,31 @@ async function main(): Promise<void> {
             }
           : { metric: 'scroll-max-frame', value: 'timeout', unit: `${interactionTimeoutMs}ms` },
       );
+
+      if (scroll.ok) {
+        const sum = (values: number[]): number =>
+          values.reduce((total, value) => total + value, 0);
+        report.push(
+          {
+            metric: 'scroll-frame-dom-mutations',
+            value: sum(scroll.value.scrollFrameDomMutations),
+            unit: 'mutations',
+            note: `per-frame=${JSON.stringify(scroll.value.scrollFrameDomMutations)}`,
+          },
+          {
+            metric: 'scroll-frame-rect-reads',
+            value: sum(scroll.value.scrollFrameRectReads),
+            unit: 'reads',
+            note: `per-frame=${JSON.stringify(scroll.value.scrollFrameRectReads)}`,
+          },
+          {
+            metric: 'scroll-frame-posatcoords',
+            value: sum(scroll.value.scrollFramePosAtCoordsCalls),
+            unit: 'calls',
+            note: `per-frame=${JSON.stringify(scroll.value.scrollFramePosAtCoordsCalls)}`,
+          },
+        );
+      }
 
       const scrollFirstFrameReady: Record<string, boolean> = {};
       const inlineHeightDrifts: Record<string, number | 'n/a'> = {};

@@ -48,7 +48,6 @@ let viewportDispatchCount = 0;
 let viewportSkippedCount = 0;
 let needsViewportRefreshAfterDocChange = false;
 let lastViewportUpdateAt = 0;
-const VIEWPORT_UPDATE_MIN_INTERVAL_MS = 33;
 
 export function requestMathSyntaxViewportRefresh(): void {
   needsViewportRefreshAfterDocChange = true;
@@ -499,45 +498,104 @@ export const MathSyntaxHighlight = Extension.create({
           let frame: HTMLElement | null = null;
           let rafId: number | null = null;
           let refreshFrame: number | null = null;
-          let viewportUpdateTimer: number | null = null;
+          let viewportSettleTimer: number | null = null;
+          let lastRecordedScrollTop: number | null = null;
+          let lastKnownMaxScrollTop: number | null = null;
+
+          const getScrollFrame = (): HTMLElement =>
+            (frame ?? view.dom) as HTMLElement;
 
           const syncFrame = (): void => {
             const next = (view.dom.closest('.editor-frame') ?? view.dom) as HTMLElement;
             if (next !== frame) {
               if (frame) {
-                frame.removeEventListener('scroll', scheduleViewportUpdate);
-                frame.removeEventListener('scrollend', scheduleViewportUpdate);
+                frame.removeEventListener('scroll', handleScroll);
+                frame.removeEventListener('scrollend', handleScrollEnd);
               }
               frame = next;
-              frame?.addEventListener('scroll', scheduleViewportUpdate, { passive: true });
-              frame?.addEventListener('scrollend', scheduleViewportUpdate, { passive: true });
+              frame?.addEventListener('scroll', handleScroll, { passive: true });
+              frame?.addEventListener('scrollend', handleScrollEnd, { passive: true });
             }
           };
 
-          const scheduleViewportUpdate = (): void => {
-            viewportScrollEventCount += 1;
-            pendingViewportScrollTop = ((frame ?? view.dom) as HTMLElement).scrollTop;
-            if (rafId !== null) return;
+          const clearViewportSettleTimer = (): void => {
+            if (viewportSettleTimer !== null) {
+              window.clearTimeout(viewportSettleTimer);
+              viewportSettleTimer = null;
+            }
+          };
+
+          const runViewportUpdate = (): ViewportUpdateResult => {
+            if (!frame || frame.classList.contains('is-source')) {
+              return 'retry';
+            }
+            const scrollFrame = getScrollFrame();
+            lastKnownMaxScrollTop = Math.max(
+              scrollFrame.scrollHeight - scrollFrame.clientHeight,
+              0,
+            );
+            const result = updateViewport();
+            publishViewportDiagnostics();
+            return result;
+          };
+
+          const scheduleViewportSettle = (): void => {
+            if (viewportSettleTimer !== null) {
+              window.clearTimeout(viewportSettleTimer);
+            }
+            viewportSettleTimer = window.setTimeout(() => {
+              viewportSettleTimer = null;
+              if (!view.isDestroyed && rafId === null) {
+                runViewportUpdate();
+              }
+            }, 300);
+          };
+
+          const scheduleImmediateViewportUpdate = (): void => {
+            clearViewportSettleTimer();
+            if (rafId !== null) {
+              return;
+            }
             rafId = requestAnimationFrame(() => {
               rafId = null;
               viewportRafCount += 1;
               if (!view.isDestroyed) {
-                const now = performance.now();
-                if (now - lastViewportUpdateAt >= VIEWPORT_UPDATE_MIN_INTERVAL_MS) {
-                  updateViewport();
-                } else if (viewportUpdateTimer === null) {
-                  viewportUpdateTimer = window.setTimeout(() => {
-                    viewportUpdateTimer = null;
-                    if (!view.isDestroyed && rafId === null) {
-                      updateViewport();
-                    }
-                    publishViewportDiagnostics();
-                  }, VIEWPORT_UPDATE_MIN_INTERVAL_MS);
-                }
+                runViewportUpdate();
+              } else {
+                publishViewportDiagnostics();
               }
-              publishViewportDiagnostics();
             });
-            syncFrame();
+          };
+
+          const handleScroll = (): void => {
+            const scrollFrame = getScrollFrame();
+            const nextScrollTop = scrollFrame.scrollTop;
+            viewportScrollEventCount += 1;
+            publishViewportDiagnostics();
+            pendingViewportScrollTop = nextScrollTop;
+            const delta =
+              lastRecordedScrollTop === null
+                ? 0
+                : Math.abs(nextScrollTop - lastRecordedScrollTop);
+            const isEndpoint =
+              nextScrollTop <= 1 ||
+              (lastKnownMaxScrollTop !== null &&
+                nextScrollTop >= lastKnownMaxScrollTop - 1);
+            if (delta >= 1000 || isEndpoint) {
+              scheduleImmediateViewportUpdate();
+            } else {
+              scheduleViewportSettle();
+            }
+            lastRecordedScrollTop = nextScrollTop;
+          };
+
+          const handleScrollEnd = (): void => {
+            clearViewportSettleTimer();
+            if (rafId !== null) {
+              cancelAnimationFrame(rafId);
+              rafId = null;
+            }
+            scheduleViewportSettle();
           };
 
           const refreshViewportAfterDocChange = (): void => {
@@ -554,8 +612,7 @@ export const MathSyntaxHighlight = Extension.create({
               if (frame) {
                 pendingViewportScrollTop = frame.scrollTop;
               }
-              const result = updateViewport();
-              publishViewportDiagnostics();
+              const result = runViewportUpdate();
               if (result === 'dispatched' || result === 'empty') {
                 pendingViewportScrollTop = null;
                 needsViewportRefreshAfterDocChange = false;
@@ -629,9 +686,9 @@ export const MathSyntaxHighlight = Extension.create({
           };
 
           syncFrame();
-          pendingViewportScrollTop = ((frame ?? view.dom) as HTMLElement).scrollTop;
+          pendingViewportScrollTop = getScrollFrame().scrollTop;
           refreshViewportAfterDocChange();
-          window.addEventListener('resize', scheduleViewportUpdate, { passive: true });
+          window.addEventListener('resize', scheduleImmediateViewportUpdate, { passive: true });
 
           return {
             update() {
@@ -643,19 +700,16 @@ export const MathSyntaxHighlight = Extension.create({
             destroy() {
               needsViewportRefreshAfterDocChange = false;
               if (rafId !== null) cancelAnimationFrame(rafId);
-              if (viewportUpdateTimer !== null) {
-                window.clearTimeout(viewportUpdateTimer);
-                viewportUpdateTimer = null;
-              }
+              clearViewportSettleTimer();
               if (refreshFrame !== null) {
                 cancelAnimationFrame(refreshFrame);
                 refreshFrame = null;
               }
               if (frame) {
-                frame.removeEventListener('scroll', scheduleViewportUpdate);
-                frame.removeEventListener('scrollend', scheduleViewportUpdate);
+                frame.removeEventListener('scroll', handleScroll);
+                frame.removeEventListener('scrollend', handleScrollEnd);
               }
-              window.removeEventListener('resize', scheduleViewportUpdate);
+              window.removeEventListener('resize', scheduleImmediateViewportUpdate);
             },
           };
         },

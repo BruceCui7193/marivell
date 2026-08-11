@@ -350,12 +350,30 @@ async function main(): Promise<void> {
     for (const [name, ratio] of [
       ['middle', 0.5],
       ['bottom', 1],
+      ['raw-fallback-middle', 0.5],
     ] as const) {
+      if (name === 'middle' || name === 'raw-fallback-middle') {
+        await handle.page.evaluate(() => {
+          (window as unknown as {
+            __marivellSetDeferInlineMathHydrationForNextScroll?: (value: boolean) => void;
+          }).__marivellSetDeferInlineMathHydrationForNextScroll?.(true);
+          (window as unknown as {
+            __marivellDeactivateAllInlineMathGroups?: () => number;
+          }).__marivellDeactivateAllInlineMathGroups?.();
+        });
+      }
       const jump = await withTimeout(
         handle.page.evaluate(jumpScript, { ratio }),
         15_000,
         `inline-math-scroll-${name}`,
       );
+      if (name === 'middle' || name === 'raw-fallback-middle') {
+        await handle.page.evaluate(() => {
+          (window as unknown as {
+            __marivellSetDeferInlineMathHydrationForNextScroll?: (value: boolean) => void;
+          }).__marivellSetDeferInlineMathHydrationForNextScroll?.(false);
+        });
+      }
       if (!jump.ok) {
         assert(`scroll to ${name} completes`, false, jump.label);
         continue;
@@ -381,7 +399,7 @@ async function main(): Promise<void> {
         result.anchorDrift < 1,
         JSON.stringify(result),
       );
-      if (name === 'middle') {
+      if (name === 'middle' || name === 'raw-fallback-middle') {
         assert(
           `scroll to ${name} exercises raw to KaTeX fallback`,
           result.sawRawPlaceholder,
