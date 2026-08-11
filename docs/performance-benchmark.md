@@ -887,3 +887,32 @@ three jump-ready metrics improved on this run. Mode-switch timings remain
 slightly above the cited `2fcdd9c` numbers and are still run-sensitive. Hard
 drift/placeholder gates pass with zero inline-height drift. Stage 2b is
 recorded as progress toward the soft metrics rather than a release gate pass.
+
+## Stage 4a React NodeView Cost Diagnosis (2026-08-11)
+
+Stage 4a ran on commit `7c5a399` with benchmark-only instrumentation and the
+same large Barfoot file. The full breakdown is in
+`docs/performance-stage4-diagnosis.md`.
+
+Large-file diagnostic run:
+
+| Path | wall ms | long task ms | PM dispatch ms | React NodeView ms | NodeView updates |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| visual-open | 4,993.7 | 2,231.0 | 672.1 | ~29.3 | 0 after mount |
+| typing | 531.7 | 150.0 | 12.5 | 0 | 0 |
+| inline-math insert | 514.8 | 416.0 | 84.9 | 0 | 0 |
+| undo | 329.2 | 285.0 | 81.4 | 0 | 0 |
+| redo | 363.7 | 286.0 | 86.2 | 0 | 0 |
+| visual-to-source | 2,058.3 | 1,738.0 | 9.2 | 0 | 0 |
+| source-to-visual | 1,029.1 | 798.0 | 13.5 | 0 | 0 |
+| large scroll | 2,671.1 | 2,593.0 | 8.8 | 0 | 0 |
+
+Initial NodeView counts: CodeBlock 2, Image 110, Mermaid 0, Footnote 0,
+HTML 0. React NodeView initialization was about 0.6% of visual-open and no
+measured interaction path triggered a NodeView update, React render, or DOM
+replacement. Conclusion: Stage 4b is not triggered by the current large file;
+layout/parse and mode-switch work remain the dominant costs.
+
+Scroll hydration on a separate un-instrumented run: `maxHydrateWorkMs=839.9`,
+first hydrate `centerMs=265.1 / anchorMs=76.1 / hydrateMs=425.4`,
+`inlineMathActivationReadyMs=0.5`, and no React NodeView work.

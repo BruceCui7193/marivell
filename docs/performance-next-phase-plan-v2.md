@@ -623,6 +623,17 @@ Stage 2b 不再追加 ScrollStabilizer，改为定向优化 typing 与滚动软�
 jump-ready 均下降；模式切换略高且仍有噪声，未达发布线。硬门禁保持
 `scrollDriftPx=0`、`viewportPlaceholders=0`、`inline-height-drift=0`。
 
+### 2.9 Stage 4a 诊断结果（2026-08-11）
+
+Stage 4a 已执行，详细数据见 `docs/performance-stage4-diagnosis.md` 与
+`docs/performance-benchmark.md`。结论：**Stage 4b 不触发**。
+
+- 大文件初始 React NodeView：CodeBlock 2、ImageView 110、Mermaid 0、Footnote 0、HTML 0。
+- 打开阶段 React NodeView 初始化约 29.3ms，占 `visual-open` 4993.7ms 约 0.6%。
+- 普通输入、行内公式插入、Undo/Redo、visual→source、source→visual、大范围滚动均没有触发目标 React NodeView 的 update、render 或 DOM 替换。
+- 当前主要成本仍为 worker/parse 等待、PM 原生 DOM 更新、模式切换 layout 读取与滚动 layout/measure。
+- 若未来仍要考虑 NodeView，优先验证 ImageView 的懒加载/激活路径；CodeBlock 只有 2 个，收益很小。
+
 ## 6. 当前进度（2026-08-11）
 
 - Stage 0：`8554536 perf: add Stage 0 performance diagnosis`
@@ -631,5 +642,6 @@ jump-ready 均下降；模式切换略高且仍有噪声，未达发布线。硬
 - Stage 2b：`90d4bae perf: optimize typing and scroll hot paths with scoped incremental decorations`
 - Stage 3 调查：`cbd8080 docs: record Stage 3 mode-switch investigation`
 - Stage 3 代码：用户已批准离屏视觉 Host，离屏 Host 与测试已实现；官方 benchmark 仍高于 `<1000ms`，且 visual→source 明显回归，代码已回退，失败数据保留在 `docs/performance-benchmark.md`。下一步必须先降低大文档 DOM/布局成本，再重试离屏 Host。
+- Stage 4a 诊断：当前 commit `7c5a399`，React NodeView 不是主瓶颈，Stage 4b 不触发；诊断保留在 `docs/performance-stage4-diagnosis.md`。
 - 当前分支：`perf/performance-optimization`
 - Git 要求：每个阶段独立 commit；失败实验保留文档；`perf-report.json` 不提交；发布前是否 push 由用户决定。
