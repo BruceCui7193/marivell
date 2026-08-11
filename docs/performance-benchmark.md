@@ -734,6 +734,47 @@ These findings are intentionally recorded without committing code, because the
 plan requires stopping for discussion when a stage cannot satisfy its
 acceptance constraints without changing the architecture.
 
+## Stage 3 Offscreen Host Result (2026-08-11)
+
+Stage 3 replaced the source-mode `display: none` visual host with an offscreen
+host that stays mounted in the DOM. In source mode the host is transformed
+offscreen, kept `visibility: hidden`, `pointer-events: none`, and
+`aria-hidden=true`; the source editor is an overlay. Switching back to visual
+mode restores the host in the same layout effect that restores selection and
+scroll position, before paint.
+
+Latest large-file run after the implementation, on the same machine as the
+`52a6688` baseline run:
+
+| Metric | 52a6688 baseline | Stage 3 offscreen run |
+| --- | ---: | ---: |
+| mode-switch-visual-to-source-ms | 1,061.7 ms | 3,148.3 ms |
+| mode-switch-source-to-visual-ms | 3,178.8 ms | 3,226.1 ms |
+| mode-switch-no-reparse | true | true |
+| mode-switch-source-host-dom-count | n/a | 277,916 nodes |
+| mode-switch-source-host-layout-active | n/a | true |
+| mode-switch-source-host-memory-mb | n/a | 93 MB |
+| mode-switch-visual-host-dom-count | n/a | 297,183 nodes |
+| mode-switch-visual-host-memory-mb | n/a | 93 MB |
+| scrollDriftPx | 0 | 0 |
+| viewportPlaceholders | 0 | 0 |
+| inline-height-drift | 0 | bottom=0 middle=0 drag=0 |
+| inline-math-activate-ready-ms | 3.4 ms | 3.5 ms |
+
+The offscreen host preserves layout, DOM, and memory without unbounded growth
+on this run, and the existing drift/placeholder hard gates pass. The official
+mode-switch measurements do not yet meet the `<1000ms` budget: keeping the
+large visual host laid out while source mode is active added latency to
+visual-to-source, while source-to-visual remains close to the `52a6688`
+baseline. The feature behavior (caret alignment, first-frame scroll, repeated
+switches, marker-free content, undo/redo) is covered by the new
+`mode-switch-offscreen` e2e and existing mode-switch suites.
+
+Status: the Stage 3 offscreen host implementation was reverted after this
+run because it did not meet the mode-switch budget and regressed
+visual-to-source. The DOM/layout/memory numbers above are kept as a failed
+experiment record for the next Stage 3 attempt.
+
 ## Stage 2b Typing and Scroll Soft-Metric Optimization (2026-08-11)
 
 Stage 2b targeted ordinary typing, MathSyntaxHighlight viewport updates, and

@@ -340,6 +340,16 @@ Stage 3 在干净基线 `2fcdd9c` 上完成了一次独立调查并记录于 `do
 4. 验收目标：`source→visual < 1000ms`、`visual→source < 1000ms`，硬门禁全部通过。
 5. 测试范围：caret-alignment、mode-switch、mode-switch-violence、mode-switch-incremental、large-file mode-switch、Undo/Redo、marker 泄漏。
 
+### 2.4.8 Stage 3 离屏 Host 实验结论（2026-08-11）
+
+离屏 Host 单独使用不能解决 mode-switch 预算：大文件下 visual→source 从约 1.06s 升到 3.15s，source→visual 仍约 3.23s；源码模式下视觉 host 保持 277,916 个 DOM 节点和完整布局是主要成本。该实现与测试已回退，但失败数据保留。
+
+后续 Stage 3 必须先做 DOM/布局降本，再重试离屏 Host：
+1. 先把大文件双宿主/隐藏视觉 host 的 DOM 总数从 277k+ 压到更低；
+2. 确认源码模式不需要保持全部视觉节点的布局；
+3. 重试离屏 Host 时同时验证 memory、GC、visual→source 不得回归；
+4. 如果仍无法达标，再评估更低层 PM DOM 策略并暂停与用户讨论。
+
 ### 2.5 Stage 4：条件性 React NodeView 优化
 
 #### 2.5.1 触发条件
@@ -583,6 +593,6 @@ jump-ready 均下降；模式切换略高且仍有噪声，未达发布线。硬
 - Stage 2（部分）：`2fcdd9c perf: optimize scroll hot path and stabilize drag anchor`
 - Stage 2b：`90d4bae perf: optimize typing and scroll hot paths with scoped incremental decorations`
 - Stage 3 调查：`cbd8080 docs: record Stage 3 mode-switch investigation`
-- Stage 3 架构：用户已批准离屏视觉 Host，计划已修订为 2.4.7，尚未开始代码执行。
+- Stage 3 代码：用户已批准离屏视觉 Host，离屏 Host 与测试已实现；官方 benchmark 仍高于 `<1000ms`，且 visual→source 明显回归，代码已回退，失败数据保留在 `docs/performance-benchmark.md`。下一步必须先降低大文档 DOM/布局成本，再重试离屏 Host。
 - 当前分支：`perf/performance-optimization`
 - Git 要求：每个阶段独立 commit；失败实验保留文档；`perf-report.json` 不提交；发布前是否 push 由用户决定。
