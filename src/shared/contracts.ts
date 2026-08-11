@@ -113,6 +113,31 @@ export interface UpdateCheckResult {
   error?: string;
 }
 
+export interface BenchmarkProcessCpu {
+  percentCPUUsage: number;
+  cumulativeCPUUsage?: number;
+  idleWakeupsPerSecond: number;
+}
+
+export interface BenchmarkProcessMemory {
+  workingSetSize: number;
+  peakWorkingSetSize: number;
+  privateBytes?: number;
+}
+
+export interface BenchmarkProcessMetric {
+  pid: number;
+  type: string;
+  creationTime: number;
+  cpu: BenchmarkProcessCpu;
+  memory: BenchmarkProcessMemory;
+}
+
+export interface BenchmarkAppMetrics {
+  rendererProcessId: number | null;
+  metrics: BenchmarkProcessMetric[];
+}
+
 export interface MarkdownEditorApi {
   newWindow: () => Promise<void>;
   openDocumentDialog: () => Promise<OpenedDocument | null>;
@@ -141,6 +166,7 @@ export interface MarkdownEditorApi {
   choosePandocTemplate: (format: PandocExportFormat) => Promise<string | null>;
   getAppInfo: () => Promise<AppInfo>;
   checkForUpdates: (includePrerelease: boolean) => Promise<UpdateCheckResult>;
+  getAppMetrics: () => Promise<BenchmarkAppMetrics>;
   reportBenchmarkMetric: (name: string, value: number) => void;
   getBenchmarkTimeline: () => Promise<Array<{ name: string; value: number }>>;
   getBenchmarkEnabled: () => boolean;

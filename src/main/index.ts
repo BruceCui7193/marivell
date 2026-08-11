@@ -49,6 +49,7 @@ function configureLinuxChromiumFlags(): void {
 
 configureLinuxChromiumFlags();
 import type {
+  BenchmarkProcessMetric,
   ExportDocumentPayload,
   FolderEntry,
   OpenedFolder,
@@ -1175,6 +1176,35 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('benchmark:timeline', () => benchmarkTimeline);
+
+  ipcMain.handle('benchmark:app-metrics', (event) => {
+    const rendererProcessId = event.sender.getOSProcessId();
+    if (!benchmarkEnabled) {
+      return { rendererProcessId, metrics: [] };
+    }
+
+    const metrics: BenchmarkProcessMetric[] = app.getAppMetrics().map((metric) => ({
+      pid: metric.pid,
+      type: metric.type,
+      creationTime: metric.creationTime,
+      cpu: {
+        percentCPUUsage: metric.cpu.percentCPUUsage,
+        ...(typeof metric.cpu.cumulativeCPUUsage === 'number'
+          ? { cumulativeCPUUsage: metric.cpu.cumulativeCPUUsage }
+          : {}),
+        idleWakeupsPerSecond: metric.cpu.idleWakeupsPerSecond,
+      },
+      memory: {
+        workingSetSize: metric.memory.workingSetSize,
+        peakWorkingSetSize: metric.memory.peakWorkingSetSize,
+        ...(typeof metric.memory.privateBytes === 'number'
+          ? { privateBytes: metric.memory.privateBytes }
+          : {}),
+      },
+    }));
+
+    return { rendererProcessId, metrics };
+  });
 
   ipcMain.handle('window:new', async () => {
     await createMainWindow();

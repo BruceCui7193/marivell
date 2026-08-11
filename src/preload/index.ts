@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type {
+  BenchmarkAppMetrics,
   ExportDocumentPayload,
   ExportStatus,
   ExternalFileChangeAck,
@@ -46,6 +47,8 @@ const api: MarkdownEditorApi = {
   getAppInfo: () => ipcRenderer.invoke('settings:app-info'),
   checkForUpdates: (includePrerelease: boolean) =>
     ipcRenderer.invoke('settings:check-updates', includePrerelease),
+  getAppMetrics: () =>
+    ipcRenderer.invoke('benchmark:app-metrics') as Promise<BenchmarkAppMetrics>,
   reportBenchmarkMetric: (name: string, value: number) =>
     ipcRenderer.send('benchmark:record', { name, value }),
   getBenchmarkTimeline: () => ipcRenderer.invoke('benchmark:timeline'),
