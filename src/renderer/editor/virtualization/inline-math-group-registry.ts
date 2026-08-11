@@ -19,6 +19,13 @@ import {
   isHeightMeasurementSuspended,
   measureFormulaHeights,
 } from './height-measurer';
+import {
+  registerIoPlaceholder,
+  setForceHydrateAllInlineMathGroups,
+  syncPlaceholderIo,
+  unregisterIoPlaceholder,
+  type ExternalIoCandidate,
+} from './activation-controller';
 
 const TEXTBLOCK_SELECTOR = [
   'p',
@@ -550,6 +557,9 @@ function markSortDirty(group?: InlineMathGroup): void {
 }
 
 function unregisterGroup(group: InlineMathGroup): void {
+  if (group.observedElement !== null) {
+    unregisterIoPlaceholder(group.id);
+  }
   group.observedElement = null;
   if (group.paragraph !== null) {
     const current = groupByParagraph.get(group.paragraph);
@@ -592,9 +602,33 @@ function getGroupElement(group: InlineMathGroup): HTMLElement {
   return group.paragraph ?? group.element;
 }
 
+function activateGroupWithAnchor(group: InlineMathGroup): void {
+  const anchor = inlineMathScrollAnchorProvider?.capture() ?? null;
+  try {
+    withInlineMathActivationMeasurement(() => {
+      activateGroup(group);
+    });
+  } finally {
+    if (anchor !== null) {
+      inlineMathScrollAnchorProvider?.restore(anchor);
+    }
+  }
+}
+
 function observeGroup(group: InlineMathGroup): void {
-  // Visibility is driven by the editor scroll rAF so structural transactions do
-  // not pay for thousands of IntersectionObserver observe/unobserve calls.
+  const element = getGroupElement(group);
+  if (group.observedElement === element) {
+    return;
+  }
+  if (group.observedElement !== null) {
+    unregisterIoPlaceholder(group.id);
+  }
+  group.observedElement = element;
+  registerIoPlaceholder(element, group.id, {
+    getPosition: () => Number.isFinite(group.firstPmPos) ? group.firstPmPos : 0,
+    isActive: () => group.active,
+    activate: () => activateGroupWithAnchor(group),
+  });
 }
 
 function refreshGroupParagraph(group: InlineMathGroup): void {
@@ -614,10 +648,10 @@ function refreshGroupParagraph(group: InlineMathGroup): void {
   if (nextParagraph !== null) {
     group.element = nextParagraph;
     groupByParagraph.set(nextParagraph, group);
-    observeGroup(group);
   } else {
     pendingGroups.add(group);
   }
+  observeGroup(group);
   markSortDirty(group);
 }
 
@@ -642,6 +676,7 @@ function createGroup(key: string, registration: InlineMathRegistration): InlineM
   } else {
     pendingGroups.add(group);
   }
+  observeGroup(group);
   groups.set(key, group);
   return group;
 }
@@ -698,6 +733,7 @@ function assignRegistrationToGroup(registration: InlineMathRegistration): Inline
     group.element = paragraph;
     groupByParagraph.set(paragraph, group);
     pendingGroups.delete(group);
+    observeGroup(group);
   }
 
   registration.groupId = group.key;
@@ -731,6 +767,7 @@ function reconcilePendingGroups(): void {
       group.element = paragraph;
       groupByParagraph.set(paragraph, group);
       pendingGroups.delete(group);
+      observeGroup(group);
       continue;
     }
     const moved = Array.from(group.formulas);
@@ -1083,9 +1120,10 @@ export function activateInlineMathGroupsInViewport(
         prepareGroup(group);
       }
     }
+    let activated = 0;
     if (toActivate.length > 0) {
       const anchor = inlineMathScrollAnchorProvider?.capture() ?? null;
-      const activated = withInlineMathActivationMeasurement(() => {
+      activated = withInlineMathActivationMeasurement(() => {
         for (const group of toActivate) {
           activateGroup(group);
         }
@@ -1094,9 +1132,9 @@ export function activateInlineMathGroupsInViewport(
       if (anchor !== null) {
         inlineMathScrollAnchorProvider?.restore(anchor);
       }
-      return activated;
     }
-    return 0;
+    syncInlineMathIo(frame, centerPosition, radius * 1.5);
+    return activated;
   }
 
   inlineMathGroupIndexTestCounters.fullGroupScans += 1;
@@ -1177,6 +1215,8 @@ export function forceHydrateAllInlineMathGroups(): number {
   return activated;
 }
 
+setForceHydrateAllInlineMathGroups(forceHydrateAllInlineMathGroups);
+
 function getGroupDistance(group: InlineMathGroup, centerPosition: number): number {
   if (centerPosition < group.firstPmPos) {
     return group.firstPmPos - centerPosition;
@@ -1199,6 +1239,35 @@ function getInlineMathGroupsInPositionRange(
   const matches: InlineMathGroup[] = [];
   collectInlineGroupPositionRange(inlineGroupPositionTree, low, high, matches);
   return matches;
+}
+
+export function syncInlineMathIo(
+  frame: HTMLElement,
+  centerPosition: number,
+  viewportRadius: number,
+): number {
+  const radius = Math.max(
+    Number.isFinite(viewportRadius) ? viewportRadius : 1,
+    1,
+  );
+  // The caller's radius is 1.5x viewport in scroll paths; 2x is +/-3 viewports.
+  const candidateRadius = radius * 2;
+  const groupsInRange = getInlineMathGroupsInPositionRange(
+    centerPosition,
+    candidateRadius,
+  );
+  const candidates: ExternalIoCandidate[] = [];
+  for (const group of groupsInRange) {
+    if (group.active || !group.element.isConnected) {
+      continue;
+    }
+    candidates.push({
+      id: group.id,
+      element: getGroupElement(group),
+      position: Number.isFinite(group.firstPmPos) ? group.firstPmPos : 0,
+    });
+  }
+  return syncPlaceholderIo(frame, centerPosition, candidateRadius, candidates);
 }
 
 export function countInlineMathPlaceholdersInPositionRange(
@@ -1237,12 +1306,14 @@ export function hydrateInlineMathGroupsAroundPosition(
     }
   }
 
+  let activated = 0;
   if (toActivate.length === 0) {
+    syncInlineMathIo(frame, centerPosition, viewportRadius);
     return 0;
   }
   let activationFallbackMs = 0;
   const anchor = inlineMathScrollAnchorProvider?.capture() ?? null;
-  const activated = withInlineMathActivationMeasurement(() => {
+  activated = withInlineMathActivationMeasurement(() => {
     const activationStart = performance.now();
     try {
       for (const group of toActivate) {
@@ -1256,6 +1327,7 @@ export function hydrateInlineMathGroupsAroundPosition(
   if (anchor !== null) {
     inlineMathScrollAnchorProvider?.restore(anchor);
   }
+  syncInlineMathIo(frame, centerPosition, viewportRadius);
   if (activated > 0) {
     inlineMathActivationReadyMs = Math.max(inlineMathActivationReadyMs, activationFallbackMs);
     publishInlineMathActivationMetrics();
@@ -1577,6 +1649,10 @@ export function resetInlineMathGroupRegistryForTest(): void {
   resetFormulaTemplateCacheForTest();
   preparedFormulaFragments.clear();
   for (const group of Array.from(groups.values())) {
+    if (group.observedElement !== null) {
+      unregisterIoPlaceholder(group.id);
+    }
+    group.observedElement = null;
     if (group.paragraph !== null) {
       groupByParagraph.delete(group.paragraph);
     }
@@ -1611,6 +1687,7 @@ export function resetInlineMathGroupRegistryForTest(): void {
     }
   });
   prefetchRequester = null;
+  setForceHydrateAllInlineMathGroups(forceHydrateAllInlineMathGroups);
   publishInlineMathActivationMetrics();
 }
 

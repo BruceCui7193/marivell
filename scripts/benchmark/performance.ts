@@ -532,6 +532,99 @@ async function measureVisualScroll(page: Page): Promise<{
   return page.evaluate(script) as ReturnType<typeof measureVisualScroll>;
 }
 
+interface ScrollIoStateResult {
+  avgFrameMs: number;
+  p95FrameMs: number;
+  maxFrameMs: number;
+  callbackEntries: number;
+  enqueuedEntries: number;
+  observedCount: number;
+  observerCount: number;
+  callbackMsTotal: number;
+  callbackMsMax: number;
+}
+
+interface ScrollIoOverheadResult {
+  on: ScrollIoStateResult;
+  off: ScrollIoStateResult;
+  deltaAvgFrameMs: number;
+}
+
+async function measureScrollIoOverhead(page: Page): Promise<ScrollIoOverheadResult> {
+  const script = `(async () => {
+    const frame = document.querySelector('.editor-frame');
+    if (!(frame instanceof HTMLElement)) throw new Error('editor frame missing');
+    const benchmarkWindow = window;
+    const getDiagnostics = () =>
+      typeof benchmarkWindow.__marivellGetIoDiagnostics === 'function'
+        ? benchmarkWindow.__marivellGetIoDiagnostics()
+        : null;
+    const setEnabled = (enabled) => {
+      benchmarkWindow.__marivellSetIoEnabled?.(enabled);
+    };
+    const resetDiagnostics = () => {
+      benchmarkWindow.__marivellResetIoDiagnostics?.();
+    };
+    const percentile = (values, percentileValue) => {
+      if (values.length === 0) return 0;
+      const sorted = Array.from(values).sort((a, b) => a - b);
+      const index = Math.min(
+        sorted.length - 1,
+        Math.max(0, Math.ceil((percentileValue / 100) * sorted.length) - 1),
+      );
+      return sorted[index] ?? 0;
+    };
+    const runState = async (enabled) => {
+      setEnabled(enabled);
+      resetDiagnostics();
+      frame.scrollTop = 0;
+      frame.dispatchEvent(new Event('scroll'));
+      const deltas = [];
+      let previous = performance.now();
+      for (let index = 0; index < 300; index += 1) {
+        const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+        const step = Math.max(1, Math.ceil(frame.clientHeight * 0.05));
+        frame.scrollTop = Math.min(maxScrollTop, frame.scrollTop + step);
+        frame.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        const now = performance.now();
+        deltas.push(now - previous);
+        previous = now;
+      }
+      const diagnostics = getDiagnostics() ?? {
+        callbackEntries: 0,
+        enqueuedEntries: 0,
+        observedCount: 0,
+        observerCount: 0,
+        callbackMsTotal: 0,
+        callbackMsMax: 0,
+      };
+      return {
+        avgFrameMs:
+          deltas.length > 0
+            ? deltas.reduce((total, value) => total + value, 0) / deltas.length
+            : 0,
+        p95FrameMs: percentile(deltas, 95),
+        maxFrameMs: deltas.length > 0 ? Math.max(...deltas) : 0,
+        callbackEntries: diagnostics.callbackEntries,
+        enqueuedEntries: diagnostics.enqueuedEntries,
+        observedCount: diagnostics.observedCount,
+        observerCount: diagnostics.observerCount,
+        callbackMsTotal: diagnostics.callbackMsTotal,
+        callbackMsMax: diagnostics.callbackMsMax,
+      };
+    };
+    const off = await runState(false);
+    const on = await runState(true);
+    return {
+      on,
+      off,
+      deltaAvgFrameMs: on.avgFrameMs - off.avgFrameMs,
+    };
+  })()`;
+  return page.evaluate(script) as Promise<ScrollIoOverheadResult>;
+}
+
 type ScrollJumpScenario = 'bottom' | 'middle' | 'drag';
 
 async function measureScrollJumpScenario(
@@ -1503,6 +1596,9 @@ async function main(): Promise<void> {
     process.env.MARIVELL_BENCHMARK_MODE_SWITCH_TIMEOUT_MS ??
       Math.max(openTimeoutMs, 60_000),
   );
+  const ioObservationLimit = Number(
+    process.env.MARIVELL_IO_OBSERVATION_LIMIT ?? 1000,
+  );
 
   console.log('Building benchmark bundle (no install needed)...');
   await buildRenderer(outDir);
@@ -1787,6 +1883,22 @@ async function main(): Promise<void> {
           benchmarkWindow.__marivellResetScrollAnchorCompensation();
         }
       });
+      await handle.page.evaluate(
+        (limit) => {
+          const benchmarkWindow = window as unknown as Record<string, unknown>;
+          if (typeof benchmarkWindow.__marivellSetIoObservationLimit === 'function') {
+            (benchmarkWindow.__marivellSetIoObservationLimit as (value: number) => void)(
+              limit,
+            );
+          }
+        },
+        ioObservationLimit,
+      );
+      report.push({
+        metric: 'scroll-io-observation-limit',
+        value: ioObservationLimit,
+        unit: 'nodes',
+      });
       const scroll = await withTimeout(measureVisualScroll(handle.page), interactionTimeoutMs, 'visual-scroll');
       report.push(
         scroll.ok
@@ -1839,6 +1951,67 @@ async function main(): Promise<void> {
             note: `per-frame=${JSON.stringify(scroll.value.scrollFramePosAtCoordsCalls)}`,
           },
         );
+      }
+
+      const scrollIoOverhead = await withTimeout(
+        measureScrollIoOverhead(handle.page),
+        Math.max(interactionTimeoutMs * 2, 30_000),
+        'scroll-io-overhead',
+      );
+      if (scrollIoOverhead.ok) {
+        const io = scrollIoOverhead.value;
+        report.push(
+          {
+            metric: 'scroll-io-overhead-on-avg-frame-ms',
+            value: round(io.on.avgFrameMs),
+            unit: 'ms',
+            note: `frames=300 entries=${io.on.callbackEntries} enqueued=${io.on.enqueuedEntries} observed=${io.on.observedCount} observers=${io.on.observerCount} callbackMaxMs=${round(io.on.callbackMsMax)}`,
+          },
+          {
+            metric: 'scroll-io-overhead-on-p95-frame-ms',
+            value: round(io.on.p95FrameMs),
+            unit: 'ms',
+          },
+          {
+            metric: 'scroll-io-overhead-on-max-frame-ms',
+            value: round(io.on.maxFrameMs),
+            unit: 'ms',
+          },
+          {
+            metric: 'scroll-io-overhead-off-avg-frame-ms',
+            value: round(io.off.avgFrameMs),
+            unit: 'ms',
+            note: `frames=300 entries=${io.off.callbackEntries} enqueued=${io.off.enqueuedEntries} observed=${io.off.observedCount}`,
+          },
+          {
+            metric: 'scroll-io-overhead-off-p95-frame-ms',
+            value: round(io.off.p95FrameMs),
+            unit: 'ms',
+          },
+          {
+            metric: 'scroll-io-overhead-off-max-frame-ms',
+            value: round(io.off.maxFrameMs),
+            unit: 'ms',
+          },
+          {
+            metric: 'scroll-io-overhead-delta-avg-ms',
+            value: round(io.deltaAvgFrameMs),
+            unit: 'ms',
+            note: 'positive means IO on is slower',
+          },
+          {
+            metric: 'scroll-io-observer-count',
+            value: io.on.observerCount,
+            unit: 'observers',
+            note: `on=${io.on.observerCount} off=${io.off.observerCount}`,
+          },
+        );
+      } else {
+        report.push({
+          metric: 'scroll-io-overhead',
+          value: 'timeout',
+          unit: `${Math.max(interactionTimeoutMs * 2, 30_000)}ms`,
+        });
       }
 
       const scrollFirstFrameReady: Record<string, boolean> = {};

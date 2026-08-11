@@ -1,5 +1,4 @@
 import { createHydrationQueue } from './hydration-queue';
-import { forceHydrateAllInlineMathGroups } from './inline-math-group-registry';
 
 interface VirtualNodeCallbacks {
   activate(): void;
@@ -37,16 +36,71 @@ export interface ScrollAnchorProvider {
 
 export const VIRTUAL_ACTIVATION_BATCH_SIZE = 24;
 const HYDRATION_BATCH_SIZE = 128;
+const IO_HYDRATION_PRIORITY = 10;
+const DEFAULT_IO_OBSERVATION_LIMIT = 1000;
 
 const virtualNodes = new Map<string, VirtualNodeRegistration>();
 const virtualNodesByPositionDirty = new Set<string>();
 let virtualNodeElements = new WeakMap<HTMLElement, string>();
-const pendingActivations = new Map<string, VirtualNodeRegistration>();
+interface PendingActivation {
+  activate: () => void;
+  isActive: () => boolean;
+}
+
+const pendingActivations = new Map<string, PendingActivation>();
 const hydrationQueue = createHydrationQueue();
 let virtualNodeObserver: IntersectionObserver | null = null;
 let pendingActivationFrame: number | null = null;
 let hydrationFrame: number | null = null;
 let scrollAnchorProvider: ScrollAnchorProvider | null = null;
+
+export interface ExternalHydrationTarget {
+  getPosition: () => number;
+  isActive: () => boolean;
+  activate: () => void;
+}
+
+export interface ExternalIoCandidate {
+  id: string;
+  element: HTMLElement;
+  position: number;
+}
+
+const externalIoElements = new Map<HTMLElement, string>();
+const externalTargetElements = new Map<string, HTMLElement>();
+const externalHydrationTargets = new Map<string, ExternalHydrationTarget>();
+const ioObservedElements = new Set<HTMLElement>();
+let ioEnabled = true;
+let ioObservationLimit = DEFAULT_IO_OBSERVATION_LIMIT;
+let ioDiagnostics: {
+  callbackEntries: number;
+  intersectingEntries: number;
+  activeSkipEntries: number;
+  missingTargetEntries: number;
+  enqueuedEntries: number;
+  callbackMsTotal: number;
+  callbackMsMax: number;
+  syncCount: number;
+  lastSyncObserved: number;
+} = {
+  callbackEntries: 0,
+  intersectingEntries: 0,
+  activeSkipEntries: 0,
+  missingTargetEntries: 0,
+  enqueuedEntries: 0,
+  callbackMsTotal: 0,
+  callbackMsMax: 0,
+  syncCount: 0,
+  lastSyncObserved: 0,
+};
+
+let forceHydrateAllInlineMathGroups: (() => number) | null = null;
+
+export function setForceHydrateAllInlineMathGroups(
+  fn: (() => number) | null,
+): void {
+  forceHydrateAllInlineMathGroups = fn;
+}
 
 export function setScrollAnchorProvider(provider: ScrollAnchorProvider | null): void {
   scrollAnchorProvider = provider;
@@ -335,15 +389,18 @@ function flushPendingActivations(): void {
   try {
     const ids = Array.from(pendingActivations.keys()).slice(0, VIRTUAL_ACTIVATION_BATCH_SIZE);
     for (const id of ids) {
-      const registration = pendingActivations.get(id);
+      const pending = pendingActivations.get(id);
       pendingActivations.delete(id);
-      if (!registration || registration.active) {
+      if (!pending || pending.isActive()) {
         continue;
       }
 
-      registration.active = true;
-      registration.state = 'active';
-      registration.activate();
+      const registration = virtualNodes.get(id);
+      if (registration) {
+        registration.active = true;
+        registration.state = 'active';
+      }
+      pending.activate();
     }
   } finally {
     if (anchor !== null) {
@@ -378,57 +435,333 @@ function cancelPendingActivation(id: string): void {
   }
 }
 
-function processVirtualNodeEntries(entries: IntersectionObserverEntry[]): void {
-  for (const entry of entries) {
-    const element = entry.target as HTMLElement | null;
-    const id = element === null ? null : virtualNodeElements.get(element) ?? null;
-    const registration = id === null ? undefined : virtualNodes.get(id);
-    if (!registration || id === null) {
-      continue;
-    }
+function unobservePlaceholderElement(element: HTMLElement): void {
+  virtualNodeObserver?.unobserve(element);
+  ioObservedElements.delete(element);
+}
 
-    if (entry.isIntersecting) {
-      registration.forceActive = false;
-      const viewportHeight =
-        typeof window !== 'undefined'
-          ? window.innerHeight || document.documentElement.clientHeight || 0
-          : 0;
-      const rect = entry.boundingClientRect;
-      const visibleNow = rect !== undefined && rect.bottom > 0 && rect.top < viewportHeight;
-      if (visibleNow) {
-        if (!registration.active) {
-          registration.active = true;
-          registration.state = 'active';
-          registration.activate();
-        }
-      } else if (!registration.active && !pendingActivations.has(id)) {
-        registration.state = 'pending';
-        pendingActivations.set(id, registration);
-        schedulePendingActivationFlush();
-      }
-    } else {
-      cancelPendingActivation(id);
-      if (registration.active && !registration.forceActive && registration.shouldDeactivate?.() !== false) {
-        registration.active = false;
-        registration.state = 'placeholder';
-        registration.deactivate();
-      }
-    }
+function enqueueIoPlaceholder(
+  id: string,
+  position: number,
+  activate: () => void,
+  isActive: () => boolean,
+): void {
+  hydrationQueue.enqueue({
+    id,
+    position,
+    priority: IO_HYDRATION_PRIORITY,
+  });
+  ioDiagnostics.enqueuedEntries += 1;
+  if (!pendingActivations.has(id) && !isActive()) {
+    pendingActivations.set(id, { activate, isActive });
+    schedulePendingActivationFlush();
   }
 }
 
-function getVirtualNodeObserver(): IntersectionObserver | null {
+function processPlaceholderIoEntries(entries: IntersectionObserverEntry[]): void {
+  for (const entry of entries) {
+    const element = entry.target as HTMLElement | null;
+    if (!element) {
+      continue;
+    }
+    const virtualId = virtualNodeElements.get(element);
+    const externalId = externalIoElements.get(element);
+    const id = virtualId ?? externalId;
+    if (id === undefined) {
+      unobservePlaceholderElement(element);
+      ioDiagnostics.missingTargetEntries += 1;
+      continue;
+    }
+
+    ioDiagnostics.callbackEntries += 1;
+    const callbackStart = performance.now();
+    if (!entry.isIntersecting) {
+      cancelPendingActivation(id);
+      ioDiagnostics.callbackMsTotal += performance.now() - callbackStart;
+      ioDiagnostics.callbackMsMax = Math.max(
+        ioDiagnostics.callbackMsMax,
+        performance.now() - callbackStart,
+      );
+      continue;
+    }
+
+    const registration = virtualNodes.get(id);
+    if (registration) {
+      if (registration.active) {
+        unobservePlaceholderElement(element);
+        ioDiagnostics.activeSkipEntries += 1;
+        ioDiagnostics.callbackMsTotal += performance.now() - callbackStart;
+        ioDiagnostics.callbackMsMax = Math.max(
+          ioDiagnostics.callbackMsMax,
+          performance.now() - callbackStart,
+        );
+        continue;
+      }
+      registration.forceActive = false;
+      registration.state = 'pending';
+      enqueueIoPlaceholder(
+        id,
+        registration.getPosition?.() ?? 0,
+        registration.activate,
+        () => registration.active,
+      );
+      ioDiagnostics.callbackMsTotal += performance.now() - callbackStart;
+      ioDiagnostics.callbackMsMax = Math.max(
+        ioDiagnostics.callbackMsMax,
+        performance.now() - callbackStart,
+      );
+      continue;
+    }
+
+    const external = externalHydrationTargets.get(id);
+    if (!external || external.isActive()) {
+      unobservePlaceholderElement(element);
+      ioDiagnostics.activeSkipEntries += 1;
+      ioDiagnostics.callbackMsTotal += performance.now() - callbackStart;
+      ioDiagnostics.callbackMsMax = Math.max(
+        ioDiagnostics.callbackMsMax,
+        performance.now() - callbackStart,
+      );
+      continue;
+    }
+    ioDiagnostics.intersectingEntries += 1;
+    enqueueIoPlaceholder(
+      id,
+      external.getPosition(),
+      external.activate,
+      () => external.isActive(),
+    );
+    ioDiagnostics.callbackMsTotal += performance.now() - callbackStart;
+    ioDiagnostics.callbackMsMax = Math.max(
+      ioDiagnostics.callbackMsMax,
+      performance.now() - callbackStart,
+    );
+  }
+}
+
+function getVirtualNodeObserver(rootElement?: HTMLElement | null): IntersectionObserver | null {
   if (typeof IntersectionObserver === 'undefined') {
     return null;
   }
 
+  const resolvedRoot =
+    rootElement ??
+    (typeof document !== 'undefined'
+      ? document.querySelector<HTMLElement>('.editor-frame') ?? null
+      : null);
+  if (virtualNodeObserver !== null && virtualNodeObserver.root !== resolvedRoot) {
+    virtualNodeObserver.disconnect();
+    virtualNodeObserver = null;
+    ioObservedElements.clear();
+  }
+
   if (virtualNodeObserver === null) {
+    const viewportHeight =
+      resolvedRoot?.clientHeight ??
+      (typeof window !== 'undefined'
+        ? window.innerHeight || document.documentElement.clientHeight || 800
+        : 800);
+    const rootMargin = Math.max(10_000, Math.ceil(viewportHeight * 10));
     virtualNodeObserver = new IntersectionObserver((entries) => {
-      processVirtualNodeEntries(entries);
-    }, { rootMargin: '1600px' });
+      processPlaceholderIoEntries(entries);
+    }, {
+      root: resolvedRoot,
+      rootMargin: `${rootMargin}px 0px ${rootMargin}px 0px`,
+    });
   }
 
   return virtualNodeObserver;
+}
+
+export function registerIoPlaceholder(
+  element: HTMLElement,
+  id: string,
+  target: ExternalHydrationTarget,
+): () => void {
+  unregisterIoPlaceholder(id);
+  const previousId = externalIoElements.get(element);
+  if (previousId !== undefined && previousId !== id) {
+    unregisterIoPlaceholder(previousId);
+  }
+  externalIoElements.set(element, id);
+  externalTargetElements.set(id, element);
+  externalHydrationTargets.set(id, target);
+  return () => unregisterIoPlaceholder(id);
+}
+
+export function unregisterIoPlaceholder(id: string): void {
+  const element = externalTargetElements.get(id);
+  if (element) {
+    unobservePlaceholderElement(element);
+    externalIoElements.delete(element);
+  }
+  externalTargetElements.delete(id);
+  externalHydrationTargets.delete(id);
+  cancelPendingActivation(id);
+}
+
+export function syncPlaceholderIo(
+  frame: HTMLElement,
+  centerPosition: number,
+  candidateRadius: number,
+  externalCandidates: ExternalIoCandidate[] = [],
+): number {
+  void frame;
+  ioDiagnostics.syncCount += 1;
+  if (!ioEnabled || typeof IntersectionObserver === 'undefined') {
+    return 0;
+  }
+  const observer = getVirtualNodeObserver(frame);
+  if (observer === null || ioObservationLimit <= 0) {
+    return 0;
+  }
+
+  const finiteRadius = Number.isFinite(candidateRadius) && candidateRadius > 0
+    ? candidateRadius
+    : Math.max(1, candidateRadius);
+  const candidates: Array<{ element: HTMLElement; id: string; position: number }> = [];
+  flushVirtualNodePositionDirty();
+  for (const entry of getVirtualNodePositionEntriesInRange(
+    centerPosition,
+    finiteRadius,
+  )) {
+    const registration = virtualNodes.get(entry.id);
+    if (
+      registration &&
+      !registration.active &&
+      registration.element.isConnected
+    ) {
+      candidates.push({
+        element: registration.element,
+        id: registration.id,
+        position: entry.position,
+      });
+    }
+  }
+  for (const candidate of externalCandidates) {
+    const target = externalHydrationTargets.get(candidate.id);
+    if (
+      target &&
+      !target.isActive() &&
+      candidate.element.isConnected
+    ) {
+      candidates.push({
+        element: candidate.element,
+        id: candidate.id,
+        position: candidate.position,
+      });
+    }
+  }
+
+  candidates.sort(
+    (left, right) =>
+      Math.abs(left.position - centerPosition) -
+      Math.abs(right.position - centerPosition),
+  );
+  const selected = candidates.slice(0, ioObservationLimit);
+  const selectedElements = new Set(selected.map((candidate) => candidate.element));
+  for (const element of Array.from(ioObservedElements)) {
+    if (!selectedElements.has(element) || !element.isConnected) {
+      unobservePlaceholderElement(element);
+    }
+  }
+
+  let observed = 0;
+  for (const candidate of selected) {
+    if (ioObservedElements.has(candidate.element)) {
+      observed += 1;
+      continue;
+    }
+    observer.observe(candidate.element);
+    ioObservedElements.add(candidate.element);
+    observed += 1;
+  }
+  ioDiagnostics.lastSyncObserved = observed;
+  return observed;
+}
+
+export function setIoObservationLimitForTest(limit: number): void {
+  ioObservationLimit = Math.max(0, Math.floor(limit));
+}
+
+export function setIoEnabledForTest(enabled: boolean): void {
+  ioEnabled = enabled;
+  if (enabled) {
+    return;
+  }
+  for (const element of Array.from(ioObservedElements)) {
+    unobservePlaceholderElement(element);
+  }
+  pendingActivations.clear();
+  hydrationQueue.clear();
+  if (pendingActivationFrame !== null) {
+    if (typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(pendingActivationFrame);
+    }
+    pendingActivationFrame = null;
+  }
+}
+
+export function getIoDiagnosticsForTest(): {
+  enabled: boolean;
+  observationLimit: number;
+  observedCount: number;
+  observerCount: number;
+  observerRoot: string | null;
+  callbackEntries: number;
+  intersectingEntries: number;
+  activeSkipEntries: number;
+  missingTargetEntries: number;
+  enqueuedEntries: number;
+  callbackMsTotal: number;
+  callbackMsMax: number;
+  syncCount: number;
+  lastSyncObserved: number;
+} {
+  return {
+    enabled: ioEnabled,
+    observationLimit: ioObservationLimit,
+    observedCount: ioObservedElements.size,
+    observerCount: virtualNodeObserver === null ? 0 : 1,
+    observerRoot:
+      virtualNodeObserver?.root instanceof Element
+        ? virtualNodeObserver.root.className
+        : virtualNodeObserver?.root === null
+          ? 'viewport'
+          : null,
+    callbackEntries: ioDiagnostics.callbackEntries,
+    intersectingEntries: ioDiagnostics.intersectingEntries,
+    activeSkipEntries: ioDiagnostics.activeSkipEntries,
+    missingTargetEntries: ioDiagnostics.missingTargetEntries,
+    enqueuedEntries: ioDiagnostics.enqueuedEntries,
+    callbackMsTotal: ioDiagnostics.callbackMsTotal,
+    callbackMsMax: ioDiagnostics.callbackMsMax,
+    syncCount: ioDiagnostics.syncCount,
+    lastSyncObserved: ioDiagnostics.lastSyncObserved,
+  };
+}
+
+export function resetIoDiagnosticsForTest(): void {
+  ioDiagnostics = {
+    callbackEntries: 0,
+    intersectingEntries: 0,
+    activeSkipEntries: 0,
+    missingTargetEntries: 0,
+    enqueuedEntries: 0,
+    callbackMsTotal: 0,
+    callbackMsMax: 0,
+    syncCount: 0,
+    lastSyncObserved: 0,
+  };
+}
+
+if (typeof window !== 'undefined') {
+  const benchmarkWindow = window as unknown as Record<string, unknown>;
+  benchmarkWindow.__marivellSetIoEnabled = setIoEnabledForTest;
+  benchmarkWindow.__marivellSetIoObservationLimit =
+    setIoObservationLimitForTest;
+  benchmarkWindow.__marivellGetIoDiagnostics = getIoDiagnosticsForTest;
+  benchmarkWindow.__marivellResetIoDiagnostics = resetIoDiagnosticsForTest;
 }
 
 function unregisterVirtualNodeView(id: string): void {
@@ -444,7 +777,7 @@ function unregisterVirtualNodeView(id: string): void {
   }
   virtualNodes.delete(id);
   virtualNodeElements.delete(registration.element);
-  virtualNodeObserver?.unobserve(registration.element);
+  unobservePlaceholderElement(registration.element);
   virtualNodesByPositionDirty.delete(id);
   removeVirtualNodePosition(id);
   virtualNodePositionIndexTestCounters.unregisters += 1;
@@ -466,6 +799,23 @@ export function resetActivationControllerForTest(): void {
   virtualNodePositionIndexTestCounters.fullScans = 0;
   virtualNodePositionIndexTestCounters.hydrateTargetRangeCalls = 0;
   virtualNodeElements = new WeakMap<HTMLElement, string>();
+  externalIoElements.clear();
+  externalTargetElements.clear();
+  externalHydrationTargets.clear();
+  ioObservedElements.clear();
+  ioEnabled = true;
+  ioObservationLimit = DEFAULT_IO_OBSERVATION_LIMIT;
+  ioDiagnostics = {
+    callbackEntries: 0,
+    intersectingEntries: 0,
+    activeSkipEntries: 0,
+    missingTargetEntries: 0,
+    enqueuedEntries: 0,
+    callbackMsTotal: 0,
+    callbackMsMax: 0,
+    syncCount: 0,
+    lastSyncObserved: 0,
+  };
   pendingActivations.clear();
   hydrationQueue.clear();
   scrollAnchorProvider = null;
@@ -520,8 +870,10 @@ export function registerVirtualNodeView(
     registration.active = true;
     registration.state = 'active';
     registration.activate();
-  } else {
-    getVirtualNodeObserver()?.observe(element);
+  } else if (ioEnabled) {
+    const root = element.closest<HTMLElement>('.editor-frame') ?? null;
+    getVirtualNodeObserver(root)?.observe(element);
+    ioObservedElements.add(element);
   }
 
   return () => unregisterVirtualNodeView(id);
@@ -534,6 +886,7 @@ export function forceActivate(id: string): void {
     return;
   }
 
+  unobservePlaceholderElement(registration.element);
   cancelPendingActivation(id);
   registration.forceActive = true;
   if (!registration.active) {
@@ -586,7 +939,10 @@ export function forceHydrateAll(): number {
       pendingActivationFrame = null;
     }
 
-    forceHydrateAllInlineMathGroups();
+    forceHydrateAllInlineMathGroups?.();
+    for (const id of Array.from(pendingActivations.keys())) {
+      cancelPendingActivation(id);
+    }
     return activatedCount;
   });
 }
@@ -796,7 +1152,16 @@ export function hydrateTargetRange(
       continue;
     }
     const registration = virtualNodes.get(task.id);
-    if (!registration || registration.active) {
+    if (!registration) {
+      const external = externalHydrationTargets.get(task.id);
+      if (!external || external.isActive()) {
+        continue;
+      }
+      external.activate();
+      activatedCount += 1;
+      continue;
+    }
+    if (registration.active) {
       continue;
     }
 
@@ -817,6 +1182,9 @@ export function hydrateTargetRange(
       }
     }
   }
+
+  // The caller's radius is already 1.5x the viewport; 2x keeps IO at +/-3 viewports.
+  syncPlaceholderIo(frame, centerPosition, viewportRadius * 2);
 
   if (!drainQueue && hydrationQueue.size > 0 && hydrationFrame === null) {
     hydrationFrame = requestAnimationFrame(() => {

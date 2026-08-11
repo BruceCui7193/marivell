@@ -57,6 +57,7 @@ import {
   forceHydrateAll,
   forceActivateViewport,
   forceDeactivateAllVirtualNodes,
+  getIoDiagnosticsForTest,
   hydrateTargetRange,
   resumeScrollAnchorProvider,
   setScrollAnchorProvider,
@@ -2087,6 +2088,25 @@ export default function EditorShell({
       if (surface) {
         surface.style.marginTop = '';
       }
+    };
+    (window as unknown as Record<string, unknown>).__marivellSyncIoForTest = () => {
+      const currentEditor = editorRef.current;
+      const currentFrame = editorFrameRef.current;
+      if (!currentEditor || !currentFrame) {
+        return 0;
+      }
+      const centerAndRadius = getCheapViewportCenterAndRadius();
+      if (!centerAndRadius) {
+        return 0;
+      }
+      const radius = Math.max(1, Math.ceil(centerAndRadius.radius * 1.5));
+      hydrateTargetRange(currentFrame, centerAndRadius.pos, radius, false, true);
+      hydrateInlineMathGroupsAroundPosition(
+        currentFrame,
+        centerAndRadius.pos,
+        radius,
+      );
+      return getIoDiagnosticsForTest().lastSyncObserved;
     };
     (window as unknown as Record<string, unknown>).__marivellForceInlineHydrateViewport = () => {
       const currentEditor = editorRef.current;
