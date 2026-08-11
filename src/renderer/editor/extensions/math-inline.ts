@@ -47,6 +47,7 @@ interface BlockMathPlaceholderView {
   dom: HTMLElement;
   preview: HTMLElement;
   getKey: () => string;
+  styleKey: string | null;
 }
 
 const blockMathPlaceholderViews = new Set<BlockMathPlaceholderView>();
@@ -61,6 +62,11 @@ function refreshBlockMathPlaceholderHeights(): void {
     }
     const height = getCachedNodeHeight(view.getKey());
     if (height !== null) {
+      const styleKey = `${height}`;
+      if (view.styleKey === styleKey) {
+        continue;
+      }
+      view.styleKey = styleKey;
       view.preview.style.boxSizing = 'border-box';
       view.preview.style.overflow = 'hidden';
       view.preview.style.height = `${height}px`;
@@ -212,6 +218,7 @@ export const MathInline = Node.create({
         dom,
         preview: previewDOM,
         getKey: getCachedBlockMathHeightKey,
+        styleKey: null,
       };
       blockMathPlaceholderViews.add(placeholderView);
 
@@ -239,6 +246,7 @@ export const MathInline = Node.create({
       const showBlockPlaceholder = (): void => {
         blockPreviewActive = false;
         lastRenderedText = null;
+        placeholderView.styleKey = null;
         dom.classList.add('math-block-node-placeholder');
         if (isHeightMeasurementSuspended()) {
           previewDOM.replaceChildren();
@@ -356,6 +364,7 @@ export const MathInline = Node.create({
 
       const activateBlockPreview = (): void => {
         const cachedHeight = getCachedNodeHeight(getCachedBlockMathHeightKey());
+        placeholderView.styleKey = null;
         dom.classList.remove('math-block-node-placeholder');
         blockPreviewActive = true;
         ensurePreviewAttached();
@@ -580,6 +589,7 @@ export const MathInline = Node.create({
           groupId: null,
           destroyed: false,
           placeholderHeightKey: null,
+          placeholderStyleKey: null,
           formulaKey: null,
         };
         const editingNow = isInlineEditing();

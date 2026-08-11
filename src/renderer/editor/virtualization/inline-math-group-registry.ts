@@ -49,6 +49,7 @@ export interface InlineMathRegistration {
   groupId: string | null;
   destroyed: boolean;
   placeholderHeightKey: string | null;
+  placeholderStyleKey?: string | null;
   formulaKey: string | null;
 }
 
@@ -370,8 +371,10 @@ export function setInlineMathScrollAnchorProvider(
 function addPlaceholderRegistration(registration: InlineMathRegistration): void {
   if (registration.active || registration.destroyed) {
     registration.placeholderHeightKey = null;
+    registration.placeholderStyleKey = null;
     return;
   }
+  registration.placeholderStyleKey = null;
   const key = registration.heightKey();
   let registrations = placeholderRegistrationsByHeightKey.get(key);
   if (!registrations) {
@@ -417,6 +420,7 @@ function removeRegistrationFormulaKey(registration: InlineMathRegistration): voi
 function removePlaceholderRegistration(registration: InlineMathRegistration): void {
   const key = registration.placeholderHeightKey;
   registration.placeholderHeightKey = null;
+  registration.placeholderStyleKey = null;
   if (!key) {
     return;
   }
@@ -443,6 +447,42 @@ export function syncInlineMathPlaceholderKey(registration: InlineMathRegistratio
   addPlaceholderRegistration(registration);
 }
 
+function applyPlaceholderHeightStyles(registration: InlineMathRegistration, key: string): void {
+  if (registration.active || registration.destroyed) {
+    registration.placeholderStyleKey = null;
+    return;
+  }
+  const height = getCachedNodeHeight(key);
+  if (height === null) {
+    return;
+  }
+  const width = getCachedNodeWidth(key);
+  const styleKey = `${height}|${width ?? ''}`;
+  if (registration.placeholderStyleKey === styleKey) {
+    return;
+  }
+  registration.placeholderStyleKey = styleKey;
+  registration.preview.style.display = 'inline-block';
+  registration.preview.style.boxSizing = 'border-box';
+  registration.preview.style.overflow = 'hidden';
+  registration.preview.style.height = `${height}px`;
+  registration.preview.style.minHeight = `${height}px`;
+  registration.preview.style.lineHeight = `${height}px`;
+  registration.preview.style.whiteSpace = 'nowrap';
+  registration.preview.style.verticalAlign = 'middle';
+  if (width !== null) {
+    registration.preview.style.minWidth = `${width}px`;
+    registration.preview.style.maxWidth = `${width}px`;
+    registration.element.style.minWidth = `${width}px`;
+    registration.element.style.maxWidth = `${width}px`;
+  }
+  registration.element.style.overflow = 'hidden';
+  registration.element.style.height = `${height}px`;
+  registration.element.style.minHeight = `${height}px`;
+  registration.element.style.lineHeight = `${height}px`;
+  registration.element.style.verticalAlign = 'middle';
+}
+
 function refreshPlaceholderHeights(seededKeys: string[] | null): void {
   if (isHeightMeasurementSuspended()) {
     return;
@@ -454,67 +494,15 @@ function refreshPlaceholderHeights(seededKeys: string[] | null): void {
         continue;
       }
       for (const registration of registrations) {
-        if (registration.active || registration.destroyed) {
-          continue;
-        }
-        const height = getCachedNodeHeight(key);
-        if (height === null) {
-          continue;
-        }
-        registration.preview.style.display = 'inline-block';
-        registration.preview.style.boxSizing = 'border-box';
-        registration.preview.style.overflow = 'hidden';
-        registration.preview.style.height = `${height}px`;
-        registration.preview.style.minHeight = `${height}px`;
-        registration.preview.style.lineHeight = `${height}px`;
-        registration.preview.style.whiteSpace = 'nowrap';
-        registration.preview.style.verticalAlign = 'middle';
-        const width = getCachedNodeWidth(key);
-        if (width !== null) {
-          registration.preview.style.minWidth = `${width}px`;
-          registration.preview.style.maxWidth = `${width}px`;
-          registration.element.style.minWidth = `${width}px`;
-          registration.element.style.maxWidth = `${width}px`;
-        }
-        registration.element.style.overflow = 'hidden';
-        registration.element.style.height = `${height}px`;
-        registration.element.style.minHeight = `${height}px`;
-        registration.element.style.lineHeight = `${height}px`;
-        registration.element.style.verticalAlign = 'middle';
+        applyPlaceholderHeightStyles(registration, key);
       }
     }
     return;
   }
 
   for (const [key, registrations] of placeholderRegistrationsByHeightKey) {
-    const height = getCachedNodeHeight(key);
-    if (height === null) {
-      continue;
-    }
     for (const registration of registrations) {
-      if (registration.active || registration.destroyed) {
-        continue;
-      }
-      registration.preview.style.display = 'inline-block';
-      registration.preview.style.boxSizing = 'border-box';
-      registration.preview.style.overflow = 'hidden';
-      registration.preview.style.height = `${height}px`;
-      registration.preview.style.minHeight = `${height}px`;
-      registration.preview.style.lineHeight = `${height}px`;
-      registration.preview.style.whiteSpace = 'nowrap';
-      registration.preview.style.verticalAlign = 'middle';
-      const width = getCachedNodeWidth(key);
-      if (width !== null) {
-        registration.preview.style.minWidth = `${width}px`;
-        registration.preview.style.maxWidth = `${width}px`;
-        registration.element.style.minWidth = `${width}px`;
-        registration.element.style.maxWidth = `${width}px`;
-      }
-      registration.element.style.overflow = 'hidden';
-      registration.element.style.height = `${height}px`;
-      registration.element.style.minHeight = `${height}px`;
-      registration.element.style.lineHeight = `${height}px`;
-      registration.element.style.verticalAlign = 'middle';
+      applyPlaceholderHeightStyles(registration, key);
     }
   }
 }
@@ -1385,6 +1373,11 @@ interface SelectionSyncEditor {
     };
   };
   view: { domAtPos: (pos: number) => { node: Node; offset: number } };
+}
+
+export function isInlineMathSelectionNearby(editor: SelectionSyncEditor): boolean {
+  const { from, to, empty } = editor.state.selection;
+  return selectionIntersectsInlineMath(editor, from, to, empty);
 }
 
 function selectionIntersectsInlineMath(

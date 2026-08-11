@@ -95,6 +95,7 @@ import {
   countInlineMathPlaceholdersInPositionRange,
   deactivateAllInlineMathGroups,
   hydrateInlineMathGroupsAroundPosition,
+  isInlineMathSelectionNearby,
   prepareInlineMathForFormulaHtml,
   setInlineMathPrefetchRequester,
   setInlineMathScrollAnchorProvider,
@@ -1018,6 +1019,19 @@ export default function EditorShell({
   const formulaChunkQueueRef = useRef<FormulaIndexEntry[][]>([]);
   const formulaChunkInFlightRef = useRef<Map<number, number>>(new Map());
   const formulaPrefetchRequestedKeysRef = useRef<Set<string>>(new Set());
+  const formulaChunkSentAtRef = useRef<Map<number, number>>(new Map());
+  const formulaChunkDiagnosticsRef = useRef({
+    messages: 0,
+    entries: 0,
+    waitMs: 0,
+    processRuns: 0,
+    processMs: 0,
+    editGateSkips: 0,
+  });
+  const pendingFormulaHtmlChunksRef = useRef<Array<Record<string, string>>>([]);
+  const formulaHtmlProcessingScheduledRef = useRef(false);
+  const formulaHtmlProcessingTimerRef = useRef<number | null>(null);
+  const lastVisualEditAtRef = useRef(0);
   const heightCacheInvalidationFrameRef = useRef<number | null>(null);
   const lastAnchorRestoredScrollTopRef = useRef<number | null>(null);
   const keepAtBottomRef = useRef(false);
@@ -1300,6 +1314,13 @@ export default function EditorShell({
       formulaChunkQueueRef.current = [];
       formulaChunkInFlightRef.current.clear();
       formulaPrefetchRequestedKeysRef.current.clear();
+      formulaChunkSentAtRef.current.clear();
+      if (formulaHtmlProcessingTimerRef.current !== null) {
+        window.clearTimeout(formulaHtmlProcessingTimerRef.current);
+        formulaHtmlProcessingTimerRef.current = null;
+      }
+      formulaHtmlProcessingScheduledRef.current = false;
+      pendingFormulaHtmlChunksRef.current = [];
     };
   }, []);
 
@@ -1510,11 +1531,13 @@ export default function EditorShell({
       nextEditor.commands.focus('start');
     },
     onSelectionUpdate: ({ editor: nextEditor }) => {
-      requestAnimationFrame(() => {
-        if (!nextEditor.isDestroyed) {
-          syncInlineMathSelection(nextEditor);
-        }
-      });
+      if (isInlineMathSelectionNearby(nextEditor)) {
+        requestAnimationFrame(() => {
+          if (!nextEditor.isDestroyed) {
+            syncInlineMathSelection(nextEditor);
+          }
+        });
+      }
       ensureEditableSelectionAtDocumentStart(nextEditor);
     },
     onFocus: ({ editor: nextEditor }) => {
@@ -1555,6 +1578,7 @@ export default function EditorShell({
       }
 
       visualDocEditedRef.current = true;
+      lastVisualEditAtRef.current = performance.now();
       try {
         const changed = transaction.changedRange();
         const previous = visualEditRangeRef.current;
@@ -1568,11 +1592,13 @@ export default function EditorShell({
           to: nextEditor.state.doc.content.size,
         };
       }
-      requestAnimationFrame(() => {
-        if (!nextEditor.isDestroyed) {
-          syncInlineMathSelection(nextEditor);
-        }
-      });
+      if (isInlineMathSelectionNearby(nextEditor)) {
+        requestAnimationFrame(() => {
+          if (!nextEditor.isDestroyed) {
+            syncInlineMathSelection(nextEditor);
+          }
+        });
+      }
 
       if (!windowDirtyRef.current) {
         windowDirtyRef.current = true;
@@ -1638,6 +1664,8 @@ export default function EditorShell({
       benchmarkWindow.__marivellNodeHeightCacheSize = getNodeHeightCacheSizeForTest();
       benchmarkWindow.__marivellGetEditorWidthBucketDiagnostics =
         getEditorWidthBucketDiagnostics;
+      benchmarkWindow.__marivellFormulaChunkDiagnostics =
+        formulaChunkDiagnosticsRef.current;
     }
   }, [editor]);
 
@@ -2105,21 +2133,9 @@ export default function EditorShell({
         );
       try {
         const center = posAtCoords(currentEditor, centerX, centerY);
-        const top = posAtCoords(currentEditor, centerX, rect.top + 1);
-        const bottom = posAtCoords(currentEditor, centerX, rect.bottom - 1);
-        if (center && top && bottom) {
+        if (center) {
           preciseCenterCount += 1;
-          const radius = Math.max(
-            1,
-            Math.ceil(
-              Math.max(
-                center.pos - top.pos,
-                bottom.pos - center.pos,
-                bottom.pos - top.pos,
-              ),
-            ),
-          );
-          return { pos: center.pos, radius };
+          return { pos: center.pos, radius: fallbackRadius() };
         }
       } catch {
         // Fall through to the ratio estimate below.
@@ -2593,6 +2609,12 @@ export default function EditorShell({
     formulaChunkQueueRef.current = [];
     formulaChunkInFlightRef.current.clear();
     formulaPrefetchRequestedKeysRef.current.clear();
+    if (formulaHtmlProcessingTimerRef.current !== null) {
+      window.clearTimeout(formulaHtmlProcessingTimerRef.current);
+      formulaHtmlProcessingTimerRef.current = null;
+    }
+    formulaHtmlProcessingScheduledRef.current = false;
+    pendingFormulaHtmlChunksRef.current = [];
     setLoadingExternalDocument(true);
     startupCaretPlacedRef.current = false;
     editor.setEditable(false);
@@ -2746,6 +2768,55 @@ export default function EditorShell({
       prepareInlineMathForFormulaHtml(formulaHtml);
     };
 
+    const enqueueFormulaHtmlProcessing = (formulaHtml: Record<string, string>): void => {
+      if (!formulaHtml || Object.keys(formulaHtml).length === 0) {
+        return;
+      }
+      pendingFormulaHtmlChunksRef.current.push(formulaHtml);
+      if (formulaHtmlProcessingScheduledRef.current) {
+        return;
+      }
+      const processChunk = (): void => {
+        formulaHtmlProcessingScheduledRef.current = false;
+        formulaHtmlProcessingTimerRef.current = null;
+        const activeElement =
+          typeof window !== 'undefined' ? window.document.activeElement : null;
+        const activeInEditor =
+          activeElement instanceof HTMLElement &&
+          (activeElement.closest('.ProseMirror, .source-editor__input') !== null ||
+            editorRef.current?.isFocused === true);
+        if (sourceModeRef.current || activeInEditor) {
+          scheduleFormulaHtmlProcessing(160);
+          return;
+        }
+        const sinceEdit = performance.now() - lastVisualEditAtRef.current;
+        if (sinceEdit < 1500 && pendingFormulaHtmlChunksRef.current.length > 0) {
+          formulaChunkDiagnosticsRef.current.editGateSkips += 1;
+          scheduleFormulaHtmlProcessing(160);
+          return;
+        }
+        const chunk = pendingFormulaHtmlChunksRef.current.shift();
+        if (!chunk) {
+          return;
+        }
+        const processStart = performance.now();
+        scheduleFormulaHeightMeasurement(null, chunk);
+        formulaChunkDiagnosticsRef.current.processRuns += 1;
+        formulaChunkDiagnosticsRef.current.processMs += performance.now() - processStart;
+        scheduleFormulaHtmlProcessing(32);
+      };
+      const scheduleFormulaHtmlProcessing = (delay = 0): void => {
+        if (formulaHtmlProcessingTimerRef.current !== null || formulaHtmlProcessingScheduledRef.current) {
+          return;
+        }
+        formulaHtmlProcessingScheduledRef.current = true;
+        formulaHtmlProcessingTimerRef.current = window.setTimeout(() => {
+          processChunk();
+        }, delay);
+      };
+      scheduleFormulaHtmlProcessing();
+    };
+
     const pumpFormulaChunks = (): void => {
       if (
         !isActivePrefetch() ||
@@ -2794,6 +2865,7 @@ export default function EditorShell({
           worker.removeEventListener('message', handleMessage);
           worker.removeEventListener('error', handleError);
           formulaChunkInFlightRef.current.delete(requestId);
+          formulaChunkSentAtRef.current.delete(requestId);
           for (const entry of missingEntries) {
             formulaPrefetchRequestedKeysRef.current.delete(
               getFormulaCacheKey(entry.latex, entry.display),
@@ -2809,13 +2881,21 @@ export default function EditorShell({
           worker.removeEventListener('message', handleMessage);
           worker.removeEventListener('error', handleError);
           formulaChunkInFlightRef.current.delete(requestId);
+          const sentAt = formulaChunkSentAtRef.current.get(requestId);
+          formulaChunkSentAtRef.current.delete(requestId);
+          if (typeof sentAt === 'number') {
+            formulaChunkDiagnosticsRef.current.waitMs += performance.now() - sentAt;
+          }
+          if (event.data.ok) {
+            formulaChunkDiagnosticsRef.current.messages += 1;
+            formulaChunkDiagnosticsRef.current.entries += Object.keys(event.data.formulaHtml ?? {}).length;
+          }
           if (event.data.ok && isActivePrefetch()) {
             seedFormulaHtmlCache(event.data.formulaHtml);
             for (const [key, html] of Object.entries(event.data.formulaHtml)) {
               formulaHtmlCacheRef.current.set(key, html);
             }
-            prepareInlineMathForFormulaHtml(event.data.formulaHtml);
-            scheduleFormulaHeightMeasurement(missingEntries, event.data.formulaHtml);
+            enqueueFormulaHtmlProcessing(event.data.formulaHtml);
           }
           for (const entry of missingEntries) {
             formulaPrefetchRequestedKeysRef.current.delete(
@@ -2827,6 +2907,7 @@ export default function EditorShell({
 
         worker.addEventListener('message', handleMessage);
         worker.addEventListener('error', handleError);
+        formulaChunkSentAtRef.current.set(requestId, performance.now());
         worker.postMessage({
           id: requestId,
           requestType: 'formula-chunk',
@@ -2927,6 +3008,12 @@ export default function EditorShell({
       }
       cancelled = true;
       formulaChunkQueueRef.current = [];
+      if (formulaHtmlProcessingTimerRef.current !== null) {
+        window.clearTimeout(formulaHtmlProcessingTimerRef.current);
+        formulaHtmlProcessingTimerRef.current = null;
+      }
+      formulaHtmlProcessingScheduledRef.current = false;
+      pendingFormulaHtmlChunksRef.current = [];
       // If this load is still the latest owner, unlock so a cancelled/re-run path
       // cannot leave contenteditable=false. A newer load will lock again immediately.
       if (latestExternalLoadRef.current === loadId && !editor.isDestroyed) {
@@ -3622,6 +3709,7 @@ export default function EditorShell({
 
   const toggleSourceModePreservingViewport = useCallback(() => {
     const switchStart = performance.now();
+    lastVisualEditAtRef.current = performance.now();
     pendingModeSwitchRatioRestoredRef.current = false;
     captureModeSwitchScrollRatio();
     const currentSourceMode = sourceModeRef.current;

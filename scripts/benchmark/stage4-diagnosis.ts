@@ -183,6 +183,49 @@ async function clearLongTasks(page: Page): Promise<void> {
   });
 }
 
+async function installStage4Stats(page: Page): Promise<void> {
+  await page.evaluate(`(() => {
+    const target = window;
+    const editor = target.__marivellEditor;
+    const existing = target.__stage4Stats;
+    if (existing?.installed || !editor?.view?.dispatch) {
+      return;
+    }
+    const stats = {
+      installed: true,
+      dispatchCount: 0,
+      dispatchMs: 0,
+      rectCount: 0,
+      rectMs: 0,
+    };
+    const view = editor.view;
+    const originalDispatch = view.dispatch.bind(view);
+    view.dispatch = (tr) => {
+      const start = performance.now();
+      stats.dispatchCount += 1;
+      originalDispatch(tr);
+      stats.dispatchMs += performance.now() - start;
+    };
+    const originalRect = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function (...args) {
+      const start = performance.now();
+      stats.rectCount += 1;
+      const result = originalRect.apply(this, args);
+      stats.rectMs += performance.now() - start;
+      return result;
+    };
+    target.__stage4Stats = {
+      installed: true,
+      snapshot: () => ({
+        dispatchCount: stats.dispatchCount,
+        dispatchMs: stats.dispatchMs,
+        rectCount: stats.rectCount,
+        rectMs: stats.rectMs,
+      }),
+    };
+  })()`);
+}
+
 function longTaskSummary(tasks: LongTaskEntry[]): Record<string, number> {
   const over50 = tasks.filter((task) => task.duration > 50);
   const buckets = {
@@ -302,6 +345,9 @@ async function measureWithObservers(
     const mathBefore = window.__stage4MathStats ? { ...window.__stage4MathStats } : null;
     const heightBefore = window.__stage4HeightStats ? { ...window.__stage4HeightStats } : null;
     const widthBucketBefore = window.__marivellGetEditorWidthBucketDiagnostics?.() ?? null;
+    const formulaChunksBefore = window.__marivellFormulaChunkDiagnostics
+      ? { ...window.__marivellFormulaChunkDiagnostics }
+      : null;
     window.__marivellModeSwitchPhases = [];
     const mutations = { childListAdded: 0, childListRemoved: 0, attributes: 0, characterData: 0 };
     const nodeViewSelectors = '.code-block-node,.image-node,.mermaid-node,.footnote-definition-node,.html-block';
@@ -376,6 +422,9 @@ async function measureWithObservers(
     const mathAfter = window.__stage4MathStats ? { ...window.__stage4MathStats } : null;
     const heightAfter = window.__stage4HeightStats ? { ...window.__stage4HeightStats } : null;
     const widthBucketAfter = window.__marivellGetEditorWidthBucketDiagnostics?.() ?? null;
+    const formulaChunksAfter = window.__marivellFormulaChunkDiagnostics
+      ? { ...window.__marivellFormulaChunkDiagnostics }
+      : null;
     const wallMs = performance.now() - start;
     const longTasks = (window.__stage4LongTasks ?? []).slice(longBefore);
     return {
@@ -398,6 +447,20 @@ async function measureWithObservers(
                 calls: widthBucketAfter.calls - widthBucketBefore.calls,
                 layoutReads: widthBucketAfter.layoutReads - widthBucketBefore.layoutReads,
               },
+            }
+          : null,
+        formulaChunks: formulaChunksBefore && formulaChunksAfter
+          ? {
+              before: formulaChunksBefore,
+              after: formulaChunksAfter,
+              delta: Object.fromEntries(
+                Object.entries(formulaChunksAfter).map(([key, value]) => [
+                  key,
+                  typeof value === 'number' && typeof formulaChunksBefore[key] === 'number'
+                    ? value - Number(formulaChunksBefore[key])
+                    : value,
+                ]),
+              ),
             }
           : null,
         nodeViewMutations,
@@ -804,6 +867,7 @@ async function main(): Promise<void> {
 
     const visualDom = await classifyDom(handle.page);
     const nodeViewStats = await collectNodeViewStats(handle.page);
+    await installStage4Stats(handle.page);
     console.log('\nVisual DOM classification:');
     console.log(JSON.stringify(visualDom, null, 2));
     console.log('\nNodeView stats:');

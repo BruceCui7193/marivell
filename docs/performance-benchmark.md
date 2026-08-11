@@ -1029,3 +1029,7 @@ include the diagnostic phase collection, but both mode-switch paths passed
 `<1000ms` in both official runs. No test assertion was relaxed.
 
 主代理复测（`npm run benchmark`）：`mode-switch-visual-to-source-ms=803.7`、`mode-switch-source-to-visual-ms=978.2`，均 `<1000ms`；`visual-open=4964ms`、`renderer-ready=3733ms`，滚动/typing 软预算仍未达标但无新增回归。
+
+## Stage 2e Main-Agent Verification (2026-08-11)
+
+主代理复测大文件：`interaction-typing=144.8ms`、`interaction-combined=1270.5ms`、`mode-switch-visual-to-source=536.3ms`、`mode-switch-source-to-visual=791.1ms`、`scroll-avg=160.0ms`、`scroll-max=359.7ms`，硬门禁 0/0/0。详细诊断见 `docs/performance-stage2e-diagnosis.md`。

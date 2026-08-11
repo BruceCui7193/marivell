@@ -579,6 +579,118 @@ async function main(): Promise<void> {
         syntaxAfter.viewportDispatchCount - syntaxBefore.viewportDispatchCount <= 2,
       JSON.stringify({ syntaxBefore, syntaxAfter }),
     );
+
+    const postDragMarker = `POST_DRAG_${Date.now()}`;
+    const postDrag = await handle.page.evaluate(async (marker) => {
+      const editor = (window as unknown as {
+        getJSON: () => unknown;
+        commands: {
+          setTextSelection: (pos: number) => boolean;
+          selectAll: () => boolean;
+          focus: () => boolean;
+        };
+        state: {
+          doc: {
+            descendants: (fn: (node: { isTextblock?: boolean; textContent?: string }, pos: number) => boolean | void) => void;
+            content: { size: number };
+            textBetween: (from: number, to: number, sep?: string, leaf?: string) => string;
+          };
+          selection: { from: number; to: number };
+        };
+      }).__marivellEditor;
+      if (!editor) throw new Error('editor missing');
+      let from = -1;
+      editor.state.doc.descendants((node, pos) => {
+        if (from !== -1) return false;
+        if (node.isTextblock && node.textContent) {
+          from = pos + 1;
+          return false;
+        }
+        return true;
+      });
+      if (from === -1) throw new Error('text block missing');
+      editor.commands.setTextSelection(from);
+      editor.commands.focus();
+      const typed = document.execCommand('insertText', false, marker);
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const text = editor.state.doc.textBetween(0, editor.state.doc.content.size, '\n', '\n');
+      const before = editor.state.doc.content.size;
+      const selected = editor.commands.selectAll();
+      const { from: selectionFrom, to: selectionTo } = editor.state.selection;
+      return {
+        typed: Boolean(typed && text.includes(marker)),
+        selectAll: Boolean(selected && selectionFrom === 0 && selectionTo >= before),
+        markerLeak: JSON.stringify(editor.getJSON()).includes('MDEDITORSELECTION'),
+      };
+    }, postDragMarker);
+    assert(
+      'large scroll drag followed by typing and Ctrl+A stays functional',
+      postDrag.typed && postDrag.selectAll && !postDrag.markerLeak,
+      JSON.stringify(postDrag),
+    );
+
+    await handle.page.evaluate(() => {
+      window.dispatchEvent(
+        new CustomEvent('markdown-editor:menu-action', { detail: 'toggle-source-mode' }),
+      );
+    });
+    const sourceInputWait = await withTimeout(
+      handle.page.waitForFunction(() => {
+        const input = document.querySelector<HTMLTextAreaElement>('.source-editor__input');
+        return Boolean(input && input.value.length > 100_000);
+      }, undefined, { timeout: 30_000 }),
+      35_000,
+      'post-drag-source',
+    );
+    assert('source mode opens after large scroll drag', sourceInputWait.ok, sourceInputWait.label);
+    const sourceValueAfterDrag = await handle.page.locator('.source-editor__input').inputValue();
+    assert(
+      'source mode after scroll drag has no selection marker leakage',
+      !sourceValueAfterDrag.includes('MDEDITORSELECTION'),
+      sourceValueAfterDrag.slice(0, 200),
+    );
+
+    await handle.page.evaluate(() => {
+      window.dispatchEvent(
+        new CustomEvent('markdown-editor:menu-action', { detail: 'toggle-source-mode' }),
+      );
+    });
+    const visualBackWait = await withTimeout(
+      handle.page.waitForFunction(() => {
+        const frame = document.querySelector<HTMLElement>('.editor-frame');
+        return Boolean(
+          frame &&
+            !frame.classList.contains('is-source') &&
+            !frame.querySelector('.source-editor__input') &&
+            !frame.querySelector('.editor-loading--mode-switch'),
+        );
+      }, undefined, { timeout: 30_000 }),
+      35_000,
+      'post-drag-visual',
+    );
+    assert('visual mode returns after source mode post-drag', visualBackWait.ok, visualBackWait.label);
+    const finalVisualState = await handle.page.evaluate(() => {
+      const editor = (window as unknown as { getJSON: () => unknown }).__marivellEditor;
+      const frame = document.querySelector<HTMLElement>('.editor-frame');
+      const frameRect = frame?.getBoundingClientRect();
+      let visiblePlaceholders = 0;
+      if (frame && frameRect) {
+        for (const element of frame.querySelectorAll('.math-inline-node')) {
+          if (!element.classList.contains('math-inline-node--placeholder')) continue;
+          const rect = element.getBoundingClientRect();
+          if (rect.bottom > frameRect.top && rect.top < frameRect.bottom) visiblePlaceholders += 1;
+        }
+      }
+      return {
+        markerLeak: editor ? JSON.stringify(editor.getJSON()).includes('MDEDITORSELECTION') : true,
+        visiblePlaceholders,
+      };
+    });
+    assert(
+      'visual mode after post-drag round-trip has no marker or viewport placeholder regression',
+      !finalVisualState.markerLeak && finalVisualState.visiblePlaceholders === 0,
+      JSON.stringify(finalVisualState),
+    );
   } finally {
     if (handle) {
       if (process.platform !== 'win32') {

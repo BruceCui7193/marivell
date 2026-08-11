@@ -698,5 +698,6 @@ Stage 4a 已执行，详细数据见 `docs/performance-stage4-diagnosis.md` 与
 - Stage 3c：`4e7db10 perf: eliminate mode-switch layout reads and reduce long tasks (Stage 3c)`，保留 `display:none`；源码模式视觉 host DOM 降至 24,573，硬门禁通过。
 - Stage 3d：完成模式切换剩余 long task 压降；大文件主代理复测 `visual→source=803.7ms`、`source→visual=978.2ms`，均 `<1000ms`，硬门禁通过。
 - Stage 4a 诊断：当前 commit `7c5a399`，React NodeView 不是主瓶颈，Stage 4b 不触发；诊断保留在 `docs/performance-stage4-diagnosis.md`。
+- Stage 2e：typing 热路径改为非公式编辑不刷新 viewport、公式高度准备移出焦点/热路径并节流；placeholder 高度刷新去重 style 写入；滚动中心由三次 `posAtCoords` 降到一次。主代理复测大文件：typing 144.8ms、combined 1270.5ms、visual→source 536.3ms、source→visual 791.1ms、scroll-avg 160.0ms、scroll-max 359.7ms，硬门禁 0/0/0。详细诊断见 `docs/performance-stage2e-diagnosis.md`。
 - 当前分支：`perf/performance-optimization`
 - Git 要求：每个阶段独立 commit；失败实验保留文档；`perf-report.json` 不提交；发布前是否 push 由用户决定。

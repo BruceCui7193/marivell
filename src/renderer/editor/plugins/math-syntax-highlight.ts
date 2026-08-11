@@ -47,6 +47,8 @@ let viewportRafCount = 0;
 let viewportDispatchCount = 0;
 let viewportSkippedCount = 0;
 let needsViewportRefreshAfterDocChange = false;
+let lastViewportUpdateAt = 0;
+const VIEWPORT_UPDATE_MIN_INTERVAL_MS = 33;
 
 export function requestMathSyntaxViewportRefresh(): void {
   needsViewportRefreshAfterDocChange = true;
@@ -397,9 +399,12 @@ export const MathSyntaxHighlight = Extension.create({
             const ranges: MathSyntaxRange[] = [];
             let mappedSet = oldState.set;
             let changedRange: { from: number; to: number } | null = null;
+            let needsViewportRefresh = false;
             if (tr.docChanged) {
               const rawChanged = tr.changedRange();
-              if (rawChanged && rawChanged.to - rawChanged.from <= MAX_LOCAL_DECORATION_RANGE) {
+              if (!rawChanged || rawChanged.to - rawChanged.from > MAX_LOCAL_DECORATION_RANGE) {
+                needsViewportRefresh = true;
+              } else {
                 changedRange = expandRangeToTouchingInlineMath(
                   newState.doc,
                   rawChanged.from,
@@ -410,6 +415,15 @@ export const MathSyntaxHighlight = Extension.create({
                 if (range.reason === 'selection') continue;
                 const mapped = mapRange(range, tr, newState.doc);
                 if (mapped) ranges.push(mapped);
+                if (
+                  !needsViewportRefresh &&
+                  changedRange !== null &&
+                  mapped &&
+                  mapped.from < changedRange.to &&
+                  changedRange.from < mapped.to
+                ) {
+                  needsViewportRefresh = true;
+                }
               }
             } else {
               ranges.push(...oldState.ranges.filter((range) => range.reason !== 'selection'));
@@ -433,7 +447,9 @@ export const MathSyntaxHighlight = Extension.create({
             }
             if (rebuildRanges.length === 0) {
               if (tr.docChanged) {
-                needsViewportRefreshAfterDocChange = true;
+                if (needsViewportRefresh) {
+                  needsViewportRefreshAfterDocChange = true;
+                }
                 return buildState(newState.doc, ranges, oldState, oldState.set);
               }
               return buildState(newState.doc, ranges, oldState, mappedSet);
@@ -483,6 +499,7 @@ export const MathSyntaxHighlight = Extension.create({
           let frame: HTMLElement | null = null;
           let rafId: number | null = null;
           let refreshFrame: number | null = null;
+          let viewportUpdateTimer: number | null = null;
 
           const syncFrame = (): void => {
             const next = (view.dom.closest('.editor-frame') ?? view.dom) as HTMLElement;
@@ -504,7 +521,20 @@ export const MathSyntaxHighlight = Extension.create({
             rafId = requestAnimationFrame(() => {
               rafId = null;
               viewportRafCount += 1;
-              if (!view.isDestroyed) updateViewport();
+              if (!view.isDestroyed) {
+                const now = performance.now();
+                if (now - lastViewportUpdateAt >= VIEWPORT_UPDATE_MIN_INTERVAL_MS) {
+                  updateViewport();
+                } else if (viewportUpdateTimer === null) {
+                  viewportUpdateTimer = window.setTimeout(() => {
+                    viewportUpdateTimer = null;
+                    if (!view.isDestroyed && rafId === null) {
+                      updateViewport();
+                    }
+                    publishViewportDiagnostics();
+                  }, VIEWPORT_UPDATE_MIN_INTERVAL_MS);
+                }
+              }
               publishViewportDiagnostics();
             });
             syncFrame();
@@ -574,10 +604,12 @@ export const MathSyntaxHighlight = Extension.create({
               }
               if (lastViewportFrom === range.from && lastViewportTo === range.to) {
                 viewportSkippedCount += 1;
+                lastViewportUpdateAt = performance.now();
                 return 'empty';
               }
               lastViewportFrom = range.from;
               lastViewportTo = range.to;
+              lastViewportUpdateAt = performance.now();
               viewportDispatchCount += 1;
               view.dispatch(
                 view.state.tr.setMeta(mathSyntaxKey, {
@@ -611,6 +643,10 @@ export const MathSyntaxHighlight = Extension.create({
             destroy() {
               needsViewportRefreshAfterDocChange = false;
               if (rafId !== null) cancelAnimationFrame(rafId);
+              if (viewportUpdateTimer !== null) {
+                window.clearTimeout(viewportUpdateTimer);
+                viewportUpdateTimer = null;
+              }
               if (refreshFrame !== null) {
                 cancelAnimationFrame(refreshFrame);
                 refreshFrame = null;
