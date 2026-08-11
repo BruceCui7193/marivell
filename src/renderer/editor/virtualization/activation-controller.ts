@@ -719,7 +719,7 @@ export function hydrateTargetRange(
     : Math.max(frame.clientHeight || 1, 1);
   const activationRadius = viewportRadius * 1.5;
   const prefetchRadius = viewportRadius * 3;
-  const evictRadius = viewportRadius * 6;
+  const evictRadius = prefetchRadius;
 
   hydrationQueue.evictOutside(evictRadius, centerPosition);
   flushVirtualNodePositionDirty();

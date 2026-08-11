@@ -275,6 +275,34 @@ Stage 1 结果记录在 `docs/performance-benchmark.md`，关键变化：
 
 修订实现已在 `perf/performance-optimization` 上落地：MathSyntaxHighlight 改为 rAF 合并；EditorShell 在非跳转帧跳过 PM 坐标映射、跳转帧保留精确视口中心/半径、简化锚点捕获并减少补偿 rAF。大文件硬门禁保持通过，滚动 max、bottom jump-ready、source→visual 有改善；typing、scroll avg、middle/drag jump-ready 仍有波动，部分 run 比 60fce80 基线慢。随后补齐了拖拽锚点漂移修复：`compensateTopAnchor` 在原有 rAF 补偿链后增加最终重测与延迟复查；主代理用原始 benchmark 复测确认大文件 `scroll-drag-sequence-inline-height-drift` 已从 116px 修回 0px，且未放宽断言。当前 Stage 2 记为部分进展，不宣称通过发布门禁。
 
+### 2.3.7 Stage 2g 执行结果（2026-08-11）
+
+Stage 2g 在 `0562663` 上继续压滚动热路径，未放宽任何硬门禁：
+
+- 小步滚动不再每帧创建 EditorShell hydration rAF；hydration 改为大跳转立即调度、普通滚动停止 300ms 后调度。
+- PM 视口中心/锚点映射仍保留，但只在 hydration rAF 中执行，不在 scroll 事件处理器内做。
+- hydration 高度稳定逻辑改为仅在实际 `scrollHeight` 变化时重写 scrollTop/spacer。
+- activation hydration queue 的 evict radius 收窄到 prefetch radius。
+- inline math prefetch 同时认 `preparedFormulaHtml`，避免 benchmark 清空 raw cache 后在滚动路径继续发 worker prefetch。
+
+大文件官方 benchmark 两轮有效结果：
+
+| 指标 | 0562663 基线 | Stage 2g A | Stage 2g B |
+| --- | ---: | ---: | ---: |
+| scroll-avg-frame | 152.4 | 150.2 | 151.1 |
+| scroll-max-frame | 275.9 | 262.9 | 275.7 |
+| scroll-jump-bottom | 1,280.6 | 1,309.0 | 1,279.9 |
+| scroll-jump-middle | 1,315.1 | 1,366.1 | 1,449.1 |
+| scroll-drag-sequence | 1,731.6 | 1,550.3 | 1,653.3 |
+| scrollDriftPx | 0 | 0 | 0 |
+| viewportPlaceholders | 0 | 0 | 0 |
+| inline-height-drift | 0 | 0 | 0 |
+
+状态：滚动 avg/max 与 drag 在两轮中多数改善，硬门禁保持通过；jump-ready
+仍主要被 benchmark 的 PM 坐标测量和大 DOM layout 支配，发布预算未达成。
+Stage 2g 未改 `MathSyntaxHighlight`；该插件仍在滚动帧内执行 viewport
+`posAtCoords` 更新，后续若允许改插件可继续压小步滚动帧。
+
 ### 2.4 Stage 3：模式切换与布局
 
 #### 2.4.1 目标
@@ -700,6 +728,11 @@ Stage 4a 已执行，详细数据见 `docs/performance-stage4-diagnosis.md` 与
 - Stage 4a 诊断：当前 commit `7c5a399`，React NodeView 不是主瓶颈，Stage 4b 不触发；诊断保留在 `docs/performance-stage4-diagnosis.md`。
 - Stage 2e：typing 热路径改为非公式编辑不刷新 viewport、公式高度准备移出焦点/热路径并节流；placeholder 高度刷新去重 style 写入；滚动中心由三次 `posAtCoords` 降到一次。主代理复测大文件：typing 144.8ms、combined 1270.5ms、visual→source 536.3ms、source→visual 791.1ms、scroll-avg 160.0ms、scroll-max 359.7ms，硬门禁 0/0/0。详细诊断见 `docs/performance-stage2e-diagnosis.md`。
 - Stage 2f：在 `689f29b` 上完成公式高度空闲预取与滚动 hydration 长任务降本。
+- Stage 2g：在 `0562663` 上完成滚动热路径定向降本；小步滚动 hydration 移到
+  scrollend/大跳转 rAF，prepared formula HTML 不再触发滚动路径 worker prefetch，
+  hydration queue 收窄过期任务。两轮大文件 scroll-avg 150.2/151.1ms、
+  scroll-max 262.9/275.7ms，硬门禁 0/0/0；jump-ready 仍未达发布预算。
+
   公式 HTML 预取队列改为 `requestIdleCallback`，不再因编辑器聚焦永久暂停；高度测量按 12
   条公式小批读取，滚动事件暂停测量，激活优先使用已填满的 4,783/4,780 高度缓存。
   大文件 benchmark 两次：scroll-avg 155.6/152.5ms、scroll-max 279.6/275.2ms、

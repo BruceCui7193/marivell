@@ -1841,6 +1841,7 @@ export default function EditorShell({
     }
 
     let hydrationFrame: number | null = null;
+    let hydrationSettleTimer: ReturnType<typeof setTimeout> | null = null;
     let heightPauseTimer: ReturnType<typeof setTimeout> | null = null;
     let lastSyncHydrateScrollTop = frame.scrollTop;
     let surfaceCompensationY = scrollAnchorCompensationRef.current;
@@ -2008,7 +2009,11 @@ export default function EditorShell({
         }
       },
     });
-    const getCheapViewportCenterAndRadius = (): { pos: number; radius: number } | null => {
+    const getCheapViewportCenterAndRadius = (
+      scrollTopValue = frame.scrollTop,
+      scrollHeightValue = frame.scrollHeight,
+      clientHeightValue = frame.clientHeight,
+    ): { pos: number; radius: number } | null => {
       const currentEditor = editorRef.current;
       if (!currentEditor) {
         return null;
@@ -2017,15 +2022,15 @@ export default function EditorShell({
       if (docSize <= 0) {
         return null;
       }
-      const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+      const maxScrollTop = Math.max(scrollHeightValue - clientHeightValue, 0);
       const ratio = maxScrollTop > 0
-        ? Math.min(1, Math.max(0, frame.scrollTop / maxScrollTop))
+        ? Math.min(1, Math.max(0, scrollTopValue / maxScrollTop))
         : 0;
       const pos = Math.max(0, Math.min(docSize, Math.round(docSize * ratio)));
       const radius = Math.max(
         1,
         Math.ceil(
-          (docSize * frame.clientHeight) / Math.max(frame.scrollHeight, 1),
+          (docSize * clientHeightValue) / Math.max(scrollHeightValue, 1),
         ),
       );
       return { pos, radius };
@@ -2189,8 +2194,172 @@ export default function EditorShell({
       return { pos, radius: fallbackRadius() };
     };
 
+    const performScrollHydration = (): void => {
+      hydrationFrame = null;
+      const currentEditor = editorRef.current;
+      if (!currentEditor || sourceModeRef.current) {
+        return;
+      }
+      hydrateRunCount += 1;
+
+      const timingStart = performance.now();
+      const scrollTopBeforeHydrate = frame.scrollTop;
+      const scrollHeightBeforeHydrate = frame.scrollHeight;
+      const clientHeight = frame.clientHeight;
+      const oldMaxScrollTop = Math.max(scrollHeightBeforeHydrate - clientHeight, 0);
+      const scrollDelta = Math.abs(scrollTopBeforeHydrate - lastSyncHydrateScrollTop);
+      const isAtBottomNow = scrollTopBeforeHydrate >= oldMaxScrollTop - 1;
+      const centerStart = performance.now();
+      const cheapCenterAndRadius = getCheapViewportCenterAndRadius(
+        scrollTopBeforeHydrate,
+        scrollHeightBeforeHydrate,
+        clientHeight,
+      );
+      const centerAndRadius = getViewportCenterAndRadius();
+      const shouldHydrate = centerAndRadius !== null || cheapCenterAndRadius !== null;
+      if (centerAndRadius === null && cheapCenterAndRadius !== null) {
+        ratioCenterCount += 1;
+      }
+      const centerMs = performance.now() - centerStart;
+      const centerPos = centerAndRadius?.pos ?? cheapCenterAndRadius?.pos ?? null;
+      const viewportRadius = Math.ceil(
+        (centerAndRadius?.radius ?? cheapCenterAndRadius?.radius ?? 1) * 1.5,
+      );
+      let activatedInlineGroups = 0;
+      const anchorStart = performance.now();
+      const anchorBeforeHydrate = shouldHydrate
+        ? (anchorCaptureCount += 1, captureHydrationAnchor(currentEditor))
+        : null;
+      const anchorMs = performance.now() - anchorStart;
+      const hydrateStart = performance.now();
+      let activatedBlocks = 0;
+      if (shouldHydrate && centerPos !== null) {
+        activatedBlocks = hydrateTargetRange(frame, centerPos, viewportRadius);
+        activatedInlineGroups += hydrateInlineMathGroupsAroundPosition(
+          frame,
+          centerPos,
+          viewportRadius,
+        );
+        lastSyncHydrateScrollTop = frame.scrollTop;
+      }
+      const inlineGroupDiagnostics = (window as unknown as Record<string, unknown>)
+        .__marivellInlineGroupHydrateDiagnostics as
+        | Record<string, unknown>
+        | undefined;
+      const hydrateMs = performance.now() - hydrateStart;
+      const wasAtBottom = isAtBottomNow;
+      keepAtBottomRef.current = wasAtBottom;
+      const posAtCoordsMs = 0;
+      const activateMs = 0;
+
+      const stabilizeScrollHeight = (attempt: number): void => {
+        const userMovedAway =
+          Math.abs(frame.scrollTop - scrollTopBeforeHydrate) >= 1;
+        const currentScrollHeight = frame.scrollHeight;
+        const lostScrollHeight = scrollHeightBeforeHydrate - currentScrollHeight;
+        if (lostScrollHeight > 0 && attempt < 3) {
+          const spacer = getOrCreateEditorScrollSpacer(frame);
+          const currentSpacerHeight = Number.parseFloat(spacer.style.height) || 0;
+          spacer.style.height = `${currentSpacerHeight + lostScrollHeight}px`;
+          const maxScrollTop = Math.max(currentScrollHeight - clientHeight, 0);
+          if (!userMovedAway) {
+            frame.scrollTop = wasAtBottom
+              ? Math.round(maxScrollTop)
+              : Math.min(scrollTopBeforeHydrate, maxScrollTop);
+            lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
+          }
+          requestAnimationFrame(() => stabilizeScrollHeight(attempt + 1));
+          return;
+        }
+
+        if (lostScrollHeight !== 0 && !userMovedAway) {
+          const maxScrollTop = Math.max(currentScrollHeight - clientHeight, 0);
+          frame.scrollTop = wasAtBottom ? Math.round(maxScrollTop) : Math.min(scrollTopBeforeHydrate, maxScrollTop);
+          lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
+        }
+      };
+
+      stabilizeScrollHeight(0);
+
+      if (anchorBeforeHydrate !== null) {
+        if (wasAtBottom) {
+          compensateBottomAnchor(anchorBeforeHydrate);
+        } else {
+          compensateTopAnchor(anchorBeforeHydrate, 0, scrollTopBeforeHydrate);
+        }
+      }
+
+      if (wasAtBottom) {
+        requestAnimationFrame(() => {
+          let remainingFrames = 4;
+          const followBottomIfAtBottom = (): void => {
+            const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+            const bottomThreshold = Math.max(64, frame.clientHeight * 0.15);
+            if (frame.scrollTop >= maxScrollTop - bottomThreshold) {
+              frame.scrollTop = Math.round(maxScrollTop);
+              lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
+              keepAtBottomRef.current = true;
+              remainingFrames -= 1;
+              if (remainingFrames > 0) {
+                requestAnimationFrame(followBottomIfAtBottom);
+              }
+            } else {
+              keepAtBottomRef.current = false;
+            }
+          };
+          followBottomIfAtBottom();
+        });
+      } else {
+        keepAtBottomRef.current = false;
+      }
+      const workMs = performance.now() - timingStart;
+      maxHydrateWorkMs = Math.max(maxHydrateWorkMs, workMs);
+      scrollHotpathTimings.push({
+        totalMs: Math.round(workMs * 10) / 10,
+        centerMs: Math.round(centerMs * 10) / 10,
+        anchorMs: Math.round(anchorMs * 10) / 10,
+        hydrateMs: Math.round(hydrateMs * 10) / 10,
+        activatedBlocks,
+        activatedInlineGroups,
+        inlineGroupDiagnostics,
+        scrollDelta: Math.round(scrollDelta),
+        shouldHydrate,
+        scrollTop: Math.round(frame.scrollTop),
+      });
+      publishScrollHotpathDiagnostics();
+      (window as unknown as Record<string, unknown>).__marivellPhase4Timings = {
+        totalMs: workMs,
+        posAtCoordsMs,
+        activateMs,
+        anchor: anchorBeforeHydrate,
+        shouldHydrate,
+        scrollDelta,
+        lastSyncHydrateScrollTop,
+        benchmarkAnchor: (window as unknown as {
+          __marivellBenchmarkTopAnchor?: unknown;
+        }).__marivellBenchmarkTopAnchor ?? null,
+        compensation: scrollAnchorCompensationRef.current,
+      };
+    };
+
+    const clearHydrationSettleTimer = (): void => {
+      if (hydrationSettleTimer !== null) {
+        clearTimeout(hydrationSettleTimer);
+        hydrationSettleTimer = null;
+      }
+    };
+
+    const scheduleHydrationFrame = (): void => {
+      clearHydrationSettleTimer();
+      if (hydrationFrame !== null) {
+        return;
+      }
+      hydrationFrame = requestAnimationFrame(performScrollHydration);
+    };
+
     const hydrateScrollTarget = () => {
       scrollEventCount += 1;
+      const nextScrollTop = frame.scrollTop;
       setHeightMeasurementScrollPaused(true);
       if (heightPauseTimer !== null) {
         clearTimeout(heightPauseTimer);
@@ -2202,159 +2371,27 @@ export default function EditorShell({
       if (
         hydrationFrame !== null ||
         (lastAnchorRestoredScrollTopRef.current !== null &&
-          Math.abs(frame.scrollTop - lastAnchorRestoredScrollTopRef.current) < 0.01)
+          Math.abs(nextScrollTop - lastAnchorRestoredScrollTopRef.current) < 0.01)
       ) {
         return;
       }
 
-      hydrationFrame = requestAnimationFrame(() => {
-        hydrationFrame = null;
-        const currentEditor = editorRef.current;
-        if (!currentEditor || sourceModeRef.current) {
-          return;
-        }
-        hydrateRunCount += 1;
-
-        const timingStart = performance.now();
-        const scrollTopBeforeHydrate = frame.scrollTop;
-        const scrollHeightBeforeHydrate = frame.scrollHeight;
-        const oldMaxScrollTop = Math.max(scrollHeightBeforeHydrate - frame.clientHeight, 0);
-        const scrollDelta = Math.abs(frame.scrollTop - lastSyncHydrateScrollTop);
-        const jumpThreshold = Math.max(frame.clientHeight * 0.5, 400);
-        const isAtBottomNow = frame.scrollTop >= oldMaxScrollTop - 1;
-        const cheapCenterAndRadius = getCheapViewportCenterAndRadius();
-        const shouldHydrate =
-          cheapCenterAndRadius !== null &&
-          (scrollDelta > jumpThreshold || isAtBottomNow);
-        const centerStart = performance.now();
-        const centerAndRadius = shouldHydrate
-          ? getViewportCenterAndRadius()
-          : null;
-        const centerMs = performance.now() - centerStart;
-        const centerPos = centerAndRadius?.pos ?? cheapCenterAndRadius?.pos ?? null;
-        const viewportRadius = centerAndRadius?.radius ?? cheapCenterAndRadius?.radius ?? 1;
-        let activatedInlineGroups = 0;
-        const anchorStart = performance.now();
-        const anchorBeforeHydrate = shouldHydrate
-          ? (anchorCaptureCount += 1, captureHydrationAnchor(currentEditor))
-          : null;
-        const anchorMs = performance.now() - anchorStart;
-        const hydrateStart = performance.now();
-        let activatedBlocks = 0;
-        if (shouldHydrate && centerPos !== null) {
-          activatedBlocks = hydrateTargetRange(frame, centerPos, viewportRadius);
-          activatedInlineGroups += hydrateInlineMathGroupsAroundPosition(
-            frame,
-            centerPos,
-            viewportRadius,
-          );
-          lastSyncHydrateScrollTop = frame.scrollTop;
-        }
-        const inlineGroupDiagnostics = (window as unknown as Record<string, unknown>)
-          .__marivellInlineGroupHydrateDiagnostics as
-          | Record<string, unknown>
-          | undefined;
-        const hydrateMs = performance.now() - hydrateStart;
-        const wasAtBottom = scrollTopBeforeHydrate >= oldMaxScrollTop - 1;
-        keepAtBottomRef.current = wasAtBottom;
-        const posAtCoordsMs = 0;
-        const activateMs = 0;
-
-        const stabilizeScrollHeight = (attempt: number): void => {
-          const userMovedAway =
-            Math.abs(frame.scrollTop - scrollTopBeforeHydrate) >= 1;
-          const lostScrollHeight = scrollHeightBeforeHydrate - frame.scrollHeight;
-          if (lostScrollHeight > 0 && attempt < 3) {
-            const spacer = getOrCreateEditorScrollSpacer(frame);
-            const currentSpacerHeight = Number.parseFloat(spacer.style.height) || 0;
-            spacer.style.height = `${currentSpacerHeight + lostScrollHeight}px`;
-            const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
-            if (!userMovedAway) {
-              frame.scrollTop = wasAtBottom
-                ? Math.round(maxScrollTop)
-                : Math.min(scrollTopBeforeHydrate, maxScrollTop);
-              lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
-            }
-            requestAnimationFrame(() => stabilizeScrollHeight(attempt + 1));
-            return;
+      const scrollDelta = Math.abs(nextScrollTop - lastSyncHydrateScrollTop);
+      if (scrollDelta >= 1000) {
+        scheduleHydrationFrame();
+      } else if (hydrationSettleTimer === null) {
+        hydrationSettleTimer = setTimeout(() => {
+          hydrationSettleTimer = null;
+          if (hydrationFrame === null && !sourceModeRef.current) {
+            scheduleHydrationFrame();
           }
-
-          const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
-          if (!userMovedAway) {
-            frame.scrollTop = wasAtBottom ? Math.round(maxScrollTop) : Math.min(scrollTopBeforeHydrate, maxScrollTop);
-            lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
-          }
-        };
-
-        stabilizeScrollHeight(0);
-
-        if (anchorBeforeHydrate !== null) {
-          if (wasAtBottom) {
-            compensateBottomAnchor(anchorBeforeHydrate);
-          } else {
-            compensateTopAnchor(anchorBeforeHydrate, 0, scrollTopBeforeHydrate);
-          }
-        }
-
-        if (wasAtBottom) {
-          requestAnimationFrame(() => {
-            let remainingFrames = 12;
-            const followBottomIfAtBottom = (): void => {
-              const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
-              const bottomThreshold = Math.max(64, frame.clientHeight * 0.15);
-              if (frame.scrollTop >= maxScrollTop - bottomThreshold) {
-                frame.scrollTop = Math.round(maxScrollTop);
-                lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
-                keepAtBottomRef.current = true;
-                remainingFrames -= 1;
-                if (remainingFrames > 0) {
-                  requestAnimationFrame(followBottomIfAtBottom);
-                }
-              } else {
-                keepAtBottomRef.current = false;
-              }
-            };
-            followBottomIfAtBottom();
-          });
-        } else {
-          keepAtBottomRef.current = false;
-        }
-        const workMs = performance.now() - timingStart;
-        maxHydrateWorkMs = Math.max(maxHydrateWorkMs, workMs);
-        scrollHotpathTimings.push({
-          totalMs: Math.round(workMs * 10) / 10,
-          centerMs: Math.round(centerMs * 10) / 10,
-          anchorMs: Math.round(anchorMs * 10) / 10,
-          hydrateMs: Math.round(hydrateMs * 10) / 10,
-          activatedBlocks,
-          activatedInlineGroups,
-          inlineGroupDiagnostics,
-          scrollDelta: Math.round(scrollDelta),
-          shouldHydrate,
-          scrollTop: Math.round(frame.scrollTop),
-        });
-        publishScrollHotpathDiagnostics();
-        (window as unknown as Record<string, unknown>).__marivellPhase4Timings = {
-          totalMs: workMs,
-          posAtCoordsMs,
-          activateMs,
-          anchor: anchorBeforeHydrate
-            ? { pmPos: anchorBeforeHydrate.pmPos, offsetTop: anchorBeforeHydrate.offsetTop }
-            : null,
-          shouldHydrate,
-          scrollDelta,
-          lastSyncHydrateScrollTop,
-          benchmarkAnchor: (window as unknown as {
-            __marivellBenchmarkTopAnchor?: unknown;
-          }).__marivellBenchmarkTopAnchor ?? null,
-          compensation: scrollAnchorCompensationRef.current,
-        };
-      });
+        }, 300);
+      }
     };
-
     frame.addEventListener('scroll', hydrateScrollTarget, { passive: true });
     return () => {
       frame.removeEventListener('scroll', hydrateScrollTarget);
+      clearHydrationSettleTimer();
       if (heightPauseTimer !== null) {
         clearTimeout(heightPauseTimer);
         heightPauseTimer = null;

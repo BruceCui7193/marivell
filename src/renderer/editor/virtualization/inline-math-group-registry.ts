@@ -792,6 +792,21 @@ function collectInlineGroupPositionRange(
   }
 }
 
+function hasFormulaHtmlReady(entry: FormulaIndexEntry): boolean {
+  const cacheKey = entry.key || getFormulaCacheKey(entry.latex, entry.display);
+  if (getPreparedInlineFormulaHtml(cacheKey) !== null) {
+    return true;
+  }
+  return getCachedFormulaHtml(entry.latex, entry.display) !== null;
+}
+
+function hasAllFormulaHtmlPrepared(): boolean {
+  return (
+    preparedFormulaHtml.size > 0 &&
+    preparedFormulaHtml.size >= inlineMathRegistrationsByFormulaKey.size
+  );
+}
+
 function requestPrefetch(entries: FormulaIndexEntry[]): void {
   if (!entries.length || !prefetchRequester) {
     return;
@@ -799,13 +814,16 @@ function requestPrefetch(entries: FormulaIndexEntry[]): void {
 
   const missing = new Map<string, FormulaIndexEntry>();
   for (const entry of entries) {
+    if (hasFormulaHtmlReady(entry)) {
+      continue;
+    }
     const cacheKey = getFormulaCacheKey(entry.latex, entry.display);
     if (!missing.has(cacheKey)) {
       missing.set(cacheKey, entry);
     }
   }
   const missingEntries = Array.from(missing.values()).filter(
-    (entry) => getCachedFormulaHtml(entry.latex, entry.display) === null,
+    (entry) => !hasFormulaHtmlReady(entry),
   );
   if (missingEntries.length > 0) {
     prefetchRequester(missingEntries);
@@ -813,11 +831,19 @@ function requestPrefetch(entries: FormulaIndexEntry[]): void {
 }
 
 function collectGroupFormulaEntries(group: InlineMathGroup): FormulaIndexEntry[] {
-  return Array.from(group.formulas, (registration) => ({
-    key: getFormulaCacheKey(registration.getLatex(), registration.display),
-    latex: registration.getLatex(),
-    display: registration.display,
-  }));
+  const entries: FormulaIndexEntry[] = [];
+  for (const registration of group.formulas) {
+    const key = getFormulaCacheKey(registration.getLatex(), registration.display);
+    const entry = {
+      key,
+      latex: registration.getLatex(),
+      display: registration.display,
+    };
+    if (!hasFormulaHtmlReady(entry)) {
+      entries.push(entry);
+    }
+  }
+  return entries;
 }
 
 function prepareGroup(group: InlineMathGroup): void {
@@ -827,12 +853,11 @@ function prepareGroup(group: InlineMathGroup): void {
   group.requested = true;
   for (const registration of group.formulas) {
     registration.requested = true;
-    if (getCachedFormulaHtml(registration.getLatex(), registration.display) !== null) {
-      registration.prepared = true;
-    }
   }
-  const entries = collectGroupFormulaEntries(group);
-  requestPrefetch(entries.slice(0, Math.min(48, entries.length)));
+  if (!hasAllFormulaHtmlPrepared()) {
+    const entries = collectGroupFormulaEntries(group);
+    requestPrefetch(entries.slice(0, Math.min(48, entries.length)));
+  }
 }
 
 function activateGroup(group: InlineMathGroup): void {
@@ -851,7 +876,9 @@ function activateGroup(group: InlineMathGroup): void {
       }
       registration.requested = true;
     }
-    requestPrefetch(collectGroupFormulaEntries(group).slice(0, 48));
+    if (!hasAllFormulaHtmlPrepared()) {
+      requestPrefetch(collectGroupFormulaEntries(group).slice(0, 48));
+    }
   } finally {
     activatingGroupId = null;
   }
@@ -927,13 +954,15 @@ export function updateInlineMathRegistration(registration: InlineMathRegistratio
 
   if (registration.active) {
     registration.requested = true;
-    requestPrefetch([
-      {
-        key: getFormulaCacheKey(registration.getLatex(), registration.display),
-        latex: registration.getLatex(),
-        display: registration.display,
-      },
-    ]);
+    if (!hasAllFormulaHtmlPrepared()) {
+      requestPrefetch([
+        {
+          key: getFormulaCacheKey(registration.getLatex(), registration.display),
+          latex: registration.getLatex(),
+          display: registration.display,
+        },
+      ]);
+    }
   }
 }
 
@@ -951,13 +980,15 @@ export function activateInlineMathNode(registration: InlineMathRegistration): vo
       removePlaceholderRegistration(registration);
       registration.requested = true;
       registration.activate();
-      requestPrefetch([
-        {
-          key: getFormulaCacheKey(registration.getLatex(), registration.display),
-          latex: registration.getLatex(),
-          display: registration.display,
-        },
-      ]);
+      if (!hasAllFormulaHtmlPrepared()) {
+        requestPrefetch([
+          {
+            key: getFormulaCacheKey(registration.getLatex(), registration.display),
+            latex: registration.getLatex(),
+            display: registration.display,
+          },
+        ]);
+      }
     });
   } finally {
     if (anchor !== null) {
@@ -1039,7 +1070,9 @@ export function activateInlineMathGroupsInViewport(
       const distance = getGroupDistance(group, centerPosition as number);
       if (group.active) {
         group.requested = true;
-        requestPrefetch(collectGroupFormulaEntries(group).slice(0, 48));
+        if (!hasAllFormulaHtmlPrepared()) {
+          requestPrefetch(collectGroupFormulaEntries(group).slice(0, 48));
+        }
       } else if (distance <= radius) {
         toActivate.push(group);
       } else if (distance <= radius * 2) {
@@ -1093,7 +1126,9 @@ export function activateInlineMathGroupsInViewport(
       toActivate.push(group);
     } else {
       group.requested = true;
-      requestPrefetch(collectGroupFormulaEntries(group).slice(0, 48));
+      if (!hasAllFormulaHtmlPrepared()) {
+        requestPrefetch(collectGroupFormulaEntries(group).slice(0, 48));
+      }
     }
   }
   if (toActivate.length > 0) {
@@ -1121,7 +1156,9 @@ export function forceHydrateAllInlineMathGroups(): number {
       for (const group of sorted) {
         if (group.active) {
           group.requested = true;
-          requestPrefetch(collectGroupFormulaEntries(group).slice(0, 48));
+          if (!hasAllFormulaHtmlPrepared()) {
+            requestPrefetch(collectGroupFormulaEntries(group).slice(0, 48));
+          }
           continue;
         }
         activateGroup(group);
@@ -1193,8 +1230,6 @@ export function hydrateInlineMathGroupsAroundPosition(
     const distance = getGroupDistance(group, centerPosition);
     if (distance <= activationRadius) {
       toActivate.push(group);
-    } else if (distance <= radius * 3) {
-      prepareGroup(group);
     }
   }
 

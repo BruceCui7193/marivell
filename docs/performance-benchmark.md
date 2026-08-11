@@ -1084,3 +1084,49 @@ small amounts in these runs, but both mode-switch directions still pass the
 `<1000ms` budget in both Stage 2f runs. The remaining scroll frame cost is not
 formula-height measurement; it is still PM layout/coordinate work in the large
 native DOM.
+
+
+## Stage 2g Scroll Hot-Path Targeting (2026-08-11)
+
+Stage 2g kept the Stage 2f height cache and reduced scroll/rAF churn on the
+large Barfoot file. Full diagnosis is in
+`docs/performance-stage2g-diagnosis.md`.
+
+Changes:
+
+- Small-step scroll no longer schedules an EditorShell hydration rAF per frame;
+  hydration is deferred until scrolling stops or a large jump is detected.
+- PM viewport center mapping and anchor capture are still used on hydration
+  frames, but not inside the scroll event handler.
+- Scroll-height stabilization only rewrites scrollTop when document height
+  actually changed after hydration.
+- Hydration queue eviction is tightened to the prefetch radius.
+- Inline math prefetch recognizes `preparedFormulaHtml`, so clearing the raw
+  formula cache in the benchmark no longer causes worker prefetch churn on the
+  scroll path.
+
+Large-file benchmark, two final runs on
+`/home/crh/下载/barfoot_ser24/barfoot_ser24.md`:
+
+| Metric | 0562663 baseline | Stage 2g A | Stage 2g B |
+| --- | ---: | ---: | ---: |
+| interaction-typing | 151.8 | 159.9 | 153.9 |
+| interaction-combined | 1,341.1 | 1,305.3 | 1,486.9 |
+| mode-switch-visual-to-source-ms | 721.1 | 856.7 | 710.2 |
+| mode-switch-source-to-visual-ms | 922.0 | 867.2 | 910.2 |
+| scroll-avg-frame | 152.4 | 150.2 | 151.1 |
+| scroll-max-frame | 275.9 | 262.9 | 275.7 |
+| scroll-jump-bottom | 1,280.6 | 1,309.0 | 1,279.9 |
+| scroll-jump-middle | 1,315.1 | 1,366.1 | 1,449.1 |
+| scroll-drag-sequence | 1,731.6 | 1,550.3 | 1,653.3 |
+| scrollDriftPx | 0 | 0 | 0 |
+| viewportPlaceholders | 0 | 0 | 0 |
+| inline-height-drift | 0 | 0 | 0 |
+| inlineMathActivateReadyMs | 4.7 | 4.7 | 4.9 |
+
+Status: scroll avg/max and drag jump-ready improve modestly while all hard
+gates pass. A third final-code run had `scroll-jump-middle` time out after 15s
+while bottom and drag remained ready; it is recorded as a flaky run, not an
+effective result. Jump-ready is still dominated by benchmark-time PM coordinate
+measurement and large native DOM layout, so the `16.6/33/200ms` release budget
+is not yet met. No assertion or perf budget was relaxed.
