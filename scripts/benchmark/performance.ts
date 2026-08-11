@@ -328,6 +328,7 @@ interface UiffClickResult {
 
 interface UiffInputResult {
   ms: number;
+  roundTripMs?: number;
   applied: boolean;
 }
 
@@ -388,15 +389,26 @@ async function measureFirstFrameContract(page: Page): Promise<FirstFrameContract
         '.editor-surface p, .editor-surface li, .editor-surface blockquote, .editor-surface h1, .editor-surface h2, .editor-surface h3',
       ),
     )
-      .filter((element) => (element.textContent ?? '').trim().length > 0)
-      .sort((left, right) => {
+      .filter((element) => (element.textContent ?? '').trim().length > 0);
+    const intersectingCandidates = candidates.filter((element) => {
+      const rect = element.getBoundingClientRect();
+      return (
+        rect.bottom > frameRect.top &&
+        rect.top < frameRect.bottom &&
+        rect.right > frameRect.left &&
+        rect.left < frameRect.right
+      );
+    });
+    const orderedCandidates =
+      intersectingCandidates.length > 0 ? intersectingCandidates : candidates;
+    orderedCandidates.sort((left, right) => {
         const leftBody = left.matches('p, li, blockquote') ? 0 : 1;
         const rightBody = right.matches('p, li, blockquote') ? 0 : 1;
         return leftBody !== rightBody
           ? leftBody - rightBody
           : left.getBoundingClientRect().top - right.getBoundingClientRect().top;
       });
-    for (const element of candidates) {
+    for (const element of orderedCandidates) {
       const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
       let node = walker.nextNode();
       while (node) {
@@ -465,33 +477,42 @@ async function measureFirstFrameContract(page: Page): Promise<FirstFrameContract
   }, clickTarget);
 
   const cdpSession = await page.context().newCDPSession(page);
-  const inputStart = performance.now();
   const inputBefore = await page.evaluate(() => {
     const editor = window.__marivellEditor as {
-      state: { doc: { content: { size: number }; descendants: (fn: (node: { isTextblock?: boolean; textContent?: string }, pos: number) => boolean | void) => void } };
+      state: {
+        doc: { content: { size: number }; descendants: (fn: (node: { isTextblock?: boolean; textContent?: string }, pos: number) => boolean | void) => void };
+        selection: { from: number };
+      };
       commands: { focus: () => boolean; setTextSelection: (pos: number) => boolean };
     };
     if (!editor) {
       throw new Error('editor missing');
     }
-    let from = -1;
-    editor.state.doc.descendants((node, pos) => {
-      if (from !== -1) {
-        return false;
+    let from = editor.state.selection?.from ?? -1;
+    if (from < 0) {
+      editor.state.doc.descendants((node, pos) => {
+        if (from !== -1) {
+          return false;
+        }
+        if (node.isTextblock && node.textContent) {
+          from = pos + 1;
+          return false;
+        }
+        return true;
+      });
+      if (from === -1) {
+        throw new Error('no text block');
       }
-      if (node.isTextblock && node.textContent) {
-        from = pos + 1;
-        return false;
-      }
-      return true;
-    });
-    if (from === -1) {
-      throw new Error('no text block');
+      editor.commands.setTextSelection(from);
+      editor.commands.focus();
     }
-    editor.commands.setTextSelection(from);
     editor.commands.focus();
-    return { before: editor.state.doc.content.size };
+    return {
+      before: editor.state.doc.content.size,
+      selectedPos: editor.state.selection.from,
+    };
   });
+  const inputStart = performance.now();
   await cdpSession.send('Input.insertText', { text: 'x' });
   const inputPoll = await page.evaluate(async (before) => {
     const start = performance.now();
@@ -511,7 +532,7 @@ async function measureFirstFrameContract(page: Page): Promise<FirstFrameContract
     }
     return { applied: false, ms: performance.now() - start };
   }, inputBefore.before);
-  const inputMs = performance.now() - inputStart;
+  const inputRoundTripMs = performance.now() - inputStart;
   await page.evaluate(() => {
     const editor = window.__marivellEditor as {
       commands: { undo: () => boolean };
@@ -520,7 +541,8 @@ async function measureFirstFrameContract(page: Page): Promise<FirstFrameContract
   });
   await cdpSession.detach().catch(() => {});
   const input: UiffInputResult = {
-    ms: inputMs,
+    ms: inputPoll.ms,
+    roundTripMs: inputRoundTripMs,
     applied: inputPoll.applied,
   };
 
@@ -659,6 +681,21 @@ async function measureFirstFrameContract(page: Page): Promise<FirstFrameContract
         } else {
           settleFrames = 0;
           previousTop = nextTop;
+        }
+      }
+      const hydrationDeadline = performance.now() + 5000;
+      let hydrationQuietFrames = 0;
+      let lastLayoutShiftCount = layoutShifts.length;
+      while (performance.now() < hydrationDeadline && hydrationQuietFrames < 10) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        const nextTop = frame.scrollTop;
+        const nextShiftCount = layoutShifts.length;
+        if (nextTop === previousTop && nextShiftCount === lastLayoutShiftCount) {
+          hydrationQuietFrames += 1;
+        } else {
+          hydrationQuietFrames = 0;
+          previousTop = nextTop;
+          lastLayoutShiftCount = nextShiftCount;
         }
       }
       const firstTop = frame.scrollTop;
@@ -2730,7 +2767,7 @@ async function main(): Promise<void> {
             metric: 'uiff-cdp-insert-x-ms',
             value: round(contract.input.ms),
             unit: 'ms',
-            note: `applied=${contract.input.applied}`,
+            note: `applied=${contract.input.applied} roundTrip=${round(contract.input.roundTripMs ?? 0)}`,
           },
           {
             metric: 'uiff-viewport-real',

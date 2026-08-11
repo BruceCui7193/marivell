@@ -189,15 +189,26 @@ async function findVisibleTextPoint(page: Page): Promise<{ x: number; y: number 
         '.editor-surface p, .editor-surface li, .editor-surface blockquote, .editor-surface h1, .editor-surface h2, .editor-surface h3',
       ),
     )
-      .filter((element) => (element.textContent ?? '').trim().length > 0)
-      .sort((left, right) => {
+      .filter((element) => (element.textContent ?? '').trim().length > 0);
+    const intersectingCandidates = candidates.filter((element) => {
+      const rect = element.getBoundingClientRect();
+      return (
+        rect.bottom > frameRect.top &&
+        rect.top < frameRect.bottom &&
+        rect.right > frameRect.left &&
+        rect.left < frameRect.right
+      );
+    });
+    const orderedCandidates =
+      intersectingCandidates.length > 0 ? intersectingCandidates : candidates;
+    orderedCandidates.sort((left, right) => {
         const leftBody = left.matches('p, li, blockquote') ? 0 : 1;
         const rightBody = right.matches('p, li, blockquote') ? 0 : 1;
         return leftBody !== rightBody
           ? leftBody - rightBody
           : left.getBoundingClientRect().top - right.getBoundingClientRect().top;
       });
-    for (const element of candidates) {
+    for (const element of orderedCandidates) {
       const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
       let node = walker.nextNode();
       while (node) {
@@ -331,6 +342,21 @@ async function collectVisualContract(
         previousTop = frame.scrollTop;
       }
     }
+    const hydrationDeadline = performance.now() + 5000;
+    let hydrationQuietFrames = 0;
+    let lastLayoutShiftCount = layoutShifts.length;
+    while (performance.now() < hydrationDeadline && hydrationQuietFrames < 10) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const nextTop = frame.scrollTop;
+      const nextShiftCount = layoutShifts.length;
+      if (nextTop === previousTop && nextShiftCount === lastLayoutShiftCount) {
+        hydrationQuietFrames += 1;
+      } else {
+        hydrationQuietFrames = 0;
+        previousTop = nextTop;
+        lastLayoutShiftCount = nextShiftCount;
+      }
+    }
     const firstTop = frame.scrollTop;
     const shiftsBeforeIdle = layoutShifts.length;
     let stableFrames = 0;
@@ -431,26 +457,35 @@ async function main(): Promise<void> {
     const cdp = await handle.page.context().newCDPSession(handle.page);
     const before = await handle.page.evaluate(() => {
       const editor = window.__marivellEditor as {
-        state: { doc: { content: { size: number }; descendants: (fn: (node: { isTextblock?: boolean; textContent?: string }, pos: number) => boolean | void) => void } };
+        state: {
+          doc: { content: { size: number }; descendants: (fn: (node: { isTextblock?: boolean; textContent?: string }, pos: number) => boolean | void) => void };
+          selection: { from: number };
+        };
         commands: { focus: () => boolean; setTextSelection: (pos: number) => boolean };
       };
-      let from = -1;
-      editor.state.doc.descendants((node, pos) => {
-        if (from !== -1) {
-          return false;
+      let from = editor.state.selection?.from ?? -1;
+      if (from < 0) {
+        editor.state.doc.descendants((node, pos) => {
+          if (from !== -1) {
+            return false;
+          }
+          if (node.isTextblock && node.textContent) {
+            from = pos + 1;
+            return false;
+          }
+          return true;
+        });
+        if (from === -1) {
+          throw new Error('no text block');
         }
-        if (node.isTextblock && node.textContent) {
-          from = pos + 1;
-          return false;
-        }
-        return true;
-      });
-      if (from === -1) {
-        throw new Error('no text block');
+        editor.commands.setTextSelection(from);
+        editor.commands.focus();
       }
-      editor.commands.setTextSelection(from);
       editor.commands.focus();
-      return { size: editor.state.doc.content.size };
+      return {
+        size: editor.state.doc.content.size,
+        selectedPos: editor.state.selection.from,
+      };
     });
     const inputStart = performance.now();
     await cdp.send('Input.insertText', { text: 'x' });
@@ -472,7 +507,7 @@ async function main(): Promise<void> {
       }
       return { applied: false, ms: performance.now() - start };
     }, before.size);
-    const inputMs = performance.now() - inputStart;
+    const inputRoundTripMs = performance.now() - inputStart;
     await handle.page.evaluate(() => {
       const editor = window.__marivellEditor as { commands: { undo: () => boolean } };
       editor.commands.undo();
@@ -480,8 +515,12 @@ async function main(): Promise<void> {
     await cdp.detach().catch(() => {});
     assert(
       'CDP insertText("x") echoes within 100ms',
-      inputPoll.applied && inputMs <= 100,
-      JSON.stringify({ inputApplied: inputPoll.applied, inputMs, pollMs: inputPoll.ms }),
+      inputPoll.applied && inputPoll.ms <= 100,
+      JSON.stringify({
+        inputApplied: inputPoll.applied,
+        inputMs: inputPoll.ms,
+        inputRoundTripMs,
+      }),
     );
 
     const visual = await collectVisualContract(handle.page);
