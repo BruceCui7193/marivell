@@ -82,9 +82,17 @@ export interface DomSnapshot {
 
 export interface WorkerDiagnostics {
   exists: boolean;
-  formulaChunks: Record<string, number> | null;
+  formulaChunks: Record<string, number | boolean> | null;
   inline: Record<string, number> | null;
   heightCache: Record<string, number> | null;
+  deferred: Record<string, unknown> | null;
+  formulaQueueDepth: number;
+  formulaInFlightCount: number;
+  pendingFormulaHtmlChunks: number;
+  formulaHtmlProcessingScheduled: boolean;
+  formulaChunkPumpThrottled: boolean;
+  maxFormulaQueueDepth: number;
+  maxPendingFormulaHtmlChunks: number;
 }
 
 export interface ResourceSnapshot {
@@ -126,6 +134,11 @@ export interface IdleSample {
   workerProcessRunsDelta: number;
   workerMessagesDelta: number;
   workerEntriesDelta: number;
+  workerQueueDepthDelta: number;
+  workerInFlightCountDelta: number;
+  workerPendingHtmlDelta: number;
+  maxWorkerQueueDepth: number;
+  maxWorkerPendingHtmlChunks: number;
   pendingHeightMeasurements: number | null;
 }
 
@@ -144,6 +157,11 @@ export interface ActivitySample {
   workerProcessRunsDelta: number;
   workerMessagesDelta: number;
   workerEntriesDelta: number;
+  workerQueueDepthDelta: number;
+  workerInFlightCountDelta: number;
+  workerPendingHtmlDelta: number;
+  maxWorkerQueueDepth: number;
+  maxWorkerPendingHtmlChunks: number;
   pendingHeightMeasurements: number | null;
 }
 
@@ -164,7 +182,7 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function buildRenderer(outDir: string): Promise<void> {
+export async function buildRenderer(outDir: string): Promise<void> {
   fs.mkdirSync(outDir, { recursive: true });
   await execFileAsync(
     electronViteBin,
@@ -502,17 +520,29 @@ async function readWorkerDiagnostics(page: Page): Promise<WorkerDiagnostics> {
   return page.evaluate(`(() => {
     const target = window;
     const formulaChunks = target.__marivellFormulaChunkDiagnostics;
+    const deferred = typeof target.__marivellGetDeferredWorkDiagnostics === 'function'
+      ? target.__marivellGetDeferredWorkDiagnostics()
+      : null;
     const inline = typeof target.__marivellGetInlineMathHeightPrefetchStats === 'function'
       ? target.__marivellGetInlineMathHeightPrefetchStats()
       : null;
     const heightCache = typeof target.__marivellGetNodeHeightCacheStats === 'function'
       ? target.__marivellGetNodeHeightCacheStats()
       : null;
+    const numberOrZero = (value) => typeof value === 'number' && Number.isFinite(value) ? value : 0;
     return {
       exists: Boolean(formulaChunks || inline || heightCache),
       formulaChunks: formulaChunks ? { ...formulaChunks } : null,
       inline: inline ? { ...inline } : null,
       heightCache: heightCache ? { ...heightCache } : null,
+      deferred,
+      formulaQueueDepth: numberOrZero(deferred?.formulaChunkQueueDepth),
+      formulaInFlightCount: numberOrZero(deferred?.formulaChunkInFlightCount),
+      pendingFormulaHtmlChunks: numberOrZero(deferred?.pendingFormulaHtmlChunks),
+      formulaHtmlProcessingScheduled: Boolean(deferred?.formulaHtmlProcessingScheduled),
+      formulaChunkPumpThrottled: Boolean(deferred?.formulaChunkPumpThrottled),
+      maxFormulaQueueDepth: numberOrZero(deferred?.maxFormulaChunkQueueDepth),
+      maxPendingFormulaHtmlChunks: numberOrZero(deferred?.maxPendingFormulaHtmlChunks),
     };
   })()`);
 }
@@ -609,11 +639,16 @@ function workerDelta(start: ResourceSnapshot, end: ResourceSnapshot): {
   processRuns: number;
   messages: number;
   entries: number;
+  queueDepth: number;
+  inFlightCount: number;
+  pendingHtmlChunks: number;
+  maxQueueDepth: number;
+  maxPendingHtmlChunks: number;
   pendingHeightMeasurements: number | null;
 } {
   const read = (snapshot: ResourceSnapshot, key: string): number => {
     const value = snapshot.worker.formulaChunks?.[key];
-    return typeof value === 'number' ? value : 0;
+    return typeof value === 'number' && Number.isFinite(value) ? value : 0;
   };
   return {
     waitMs: read(end, 'waitMs') - read(start, 'waitMs'),
@@ -621,6 +656,12 @@ function workerDelta(start: ResourceSnapshot, end: ResourceSnapshot): {
     processRuns: read(end, 'processRuns') - read(start, 'processRuns'),
     messages: read(end, 'messages') - read(start, 'messages'),
     entries: read(end, 'entries') - read(start, 'entries'),
+    queueDepth: end.worker.formulaQueueDepth - start.worker.formulaQueueDepth,
+    inFlightCount: end.worker.formulaInFlightCount - start.worker.formulaInFlightCount,
+    pendingHtmlChunks:
+      end.worker.pendingFormulaHtmlChunks - start.worker.pendingFormulaHtmlChunks,
+    maxQueueDepth: end.worker.maxFormulaQueueDepth,
+    maxPendingHtmlChunks: end.worker.maxPendingFormulaHtmlChunks,
     pendingHeightMeasurements: end.worker.inline?.pendingHeightMeasurements ?? null,
   };
 }
@@ -683,6 +724,11 @@ export async function sampleIdle(
     workerProcessRunsDelta: delta.processRuns,
     workerMessagesDelta: delta.messages,
     workerEntriesDelta: delta.entries,
+    workerQueueDepthDelta: delta.queueDepth,
+    workerInFlightCountDelta: delta.inFlightCount,
+    workerPendingHtmlDelta: delta.pendingHtmlChunks,
+    maxWorkerQueueDepth: delta.maxQueueDepth,
+    maxWorkerPendingHtmlChunks: delta.maxPendingHtmlChunks,
     pendingHeightMeasurements: delta.pendingHeightMeasurements,
   };
 }
@@ -766,6 +812,11 @@ export async function sampleModeSwitchCycles(
     workerProcessRunsDelta: delta.processRuns,
     workerMessagesDelta: delta.messages,
     workerEntriesDelta: delta.entries,
+    workerQueueDepthDelta: delta.queueDepth,
+    workerInFlightCountDelta: delta.inFlightCount,
+    workerPendingHtmlDelta: delta.pendingHtmlChunks,
+    maxWorkerQueueDepth: delta.maxQueueDepth,
+    maxWorkerPendingHtmlChunks: delta.maxPendingHtmlChunks,
     pendingHeightMeasurements: delta.pendingHeightMeasurements,
   };
 }
@@ -829,6 +880,11 @@ export async function sampleScrollRoundTrip(page: Page): Promise<ActivitySample>
     workerProcessRunsDelta: delta.processRuns,
     workerMessagesDelta: delta.messages,
     workerEntriesDelta: delta.entries,
+    workerQueueDepthDelta: delta.queueDepth,
+    workerInFlightCountDelta: delta.inFlightCount,
+    workerPendingHtmlDelta: delta.pendingHtmlChunks,
+    maxWorkerQueueDepth: delta.maxQueueDepth,
+    maxWorkerPendingHtmlChunks: delta.maxPendingHtmlChunks,
     pendingHeightMeasurements: delta.pendingHeightMeasurements,
   };
 }
@@ -859,6 +915,14 @@ function sampleResourceSnapshot(snapshot: ResourceSnapshot): Record<string, unkn
     workerFormulaChunks: snapshot.worker.formulaChunks,
     workerInline: snapshot.worker.inline,
     workerHeightCache: snapshot.worker.heightCache,
+    workerDeferred: snapshot.worker.deferred,
+    workerQueueDepth: snapshot.worker.formulaQueueDepth,
+    workerInFlightCount: snapshot.worker.formulaInFlightCount,
+    workerPendingFormulaHtmlChunks: snapshot.worker.pendingFormulaHtmlChunks,
+    workerFormulaHtmlProcessingScheduled: snapshot.worker.formulaHtmlProcessingScheduled,
+    workerPumpThrottled: snapshot.worker.formulaChunkPumpThrottled,
+    workerMaxQueueDepth: snapshot.worker.maxFormulaQueueDepth,
+    workerMaxPendingFormulaHtmlChunks: snapshot.worker.maxPendingFormulaHtmlChunks,
   };
 }
 
@@ -893,6 +957,11 @@ function summarizeIdle(sample: IdleSample): Record<string, unknown> {
     workerProcessRunsDelta: sample.workerProcessRunsDelta,
     workerMessagesDelta: sample.workerMessagesDelta,
     workerEntriesDelta: sample.workerEntriesDelta,
+    workerQueueDepthDelta: sample.workerQueueDepthDelta,
+    workerInFlightCountDelta: sample.workerInFlightCountDelta,
+    workerPendingHtmlDelta: sample.workerPendingHtmlDelta,
+    maxWorkerQueueDepth: sample.maxWorkerQueueDepth,
+    maxWorkerPendingHtmlChunks: sample.maxWorkerPendingHtmlChunks,
     pendingHeightMeasurements: sample.pendingHeightMeasurements,
     start: sampleResourceSnapshot(sample.start),
     end: sampleResourceSnapshot(sample.end),
@@ -931,6 +1000,11 @@ function summarizeActivity(sample: ActivitySample): Record<string, unknown> {
     workerProcessRunsDelta: sample.workerProcessRunsDelta,
     workerMessagesDelta: sample.workerMessagesDelta,
     workerEntriesDelta: sample.workerEntriesDelta,
+    workerQueueDepthDelta: sample.workerQueueDepthDelta,
+    workerInFlightCountDelta: sample.workerInFlightCountDelta,
+    workerPendingHtmlDelta: sample.workerPendingHtmlDelta,
+    maxWorkerQueueDepth: sample.maxWorkerQueueDepth,
+    maxWorkerPendingHtmlChunks: sample.maxWorkerPendingHtmlChunks,
     pendingHeightMeasurements: sample.pendingHeightMeasurements,
     start: sampleResourceSnapshot(sample.start),
     end: sampleResourceSnapshot(sample.end),
@@ -1162,6 +1236,10 @@ function buildMetricRows(rounds: ResourceRound[]): MetricRow[] {
   push('idle10.dom-node-delta', 'nodes', phaseScalar(rounds, 'idle10', 'domNodeDelta'));
   push('idle10.worker-wait-ms-delta', 'ms', phaseScalar(rounds, 'idle10', 'workerWaitMsDelta'));
   push('idle10.worker-process-ms-delta', 'ms', phaseScalar(rounds, 'idle10', 'workerProcessMsDelta'));
+  push('idle10.worker-queue-depth-delta', 'chunks', phaseScalar(rounds, 'idle10', 'workerQueueDepthDelta'));
+  push('idle10.worker-pending-html-delta', 'chunks', phaseScalar(rounds, 'idle10', 'workerPendingHtmlDelta'));
+  push('idle10.worker-max-queue-depth', 'chunks', phaseScalar(rounds, 'idle10', 'maxWorkerQueueDepth'));
+  push('idle10.worker-max-pending-html', 'chunks', phaseScalar(rounds, 'idle10', 'maxWorkerPendingHtmlChunks'));
   push('idle10.pending-height-measurements', 'items', phaseScalar(rounds, 'idle10', 'pendingHeightMeasurements'));
 
   push(
@@ -1200,6 +1278,16 @@ function buildMetricRows(rounds: ResourceRound[]): MetricRow[] {
     'mode-switch.worker-process-ms-delta',
     'ms',
     rounds.map((round) => round.modeSwitch.workerProcessMsDelta),
+  );
+  push(
+    'mode-switch.worker-max-queue-depth',
+    'chunks',
+    rounds.map((round) => round.modeSwitch.maxWorkerQueueDepth),
+  );
+  push(
+    'mode-switch.worker-max-pending-html',
+    'chunks',
+    rounds.map((round) => round.modeSwitch.maxWorkerPendingHtmlChunks),
   );
   push(
     'mode-switch.heap-used-delta-mb',
@@ -1241,6 +1329,16 @@ function buildMetricRows(rounds: ResourceRound[]): MetricRow[] {
     rounds.map((round) => round.scroll.workerProcessMsDelta),
   );
   push(
+    'scroll.worker-max-queue-depth',
+    'chunks',
+    rounds.map((round) => round.scroll.maxWorkerQueueDepth),
+  );
+  push(
+    'scroll.worker-max-pending-html',
+    'chunks',
+    rounds.map((round) => round.scroll.maxWorkerPendingHtmlChunks),
+  );
+  push(
     'scroll.heap-used-delta-mb',
     'MB',
     rounds.map((round) => round.scroll.heapUsedDeltaMb),
@@ -1270,6 +1368,10 @@ function buildMetricRows(rounds: ResourceRound[]): MetricRow[] {
   push('idle30.dom-node-delta', 'nodes', phaseScalar(rounds, 'idle30', 'domNodeDelta'));
   push('idle30.worker-wait-ms-delta', 'ms', phaseScalar(rounds, 'idle30', 'workerWaitMsDelta'));
   push('idle30.worker-process-ms-delta', 'ms', phaseScalar(rounds, 'idle30', 'workerProcessMsDelta'));
+  push('idle30.worker-queue-depth-delta', 'chunks', phaseScalar(rounds, 'idle30', 'workerQueueDepthDelta'));
+  push('idle30.worker-pending-html-delta', 'chunks', phaseScalar(rounds, 'idle30', 'workerPendingHtmlDelta'));
+  push('idle30.worker-max-queue-depth', 'chunks', phaseScalar(rounds, 'idle30', 'maxWorkerQueueDepth'));
+  push('idle30.worker-max-pending-html', 'chunks', phaseScalar(rounds, 'idle30', 'maxWorkerPendingHtmlChunks'));
   push('idle30.pending-height-measurements', 'items', phaseScalar(rounds, 'idle30', 'pendingHeightMeasurements'));
 
   push('final.heap-used-mb', 'MB', rounds.map((round) => mb(heapUsedBytes(round.final))));

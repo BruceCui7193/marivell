@@ -89,6 +89,7 @@ import {
 import {
   getEditorWidthBucketDiagnostics,
   resetEditorEnvironmentKeyCache,
+  setHeightMeasurementInteractionPaused,
   setHeightMeasurementScrollPaused,
   setHeightMeasurementSuspended,
 } from '../editor/virtualization/height-measurer';
@@ -205,6 +206,9 @@ interface ModeSwitchCache {
 
 const FORMULA_CHUNK_MAX_IN_FLIGHT = 2;
 const FORMULA_CHUNK_REQUEST_ID_OFFSET = 0x4000_0000;
+const FORMULA_CHUNK_MAX_PENDING_HTML_CHUNKS = 6;
+const FORMULA_CHUNK_PUMP_RESUME_PENDING_LIMIT = 4;
+const HEIGHT_MEASUREMENT_GESTURE_PAUSE_MS = 1400;
 
 function createEmptyDocument(): JSONContent {
   return {
@@ -321,9 +325,26 @@ function areOutlinesEqual(left: OutlineItem[], right: OutlineItem[]): boolean {
 
 type IdleHandle = number;
 
+interface IdleDeadline {
+  didTimeout: boolean;
+  timeRemaining(): number;
+}
+
+interface IdleWindow {
+  requestIdleCallback?: (
+    callback: (deadline: IdleDeadline) => void,
+    options?: { timeout: number },
+  ) => number;
+  cancelIdleCallback?: (handle: number) => void;
+}
+
 const LARGE_DOCUMENT_THRESHOLD = 200_000;
 
 function scheduleIdleWork(task: () => void, timeout = 1000): IdleHandle {
+  const idleWindow = window as unknown as IdleWindow;
+  if (typeof idleWindow.requestIdleCallback === 'function') {
+    return idleWindow.requestIdleCallback(() => task(), { timeout });
+  }
   return window.setTimeout(task, timeout);
 }
 
@@ -332,6 +353,11 @@ function cancelIdleWork(handle: IdleHandle | null): void {
     return;
   }
 
+  const idleWindow = window as unknown as IdleWindow;
+  if (typeof idleWindow.cancelIdleCallback === 'function') {
+    idleWindow.cancelIdleCallback(handle);
+    return;
+  }
   window.clearTimeout(handle);
 }
 
@@ -1039,7 +1065,16 @@ export default function EditorShell({
     editGateSkips: 0,
     preemptionSkips: 0,
     lastPreemptedAt: 0,
+    queueDepth: 0,
+    inFlightCount: 0,
+    pendingFormulaHtmlChunks: 0,
+    processingScheduled: false,
+    pumpThrottled: false,
+    pumpThrottleCount: 0,
+    maxQueueDepthSeen: 0,
+    maxPendingFormulaHtmlChunksSeen: 0,
   });
+  const formulaChunkPumpThrottledRef = useRef(false);
   const pendingFormulaHtmlChunksRef = useRef<Array<Record<string, string>>>([]);
   const formulaHtmlProcessingScheduledRef = useRef(false);
   const formulaHtmlProcessingTimerRef = useRef<number | null>(null);
@@ -1049,6 +1084,7 @@ export default function EditorShell({
   const lastVisualEditAtRef = useRef(0);
   const lastEditorInteractionAtRef = useRef(0);
   const heightCacheInvalidationFrameRef = useRef<number | null>(null);
+  const heightMeasurementResumeTimerRef = useRef<IdleHandle | null>(null);
   const lastAnchorRestoredScrollTopRef = useRef<number | null>(null);
   const keepAtBottomRef = useRef(false);
   const [toolbarVisible, setToolbarVisible] = useState(() => {
@@ -1146,11 +1182,26 @@ export default function EditorShell({
     const frame = editorFrameRef.current;
     const markInteraction = (): void => {
       lastEditorInteractionAtRef.current = performance.now();
+      setHeightMeasurementInteractionPaused(true);
+      if (heightMeasurementResumeTimerRef.current !== null) {
+        cancelIdleWork(heightMeasurementResumeTimerRef.current);
+      }
+      heightMeasurementResumeTimerRef.current = scheduleIdleWork(() => {
+        heightMeasurementResumeTimerRef.current = null;
+        if (!sourceModeRef.current) {
+          setHeightMeasurementInteractionPaused(false);
+        }
+      }, HEIGHT_MEASUREMENT_GESTURE_PAUSE_MS);
     };
     frame?.addEventListener('keydown', markInteraction, { capture: true });
     frame?.addEventListener('pointerdown', markInteraction, { capture: true });
     frame?.addEventListener('input', markInteraction, { capture: true });
     return () => {
+      if (heightMeasurementResumeTimerRef.current !== null) {
+        cancelIdleWork(heightMeasurementResumeTimerRef.current);
+        heightMeasurementResumeTimerRef.current = null;
+      }
+      setHeightMeasurementInteractionPaused(false);
       frame?.removeEventListener('keydown', markInteraction, { capture: true });
       frame?.removeEventListener('pointerdown', markInteraction, { capture: true });
       frame?.removeEventListener('input', markInteraction, { capture: true });
@@ -1210,6 +1261,26 @@ export default function EditorShell({
       formulaHtmlProcessingTimerRef.current = null;
     }
     formulaHtmlProcessingScheduledRef.current = false;
+  }, []);
+
+  const syncFormulaChunkDiagnostics = useCallback((): void => {
+    const diagnostics = formulaChunkDiagnosticsRef.current;
+    const queueDepth = formulaChunkQueueRef.current.length;
+    const inFlightCount = formulaChunkInFlightRef.current.size;
+    const pendingFormulaHtmlChunks = pendingFormulaHtmlChunksRef.current.length;
+    diagnostics.queueDepth = queueDepth;
+    diagnostics.inFlightCount = inFlightCount;
+    diagnostics.pendingFormulaHtmlChunks = pendingFormulaHtmlChunks;
+    diagnostics.processingScheduled = formulaHtmlProcessingScheduledRef.current;
+    diagnostics.pumpThrottled = formulaChunkPumpThrottledRef.current;
+    diagnostics.maxQueueDepthSeen = Math.max(
+      diagnostics.maxQueueDepthSeen,
+      queueDepth,
+    );
+    diagnostics.maxPendingFormulaHtmlChunksSeen = Math.max(
+      diagnostics.maxPendingFormulaHtmlChunksSeen,
+      pendingFormulaHtmlChunks,
+    );
   }, []);
 
   const applySourceMarkdown = useCallback(
@@ -1302,7 +1373,7 @@ export default function EditorShell({
       const requestId = sourcePreviewRequestRef.current;
 
       if (sourcePreviewTimerRef.current !== null) {
-        window.clearTimeout(sourcePreviewTimerRef.current);
+        cancelIdleWork(sourcePreviewTimerRef.current);
       }
 
       if (markdown.length >= LARGE_DOCUMENT_THRESHOLD) {
@@ -1310,7 +1381,7 @@ export default function EditorShell({
         return;
       }
 
-      sourcePreviewTimerRef.current = window.setTimeout(() => {
+      sourcePreviewTimerRef.current = scheduleIdleWork(() => {
         sourcePreviewTimerRef.current = null;
         const markedMarkdown = insertSelectionMarkersIntoMarkdown(
           markdown,
@@ -1340,7 +1411,7 @@ export default function EditorShell({
               sourcePreviewCacheRef.current = null;
             }
           });
-      }, 60);
+      }, 120);
     },
     [parseMarkdownInWorker],
   );
@@ -1354,9 +1425,10 @@ export default function EditorShell({
         skipNextDocChangeTimerRef.current = null;
       }
       if (sourcePreviewTimerRef.current !== null) {
-        window.clearTimeout(sourcePreviewTimerRef.current);
+        cancelIdleWork(sourcePreviewTimerRef.current);
         sourcePreviewTimerRef.current = null;
       }
+      formulaChunkPumpThrottledRef.current = false;
       formulaChunkQueueRef.current = [];
       formulaChunkInFlightRef.current.clear();
       formulaPrefetchRequestedKeysRef.current.clear();
@@ -1651,11 +1723,11 @@ export default function EditorShell({
       }
 
       if (pendingVisualMetaSyncRef.current !== null) {
-        window.clearTimeout(pendingVisualMetaSyncRef.current);
+        cancelIdleWork(pendingVisualMetaSyncRef.current);
       }
 
       if (largeDocumentModeRef.current) {
-        pendingVisualMetaSyncRef.current = window.setTimeout(() => {
+        pendingVisualMetaSyncRef.current = scheduleIdleWork(() => {
           pendingVisualMetaSyncRef.current = null;
         }, 900);
 
@@ -1667,7 +1739,7 @@ export default function EditorShell({
         return;
       }
 
-      pendingVisualMetaSyncRef.current = window.setTimeout(() => {
+      pendingVisualMetaSyncRef.current = scheduleIdleWork(() => {
         const stats = calculateDocumentStats(getEditorPlainText(nextEditor));
         setLiveStats((current) => (areStatsEqual(current, stats) ? current : stats));
 
@@ -1701,6 +1773,7 @@ export default function EditorShell({
   useEffect(() => {
     editorRef.current = editor;
     if (window.markdownEditor.getBenchmarkEnabled?.()) {
+      syncFormulaChunkDiagnostics();
       const benchmarkWindow = window as unknown as Record<string, unknown>;
       benchmarkWindow.__marivellEditor = editor;
       benchmarkWindow.__marivellClearFormulaHtmlCache = clearFormulaHtmlCache;
@@ -1719,23 +1792,37 @@ export default function EditorShell({
         resetFormulaTemplateCacheStatsForTest;
       benchmarkWindow.__marivellFormulaChunkDiagnostics =
         formulaChunkDiagnosticsRef.current;
-      benchmarkWindow.__marivellGetDeferredWorkDiagnostics = () => ({
-        formulaChunkQueueLength: formulaChunkQueueRef.current.length,
-        formulaChunkInFlightCount: formulaChunkInFlightRef.current.size,
-        pendingFormulaHtmlChunks: pendingFormulaHtmlChunksRef.current.length,
-        formulaHtmlProcessingScheduled: formulaHtmlProcessingScheduledRef.current,
-        workerQueueEmpty:
-          formulaChunkQueueRef.current.length === 0 &&
-          formulaChunkInFlightRef.current.size === 0 &&
-          pendingFormulaHtmlChunksRef.current.length === 0 &&
-          !formulaHtmlProcessingScheduledRef.current,
-        preemptionSkips: formulaChunkDiagnosticsRef.current.preemptionSkips,
-        lastPreemptedAt: formulaChunkDiagnosticsRef.current.lastPreemptedAt,
-        pendingVisualDocumentSync: pendingVisualDocumentSyncRef.current !== null,
-        pendingVisualMetaSync: pendingVisualMetaSyncRef.current !== null,
-      });
+      benchmarkWindow.__marivellGetDeferredWorkDiagnostics = () => {
+        syncFormulaChunkDiagnostics();
+        const queueDepth = formulaChunkQueueRef.current.length;
+        const inFlightCount = formulaChunkInFlightRef.current.size;
+        const pendingFormulaHtmlChunks = pendingFormulaHtmlChunksRef.current.length;
+        return {
+          formulaChunkQueueLength: queueDepth,
+          formulaChunkQueueDepth: queueDepth,
+          formulaChunkInFlightCount: inFlightCount,
+          pendingFormulaHtmlChunks,
+          formulaHtmlProcessingScheduled: formulaHtmlProcessingScheduledRef.current,
+          formulaChunkPumpThrottled: formulaChunkPumpThrottledRef.current,
+          formulaChunkPumpThrottleCount:
+            formulaChunkDiagnosticsRef.current.pumpThrottleCount,
+          maxFormulaChunkQueueDepth:
+            formulaChunkDiagnosticsRef.current.maxQueueDepthSeen,
+          maxPendingFormulaHtmlChunks:
+            formulaChunkDiagnosticsRef.current.maxPendingFormulaHtmlChunksSeen,
+          workerQueueEmpty:
+            queueDepth === 0 &&
+            inFlightCount === 0 &&
+            pendingFormulaHtmlChunks === 0 &&
+            !formulaHtmlProcessingScheduledRef.current,
+          preemptionSkips: formulaChunkDiagnosticsRef.current.preemptionSkips,
+          lastPreemptedAt: formulaChunkDiagnosticsRef.current.lastPreemptedAt,
+          pendingVisualDocumentSync: pendingVisualDocumentSyncRef.current !== null,
+          pendingVisualMetaSync: pendingVisualMetaSyncRef.current !== null,
+        };
+      };
     }
-  }, [editor]);
+  }, [editor, syncFormulaChunkDiagnostics]);
 
   useEffect(() => {
     if (!editor) {
@@ -1871,7 +1958,7 @@ export default function EditorShell({
 
     let hydrationFrame: number | null = null;
     let hydrationInProgress = false;
-    let hydrationSettleTimer: ReturnType<typeof setTimeout> | null = null;
+    let hydrationSettleTimer: IdleHandle | null = null;
     let heightPauseTimer: ReturnType<typeof setTimeout> | null = null;
     let lastSyncHydrateScrollTop = frame.scrollTop;
     let lastRecordedScrollTop = frame.scrollTop;
@@ -2483,7 +2570,7 @@ export default function EditorShell({
 
     const clearHydrationSettleTimer = (): void => {
       if (hydrationSettleTimer !== null) {
-        clearTimeout(hydrationSettleTimer);
+        cancelIdleWork(hydrationSettleTimer);
         hydrationSettleTimer = null;
       }
     };
@@ -2525,14 +2612,14 @@ export default function EditorShell({
         deferInlineMathHydrationForNextScroll = false;
         return;
       }
-      hydrationSettleTimer = setTimeout(() => {
+      hydrationSettleTimer = scheduleIdleWork(() => {
         hydrationSettleTimer = null;
         if (hydrationFrame === null && !sourceModeRef.current) {
           deferInlineMathHydrationForNextScroll = false;
           performScrollHydration({ settle: true, drain: true });
           runSettleFallbackScan();
         }
-      }, 300);
+      }, 360);
     };
 
     const hydrateScrollTarget = () => {
@@ -2563,14 +2650,14 @@ export default function EditorShell({
         scheduleHydrationFrame();
       } else {
         clearHydrationSettleTimer();
-        hydrationSettleTimer = setTimeout(() => {
+        hydrationSettleTimer = scheduleIdleWork(() => {
           hydrationSettleTimer = null;
           if (hydrationFrame === null && !sourceModeRef.current) {
             deferInlineMathHydrationForNextScroll = false;
             performScrollHydration({ settle: true });
             runSettleFallbackScan();
           }
-        }, 300);
+        }, 360);
       }
     };
     frame.addEventListener('scroll', hydrateScrollTarget, { passive: true });
@@ -2804,7 +2891,7 @@ export default function EditorShell({
   useEffect(() => {
     return () => {
       if (pendingVisualMetaSyncRef.current !== null) {
-        window.clearTimeout(pendingVisualMetaSyncRef.current);
+        cancelIdleWork(pendingVisualMetaSyncRef.current);
       }
 
       if (pendingVisualDocumentSyncRef.current !== null) {
@@ -2890,6 +2977,8 @@ export default function EditorShell({
     formulaPrefetchRequestedKeysRef.current.clear();
     cancelFormulaHtmlProcessingTimer();
     pendingFormulaHtmlChunksRef.current = [];
+    formulaChunkPumpThrottledRef.current = false;
+    syncFormulaChunkDiagnostics();
     setLoadingExternalDocument(true);
     startupCaretPlacedRef.current = false;
     editor.setEditable(false);
@@ -3048,6 +3137,7 @@ export default function EditorShell({
         return;
       }
       pendingFormulaHtmlChunksRef.current.push(formulaHtml);
+      syncFormulaChunkDiagnostics();
       if (formulaHtmlProcessingScheduledRef.current) {
         return;
       }
@@ -3063,10 +3153,12 @@ export default function EditorShell({
           formulaChunkDiagnosticsRef.current.preemptionSkips += 1;
           formulaChunkDiagnosticsRef.current.lastPreemptedAt = performance.now();
           scheduleFormulaHtmlProcessing(160);
+          syncFormulaChunkDiagnostics();
           return;
         }
         const chunk = pendingFormulaHtmlChunksRef.current.shift();
         if (!chunk) {
+          syncFormulaChunkDiagnostics();
           return;
         }
         const processStart = performance.now();
@@ -3074,6 +3166,14 @@ export default function EditorShell({
         formulaChunkDiagnosticsRef.current.processRuns += 1;
         formulaChunkDiagnosticsRef.current.processMs += performance.now() - processStart;
         scheduleFormulaHtmlProcessing(32);
+        syncFormulaChunkDiagnostics();
+        if (
+          pendingFormulaHtmlChunksRef.current.length <=
+            FORMULA_CHUNK_PUMP_RESUME_PENDING_LIMIT &&
+          formulaChunkQueueRef.current.length > 0
+        ) {
+          pumpFormulaChunks();
+        }
       };
       const scheduleFormulaHtmlProcessing = (delay = 0): void => {
         if (formulaHtmlProcessingTimerRef.current !== null || formulaHtmlProcessingScheduledRef.current) {
@@ -3099,6 +3199,7 @@ export default function EditorShell({
         } else {
           formulaHtmlProcessingTimerRef.current = window.setTimeout(runProcess, delay);
         }
+        syncFormulaChunkDiagnostics();
       };
       scheduleFormulaHtmlProcessing();
       enqueueFormulaHtmlProcessingRef.current = enqueueFormulaHtmlProcessing;
@@ -3109,7 +3210,27 @@ export default function EditorShell({
         !isActivePrefetch() ||
         formulaChunkQueueRef.current.length === 0
       ) {
+        if (formulaChunkPumpThrottledRef.current) {
+          formulaChunkPumpThrottledRef.current = false;
+          syncFormulaChunkDiagnostics();
+        }
         return;
+      }
+
+      if (
+        pendingFormulaHtmlChunksRef.current.length >=
+        FORMULA_CHUNK_MAX_PENDING_HTML_CHUNKS
+      ) {
+        if (!formulaChunkPumpThrottledRef.current) {
+          formulaChunkPumpThrottledRef.current = true;
+          formulaChunkDiagnosticsRef.current.pumpThrottleCount += 1;
+          syncFormulaChunkDiagnostics();
+        }
+        return;
+      }
+      if (formulaChunkPumpThrottledRef.current) {
+        formulaChunkPumpThrottledRef.current = false;
+        syncFormulaChunkDiagnostics();
       }
 
       if (!markdownWorkerRef.current) {
@@ -3159,6 +3280,7 @@ export default function EditorShell({
             );
           }
           pumpFormulaChunks();
+          syncFormulaChunkDiagnostics();
         };
 
         const handleMessage = (event: MessageEvent<FormulaChunkResponse>) => {
@@ -3190,6 +3312,7 @@ export default function EditorShell({
             );
           }
           pumpFormulaChunks();
+          syncFormulaChunkDiagnostics();
         };
 
         worker.addEventListener('message', handleMessage);
@@ -3220,6 +3343,7 @@ export default function EditorShell({
         return;
       }
       formulaChunkQueueRef.current.unshift(missing);
+      syncFormulaChunkDiagnostics();
       pumpFormulaChunks();
     };
 
@@ -3236,6 +3360,7 @@ export default function EditorShell({
         );
       }
       formulaChunkQueueRef.current = splitFormulaChunks(entries);
+      syncFormulaChunkDiagnostics();
       pumpFormulaChunks();
     };
 
@@ -3297,6 +3422,8 @@ export default function EditorShell({
       formulaChunkQueueRef.current = [];
       cancelFormulaHtmlProcessingTimer();
       pendingFormulaHtmlChunksRef.current = [];
+      formulaChunkPumpThrottledRef.current = false;
+      syncFormulaChunkDiagnostics();
       // If this load is still the latest owner, unlock so a cancelled/re-run path
       // cannot leave contenteditable=false. A newer load will lock again immediately.
       if (latestExternalLoadRef.current === loadId && !editor.isDestroyed) {

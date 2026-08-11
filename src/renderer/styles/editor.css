@@ -458,7 +458,8 @@
   margin-right: 0;
   border-color: transparent;
   pointer-events: none;
-  transform: translateY(-4px) scale(0.98);
+  transform: none;
+  will-change: auto;
 }
 
 .toolbar__group:hover {
@@ -591,7 +592,8 @@
   margin-right: 0;
   border-color: transparent;
   pointer-events: none;
-  transform: translateY(-4px) scale(0.98);
+  transform: none;
+  will-change: auto;
 }
 
 .toolbar-group-launcher__icon {
@@ -700,7 +702,8 @@
   border-color: transparent;
   pointer-events: none;
   overflow: hidden;
-  transform: translateY(-4px) scale(0.98);
+  transform: none;
+  will-change: auto;
 }
 
 :root[data-theme='dark'] .toolbar-button,
@@ -1526,6 +1529,14 @@
   transform: translateZ(0);
   will-change: transform;
   contain: layout style;
+}
+
+.editor-frame:not(.is-source) .editor-host .editor-surface,
+.editor-frame:not(.is-source) .editor-host .ProseMirror,
+.editor-frame:not(.is-source) .editor-host .math-node-preview,
+.editor-frame:not(.is-source) .editor-host .katex {
+  will-change: auto;
+  transform: none;
 }
 
 .editor-frame.is-source {
@@ -2973,7 +2984,7 @@
   right: 0;
   pointer-events: none;
   transform-origin: 0 0;
-  will-change: transform;
+  will-change: auto;
 }
 
 .source-editor__line-no {
@@ -3025,7 +3036,7 @@
   min-width: 100%;
   vertical-align: top;
   transform-origin: 0 0;
-  will-change: transform;
+  will-change: auto;
 }
 
 .source-editor__input {

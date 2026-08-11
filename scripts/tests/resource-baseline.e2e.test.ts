@@ -94,6 +94,21 @@ async function main(): Promise<void> {
     Boolean(compact.open.workerFormulaChunks || compact.open.workerInline),
     JSON.stringify(compact.open.workerFormulaChunks),
   );
+  assert(
+    'worker queue depth diagnostics expose depth and backpressure fields',
+    typeof round.open.worker.formulaQueueDepth === 'number' &&
+      typeof round.open.worker.formulaInFlightCount === 'number' &&
+      typeof round.open.worker.pendingFormulaHtmlChunks === 'number' &&
+      typeof round.open.worker.formulaChunkPumpThrottled === 'boolean' &&
+      typeof round.open.worker.maxFormulaQueueDepth === 'number',
+    JSON.stringify(round.open.worker),
+  );
+  assert(
+    'idle samples carry worker queue depth deltas',
+    typeof round.idle10.workerQueueDepthDelta === 'number' &&
+      typeof round.idle30.workerPendingHtmlDelta === 'number',
+    JSON.stringify({ idle10: round.idle10.workerQueueDepthDelta, idle30: round.idle30.workerPendingHtmlDelta }),
+  );
 
   console.log('\n================================================');
   console.log(`Results: ${passed} passed, ${failed} failed`);

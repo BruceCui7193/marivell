@@ -208,6 +208,7 @@ let measurementIdleHandle: number | null = null;
 let measurementStepScheduled = false;
 let measurementSuspended = false;
 let measurementPausedForScroll = false;
+let measurementInteractionPaused = false;
 
 interface IdleDeadline {
   didTimeout: boolean;
@@ -233,6 +234,7 @@ function scheduleMeasurementStep(timeoutMs = 32): void {
   if (
     measurementSuspended ||
     measurementPausedForScroll ||
+    measurementInteractionPaused ||
     measurementStepScheduled
   ) {
     return;
@@ -243,7 +245,11 @@ function scheduleMeasurementStep(timeoutMs = 32): void {
     measurementStepScheduled = false;
     measurementTimer = null;
     measurementIdleHandle = null;
-    if (measurementSuspended || measurementPausedForScroll) {
+    if (
+      measurementSuspended ||
+      measurementPausedForScroll ||
+      measurementInteractionPaused
+    ) {
       return;
     }
     if (pendingReadChunk !== null) {
@@ -314,6 +320,24 @@ export function setHeightMeasurementScrollPaused(paused: boolean): void {
 
 export function isHeightMeasurementScrollPaused(): boolean {
   return measurementPausedForScroll;
+}
+
+export function setHeightMeasurementInteractionPaused(paused: boolean): void {
+  if (measurementInteractionPaused === paused) {
+    return;
+  }
+  measurementInteractionPaused = paused;
+  if (paused) {
+    cancelScheduledMeasurementStep();
+    return;
+  }
+  if (pendingReadChunk !== null || writeQueue.length > 0) {
+    scheduleMeasurementStep();
+  }
+}
+
+export function isHeightMeasurementInteractionPaused(): boolean {
+  return measurementInteractionPaused;
 }
 
 export function getEditorWidthBucketDiagnostics(): { calls: number; layoutReads: number } {
@@ -558,6 +582,7 @@ export function measureFormulaHeights(
 export function resetHeightMeasurerForTest(): void {
   measurementSuspended = false;
   measurementPausedForScroll = false;
+  measurementInteractionPaused = false;
   resetEditorEnvironmentKeyCache();
   editorSurfaceCache = null;
   editorSurfaceCacheWidth = -1;
