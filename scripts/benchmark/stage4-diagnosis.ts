@@ -342,8 +342,8 @@ async function measureWithObservers(
   const script = `(async () => {
     const longBefore = (window.__stage4LongTasks ?? []).length;
     const stage4Before = window.__stage4Stats?.snapshot?.() ?? null;
-    const mathBefore = window.__stage4MathStats ? { ...window.__stage4MathStats } : null;
-    const heightBefore = window.__stage4HeightStats ? { ...window.__stage4HeightStats } : null;
+    const mathBefore = window.__marivellGetInlineMathHeightPrefetchStats?.() ?? null;
+    const heightBefore = window.__marivellGetNodeHeightCacheStats?.() ?? null;
     const widthBucketBefore = window.__marivellGetEditorWidthBucketDiagnostics?.() ?? null;
     const formulaChunksBefore = window.__marivellFormulaChunkDiagnostics
       ? { ...window.__marivellFormulaChunkDiagnostics }
@@ -419,8 +419,8 @@ async function measureWithObservers(
     await new Promise((resolve) => setTimeout(resolve, 0));
     mutationObserver.disconnect();
     const stage4After = window.__stage4Stats?.snapshot?.() ?? null;
-    const mathAfter = window.__stage4MathStats ? { ...window.__stage4MathStats } : null;
-    const heightAfter = window.__stage4HeightStats ? { ...window.__stage4HeightStats } : null;
+    const mathAfter = window.__marivellGetInlineMathHeightPrefetchStats?.() ?? null;
+    const heightAfter = window.__marivellGetNodeHeightCacheStats?.() ?? null;
     const widthBucketAfter = window.__marivellGetEditorWidthBucketDiagnostics?.() ?? null;
     const formulaChunksAfter = window.__marivellFormulaChunkDiagnostics
       ? { ...window.__marivellFormulaChunkDiagnostics }
@@ -520,8 +520,8 @@ async function measureOpenReady(
   const script = `(async () => {
     const longBefore = (window.__stage4LongTasks ?? []).length;
     const stage4Before = window.__stage4Stats?.snapshot?.() ?? null;
-    const mathBefore = window.__stage4MathStats ? { ...window.__stage4MathStats } : null;
-    const heightBefore = window.__stage4HeightStats ? { ...window.__stage4HeightStats } : null;
+    const mathBefore = window.__marivellGetInlineMathHeightPrefetchStats?.() ?? null;
+    const heightBefore = window.__marivellGetNodeHeightCacheStats?.() ?? null;
     const mutations = { childListAdded: 0, childListRemoved: 0, attributes: 0, characterData: 0 };
     const nodeViewSelectors = '.code-block-node,.image-node,.mermaid-node,.footnote-definition-node,.html-block';
     const nodeViewMutations = {
@@ -603,8 +603,8 @@ async function measureOpenReady(
     }
     mutationObserver.disconnect();
     const stage4After = window.__stage4Stats?.snapshot?.() ?? null;
-    const mathAfter = window.__stage4MathStats ? { ...window.__stage4MathStats } : null;
-    const heightAfter = window.__stage4HeightStats ? { ...window.__stage4HeightStats } : null;
+    const mathAfter = window.__marivellGetInlineMathHeightPrefetchStats?.() ?? null;
+    const heightAfter = window.__marivellGetNodeHeightCacheStats?.() ?? null;
     const wallMs = performance.now() - start;
     const longTasks = (window.__stage4LongTasks ?? []).slice(longBefore);
     let timeline = null;

@@ -9,6 +9,7 @@ import {
 } from '../virtualization/height-cache';
 import {
   getFormulaHeightKey,
+  isHeightMeasurementScrollPaused,
   isHeightMeasurementSuspended,
 } from '../virtualization/height-measurer';
 import {
@@ -488,7 +489,11 @@ export const MathInline = Node.create({
         previewDOM.style.display = 'inline-block';
         const cachedHtml = getCachedFormulaHtml(node.textContent, 'no');
         const inlineHeightKey = getInlineHeightKey();
-        if (cachedHtml && getCachedNodeHeight(inlineHeightKey) === null) {
+        if (
+          cachedHtml &&
+          getCachedNodeHeight(inlineHeightKey) === null &&
+          !isHeightMeasurementScrollPaused()
+        ) {
           scheduleInlineMathHeightMeasurement(
             node.textContent,
             'no',

@@ -1033,3 +1033,54 @@ include the diagnostic phase collection, but both mode-switch paths passed
 ## Stage 2e Main-Agent Verification (2026-08-11)
 
 主代理复测大文件：`interaction-typing=144.8ms`、`interaction-combined=1270.5ms`、`mode-switch-visual-to-source=536.3ms`、`mode-switch-source-to-visual=791.1ms`、`scroll-avg=160.0ms`、`scroll-max=359.7ms`，硬门禁 0/0/0。详细诊断见 `docs/performance-stage2e-diagnosis.md`。
+
+
+## Stage 2f Formula Height Prefetch and Scroll Hydration (2026-08-11)
+
+Baseline `689f29b` root cause from `stage4-diagnosis.ts`:
+`formulaChunks.processRuns=0` while the worker had already returned 4,580 formula
+HTML entries. Height cache stayed at 201/4780 because formula-height processing
+was gated by editor focus, and scroll hydration was left to measure missing
+heights on the hot path. Scroll diagnosis showed 7,292 rect reads, 2.3s long-task
+work, and `inlineMathActivationReadyMs=104.4ms`.
+
+Stage 2f changes:
+
+- Formula HTML/height prefetch is queued through `requestIdleCallback` instead of
+  being blocked by editor focus. It still pauses for recent editor interaction
+  and source mode, and is re-queued after a visual host reactivation.
+- Height measurement uses small idle chunks (12 formulas per layout batch) so
+  the 4,780-key cache fills without creating typing long tasks.
+- Scroll events pause queued height measurement until scrolling stops; active
+  formulas use the prefilled height cache instead of measuring during hydration.
+- Hydration radius was widened and batch size increased so drag first frames
+  activate the visible formula set before the placeholder gate is sampled.
+
+Official large-file benchmark, two final runs on `/home/crh/下载/barfoot_ser24/barfoot_ser24.md`:
+
+| Metric | 689f29b baseline | Stage 2f run A | Stage 2f run B |
+| --- | ---: | ---: | ---: |
+| height-cache-size | 201 | 4,783 | 4,783 |
+| height-cache-coverage | ~4.2% | 100.1% | 100.1% |
+| inline-height-prefetch-pending | n/a | 0 | 0 |
+| formula-html-prefetched | n/a | 4,780 | 4,780 |
+| interaction-typing | 144.8 | 159.0 | 155.5 |
+| interaction-combined | 1,270.5 | 1,334.4 | 1,417.3 |
+| mode-switch-visual-to-source | 536.3 | 688.3 | 695.0 |
+| mode-switch-source-to-visual | 791.1 | 933.5 | 892.9 |
+| scroll-avg-frame | 160.0 | 155.6 | 152.5 |
+| scroll-max-frame | 359.7 | 279.6 | 275.2 |
+| scroll-jump-bottom | 1,947.1 | 1,292.4 | 1,255.9 |
+| scroll-jump-middle | 1,150.7 | 1,280.3 | 1,449.8 |
+| scroll-drag-sequence | 1,625.3 | 1,503.7 | 1,589.2 |
+| scrollDriftPx | 0 | 0 | 0 |
+| viewportPlaceholders | 0 | 0 | 0 |
+| inline-height-drift | 0 | 0 | 0 |
+| inline-math-activate-ready | 3.2 | 4.7 | 4.6 |
+
+Height cache coverage, scroll avg/max, bottom jump-ready, and drag first-frame
+stability improved. Typing and mode-switch remain above the Stage 2e best run by
+small amounts in these runs, but both mode-switch directions still pass the
+`<1000ms` budget in both Stage 2f runs. The remaining scroll frame cost is not
+formula-height measurement; it is still PM layout/coordinate work in the large
+native DOM.

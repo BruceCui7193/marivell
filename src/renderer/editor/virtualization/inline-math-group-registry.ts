@@ -11,6 +11,7 @@ import {
 import {
   buildFormulaHeightMeasurementItems,
   getFormulaHeightKey,
+  isHeightMeasurementScrollPaused,
   isHeightMeasurementSuspended,
   measureFormulaHeights,
 } from './height-measurer';
@@ -1182,16 +1183,17 @@ export function hydrateInlineMathGroupsAroundPosition(
   _margin = 1600,
 ): number {
   const radius = Math.max(Number.isFinite(viewportRadius) ? viewportRadius : 1, 1);
-  const groupsInRange = getInlineMathGroupsInPositionRange(centerPosition, radius * 4);
+  const activationRadius = radius * 1.5;
+  const groupsInRange = getInlineMathGroupsInPositionRange(centerPosition, radius * 6);
   const toActivate: InlineMathGroup[] = [];
   for (const group of groupsInRange) {
     if (!group || group.active) {
       continue;
     }
     const distance = getGroupDistance(group, centerPosition);
-    if (distance <= radius) {
+    if (distance <= activationRadius) {
       toActivate.push(group);
-    } else if (distance <= radius * 2) {
+    } else if (distance <= radius * 3) {
       prepareGroup(group);
     }
   }
@@ -1334,7 +1336,11 @@ export function scheduleInlineMathHeightMeasurement(
   heightKey?: string | null,
 ): void {
   const resolvedHeightKey = heightKey ?? getFormulaHeightKey(latex, display, element);
-  if (getCachedNodeHeight(resolvedHeightKey) !== null || pendingHeightMeasurements.has(resolvedHeightKey)) {
+  if (
+    getCachedNodeHeight(resolvedHeightKey) !== null ||
+    pendingHeightMeasurements.has(resolvedHeightKey) ||
+    isHeightMeasurementScrollPaused()
+  ) {
     return;
   }
   pendingHeightMeasurements.add(resolvedHeightKey);
@@ -1476,6 +1482,45 @@ export function setInlineMathPrefetchRequester(
   requester: ((entries: FormulaIndexEntry[]) => void) | null,
 ): void {
   prefetchRequester = requester;
+}
+
+export function clearPendingInlineMathHeightMeasurements(): void {
+  pendingHeightMeasurements.clear();
+}
+
+export function getInlineMathHeightPrefetchStatsForTest(): {
+  groups: number;
+  registeredFormulaKeys: number;
+  preparedFormulaHtml: number;
+  preparedFragments: number;
+  pendingHeightMeasurements: number;
+  heightCacheCoverage: number;
+  placeholderRegistrations: number;
+} {
+  let heightCacheCoverage = 0;
+  let placeholderRegistrations = 0;
+  for (const group of groups.values()) {
+    for (const registration of group.formulas) {
+      if (registration.destroyed) {
+        continue;
+      }
+      if (getCachedNodeHeight(registration.heightKey()) !== null) {
+        heightCacheCoverage += 1;
+      }
+      if (registration.placeholderHeightKey !== null) {
+        placeholderRegistrations += 1;
+      }
+    }
+  }
+  return {
+    groups: groups.size,
+    registeredFormulaKeys: inlineMathRegistrationsByFormulaKey.size,
+    preparedFormulaHtml: preparedFormulaHtml.size,
+    preparedFragments: preparedFormulaFragments.size,
+    pendingHeightMeasurements: pendingHeightMeasurements.size,
+    heightCacheCoverage,
+    placeholderRegistrations,
+  };
 }
 
 export function resetInlineMathGroupRegistryForTest(): void {

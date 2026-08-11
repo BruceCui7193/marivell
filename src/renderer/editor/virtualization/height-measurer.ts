@@ -186,7 +186,7 @@ export function buildFormulaHeightMeasurementItems(
   return items;
 }
 
-const MEASUREMENT_CHUNK_SIZE = 48;
+const MEASUREMENT_CHUNK_SIZE = 12;
 
 interface MeasurementChunk {
   items: FormulaHeightMeasurementItem[];
@@ -203,9 +203,71 @@ interface PendingReadChunk {
 let writeQueue: MeasurementChunk[] = [];
 let pendingReadChunk: PendingReadChunk | null = null;
 let measurementLayer: HTMLDivElement | null = null;
-let writeTimer: ReturnType<typeof setTimeout> | null = null;
-let readTimer: ReturnType<typeof setTimeout> | null = null;
+let measurementTimer: ReturnType<typeof setTimeout> | null = null;
+let measurementIdleHandle: number | null = null;
+let measurementStepScheduled = false;
 let measurementSuspended = false;
+let measurementPausedForScroll = false;
+
+interface IdleDeadline {
+  didTimeout: boolean;
+  timeRemaining(): number;
+}
+
+function cancelScheduledMeasurementStep(): void {
+  if (measurementIdleHandle !== null) {
+    const idleWindow = window as Window & {
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    idleWindow.cancelIdleCallback?.(measurementIdleHandle);
+    measurementIdleHandle = null;
+  }
+  if (measurementTimer !== null) {
+    clearTimeout(measurementTimer);
+    measurementTimer = null;
+  }
+  measurementStepScheduled = false;
+}
+
+function scheduleMeasurementStep(timeoutMs = 32): void {
+  if (
+    measurementSuspended ||
+    measurementPausedForScroll ||
+    measurementStepScheduled
+  ) {
+    return;
+  }
+
+  measurementStepScheduled = true;
+  const runStep = (): void => {
+    measurementStepScheduled = false;
+    measurementTimer = null;
+    measurementIdleHandle = null;
+    if (measurementSuspended || measurementPausedForScroll) {
+      return;
+    }
+    if (pendingReadChunk !== null) {
+      flushReads();
+    } else {
+      flushWrites();
+    }
+  };
+
+  const idleWindow = window as Window & {
+    requestIdleCallback?: (
+      callback: (deadline: IdleDeadline) => void,
+      options?: { timeout: number },
+    ) => number;
+  };
+  if (typeof idleWindow.requestIdleCallback === 'function') {
+    measurementIdleHandle = idleWindow.requestIdleCallback(
+      () => runStep(),
+      { timeout: timeoutMs },
+    );
+  } else {
+    measurementTimer = setTimeout(runStep, 0);
+  }
+}
 
 function cleanupMeasurementLayer(): void {
   if (!measurementLayer) {
@@ -217,14 +279,7 @@ function cleanupMeasurementLayer(): void {
 }
 
 function cancelPendingMeasurements(): void {
-  if (writeTimer !== null) {
-    clearTimeout(writeTimer);
-    writeTimer = null;
-  }
-  if (readTimer !== null) {
-    clearTimeout(readTimer);
-    readTimer = null;
-  }
+  cancelScheduledMeasurementStep();
   const queued = writeQueue.splice(0);
   const pending = pendingReadChunk;
   pendingReadChunk = null;
@@ -244,6 +299,21 @@ export function setHeightMeasurementSuspended(suspended: boolean): void {
 
 export function isHeightMeasurementSuspended(): boolean {
   return measurementSuspended;
+}
+
+export function setHeightMeasurementScrollPaused(paused: boolean): void {
+  measurementPausedForScroll = paused;
+  if (paused) {
+    cancelScheduledMeasurementStep();
+    return;
+  }
+  if (pendingReadChunk !== null || writeQueue.length > 0) {
+    scheduleMeasurementStep();
+  }
+}
+
+export function isHeightMeasurementScrollPaused(): boolean {
+  return measurementPausedForScroll;
 }
 
 export function getEditorWidthBucketDiagnostics(): { calls: number; layoutReads: number } {
@@ -350,15 +420,18 @@ function scheduleWrite(): void {
     }
     return;
   }
-  if (writeTimer !== null || writeQueue.length === 0) {
+  if (measurementStepScheduled || writeQueue.length === 0) {
     return;
   }
-  writeTimer = setTimeout(flushWrites, 0);
+  scheduleMeasurementStep();
 }
 
 function flushWrites(): void {
-  writeTimer = null;
-  if (pendingReadChunk !== null || writeQueue.length === 0) {
+  if (pendingReadChunk !== null) {
+    scheduleMeasurementStep();
+    return;
+  }
+  if (writeQueue.length === 0) {
     return;
   }
 
@@ -400,11 +473,10 @@ function flushWrites(): void {
     measured: {},
     resolve: chunk.resolve,
   };
-  readTimer = setTimeout(flushReads, 0);
+  scheduleMeasurementStep();
 }
 
 function flushReads(): void {
-  readTimer = null;
   const chunk = pendingReadChunk;
   pendingReadChunk = null;
   if (!chunk) {
@@ -485,18 +557,12 @@ export function measureFormulaHeights(
 
 export function resetHeightMeasurerForTest(): void {
   measurementSuspended = false;
+  measurementPausedForScroll = false;
   resetEditorEnvironmentKeyCache();
   editorSurfaceCache = null;
   editorSurfaceCacheWidth = -1;
   editorWidthBucketCache = null;
-  if (writeTimer !== null) {
-    clearTimeout(writeTimer);
-    writeTimer = null;
-  }
-  if (readTimer !== null) {
-    clearTimeout(readTimer);
-    readTimer = null;
-  }
+  cancelScheduledMeasurementStep();
 
   const pending = [...writeQueue, ...(pendingReadChunk ? [{ items: pendingReadChunk.items, resolve: pendingReadChunk.resolve }] : [])];
   writeQueue = [];

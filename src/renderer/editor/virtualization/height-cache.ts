@@ -105,6 +105,18 @@ export function getNodeHeightCacheSizeForTest(): number {
   return nodeHeightCache.size;
 }
 
+export function getNodeHeightCacheStatsForTest(): {
+  size: number;
+  widthSize: number;
+  limit: number;
+} {
+  return {
+    size: nodeHeightCache.size,
+    widthSize: nodeWidthCache.size,
+    limit: NODE_HEIGHT_CACHE_LIMIT,
+  };
+}
+
 export function clearNodeHeightCache(): void {
   nodeHeightCache.clear();
   nodeWidthCache.clear();

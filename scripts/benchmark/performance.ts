@@ -1572,13 +1572,59 @@ async function main(): Promise<void> {
           { timeout: 60_000 },
         )
         .catch(() => {});
-      report.push({
-        metric: 'height-cache-size',
-        value: await handle.page.evaluate(
-          () => (window.__marivellNodeHeightCacheSize ?? 0) as number,
-        ),
-        unit: 'unique',
+      const heightStats = await handle.page.evaluate(() => {
+        const target = window as unknown as Record<string, unknown>;
+        const cache = target.__marivellGetNodeHeightCacheStats?.() ?? null;
+        const inline = target.__marivellGetInlineMathHeightPrefetchStats?.() ?? null;
+        const formulaChunks = target.__marivellFormulaChunkDiagnostics
+          ? { ...(target.__marivellFormulaChunkDiagnostics as Record<string, number>) }
+          : null;
+        return { cache, inline, formulaChunks };
       });
+      const cacheSize =
+        typeof heightStats.cache?.size === 'number'
+          ? heightStats.cache.size
+          : ((await handle.page.evaluate(
+              () => (window.__marivellNodeHeightCacheSize ?? 0) as number,
+            )) as number);
+      report.push(
+        {
+          metric: 'height-cache-size',
+          value: cacheSize,
+          unit: 'unique',
+        },
+        {
+          metric: 'height-cache-coverage',
+          value:
+            formulaUnique > 0
+              ? round((cacheSize / formulaUnique) * 100)
+              : 0,
+          unit: 'percent',
+          note: `unique=${formulaUnique}`,
+        },
+        {
+          metric: 'inline-height-prefetch-pending',
+          value: heightStats.inline?.pendingHeightMeasurements ?? 0,
+          unit: 'keys',
+        },
+        {
+          metric: 'formula-html-prefetched',
+          value: heightStats.inline?.preparedFormulaHtml ?? 0,
+          unit: 'keys',
+        },
+        {
+          metric: 'formula-chunk-process-runs',
+          value: heightStats.formulaChunks?.processRuns ?? 0,
+          unit: 'runs',
+        },
+        {
+          metric: 'formula-chunk-process-ms',
+          value: heightStats.formulaChunks?.processMs
+            ? round(heightStats.formulaChunks.processMs)
+            : 0,
+          unit: 'ms',
+        },
+      );
 
       await handle.page.evaluate(() => {
         const benchmarkWindow = window as unknown as Record<string, unknown>;

@@ -36,7 +36,7 @@ export interface ScrollAnchorProvider {
 }
 
 export const VIRTUAL_ACTIVATION_BATCH_SIZE = 24;
-const HYDRATION_BATCH_SIZE = 64;
+const HYDRATION_BATCH_SIZE = 128;
 
 const virtualNodes = new Map<string, VirtualNodeRegistration>();
 const virtualNodesByPositionDirty = new Set<string>();
@@ -717,8 +717,9 @@ export function hydrateTargetRange(
   const viewportRadius = Number.isFinite(radius) && radius > 0
     ? radius
     : Math.max(frame.clientHeight || 1, 1);
-  const prefetchRadius = viewportRadius * 2;
-  const evictRadius = viewportRadius * 4;
+  const activationRadius = viewportRadius * 1.5;
+  const prefetchRadius = viewportRadius * 3;
+  const evictRadius = viewportRadius * 6;
 
   hydrationQueue.evictOutside(evictRadius, centerPosition);
   flushVirtualNodePositionDirty();
@@ -753,7 +754,7 @@ export function hydrateTargetRange(
       continue;
     }
 
-    if (distance <= viewportRadius) {
+    if (distance <= activationRadius) {
       const activationStart = performance.now();
       forceActivate(registration.id);
       if (typeof window !== 'undefined') {

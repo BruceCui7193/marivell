@@ -699,5 +699,13 @@ Stage 4a 已执行，详细数据见 `docs/performance-stage4-diagnosis.md` 与
 - Stage 3d：完成模式切换剩余 long task 压降；大文件主代理复测 `visual→source=803.7ms`、`source→visual=978.2ms`，均 `<1000ms`，硬门禁通过。
 - Stage 4a 诊断：当前 commit `7c5a399`，React NodeView 不是主瓶颈，Stage 4b 不触发；诊断保留在 `docs/performance-stage4-diagnosis.md`。
 - Stage 2e：typing 热路径改为非公式编辑不刷新 viewport、公式高度准备移出焦点/热路径并节流；placeholder 高度刷新去重 style 写入；滚动中心由三次 `posAtCoords` 降到一次。主代理复测大文件：typing 144.8ms、combined 1270.5ms、visual→source 536.3ms、source→visual 791.1ms、scroll-avg 160.0ms、scroll-max 359.7ms，硬门禁 0/0/0。详细诊断见 `docs/performance-stage2e-diagnosis.md`。
+- Stage 2f：在 `689f29b` 上完成公式高度空闲预取与滚动 hydration 长任务降本。
+  公式 HTML 预取队列改为 `requestIdleCallback`，不再因编辑器聚焦永久暂停；高度测量按 12
+  条公式小批读取，滚动事件暂停测量，激活优先使用已填满的 4,783/4,780 高度缓存。
+  大文件 benchmark 两次：scroll-avg 155.6/152.5ms、scroll-max 279.6/275.2ms、
+  jump-bottom 1,292.4/1,255.9ms、jump-middle 1,280.3/1,449.8ms、
+  drag 1,503.7/1,589.2ms，硬门禁 `scrollDriftPx=0`、`viewportPlaceholders=0`、
+  `inline-height-drift=0` 均通过。typing/mode-switch 无回归到预算线以内，
+  mode-switch 两向均 `<1000ms`；滚动帧与 jump-ready 的发布预算仍未达成。
 - 当前分支：`perf/performance-optimization`
 - Git 要求：每个阶段独立 commit；失败实验保留文档；`perf-report.json` 不提交；发布前是否 push 由用户决定。
