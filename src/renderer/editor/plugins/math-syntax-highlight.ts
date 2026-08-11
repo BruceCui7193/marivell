@@ -28,6 +28,8 @@ interface MathSyntaxDiagnostics {
   localBuildCount: number;
   spanCount: number;
   rangeCount: number;
+  viewportFrom: number;
+  viewportTo: number;
   scrollEventCount: number;
   viewportRafCount: number;
   viewportDispatchCount: number;
@@ -48,6 +50,7 @@ let viewportDispatchCount = 0;
 let viewportSkippedCount = 0;
 let needsViewportRefreshAfterDocChange = false;
 let lastViewportUpdateAt = 0;
+let suppressScrollToSelectionAfterDocChange = false;
 
 export function requestMathSyntaxViewportRefresh(): void {
   needsViewportRefreshAfterDocChange = true;
@@ -67,6 +70,8 @@ function setDiagnostics(state: MathSyntaxState): void {
     localBuildCount: state.localBuildCount,
     spanCount: state.spanCount,
     rangeCount: state.ranges.length,
+    viewportFrom: lastViewportFrom,
+    viewportTo: lastViewportTo,
     scrollEventCount: viewportScrollEventCount,
     viewportRafCount: viewportRafCount,
     viewportDispatchCount: viewportDispatchCount,
@@ -84,6 +89,8 @@ function publishViewportDiagnostics(): void {
     localBuildCount: current?.localBuildCount ?? 0,
     spanCount: current?.spanCount ?? 0,
     rangeCount: current?.rangeCount ?? 0,
+    viewportFrom: lastViewportFrom,
+    viewportTo: lastViewportTo,
     scrollEventCount: viewportScrollEventCount,
     viewportRafCount: viewportRafCount,
     viewportDispatchCount: viewportDispatchCount,
@@ -275,7 +282,7 @@ function buildState(
     const activeRanges = ranges.filter((range) => range.from < range.to);
     if (activeRanges.length > 0) {
       const decorations = buildDecorationsForRanges(doc, activeRanges);
-      next.localBuildCount += 1;
+      next.fullBuildCount += 1;
       next.spanCount = decorations.length;
       next.set = DecorationSet.create(doc, decorations);
     }
@@ -389,17 +396,18 @@ export const MathSyntaxHighlight = Extension.create({
             if (!tr.docChanged && !tr.selectionSet) {
               return oldState;
             }
+            suppressScrollToSelectionAfterDocChange = false;
             // Selection jumps clear the pending scroll target so PM can move to
             // the newly selected position instead of restoring a stale scroll.
             pendingViewportScrollTop = null;
-            lastViewportFrom = -1;
-            lastViewportTo = -1;
             if (tr.selectionSet) lastSelectionChangeAt = Date.now();
             const ranges: MathSyntaxRange[] = [];
             let mappedSet = oldState.set;
             let changedRange: { from: number; to: number } | null = null;
             let needsViewportRefresh = false;
             if (tr.docChanged) {
+              lastViewportFrom = -1;
+              lastViewportTo = -1;
               const rawChanged = tr.changedRange();
               if (!rawChanged || rawChanged.to - rawChanged.from > MAX_LOCAL_DECORATION_RANGE) {
                 needsViewportRefresh = true;
@@ -409,22 +417,54 @@ export const MathSyntaxHighlight = Extension.create({
                   rawChanged.from,
                   rawChanged.to,
                 );
+                if (
+                  changedRange &&
+                  newState.selection.from >= changedRange.from &&
+                  newState.selection.to <= changedRange.to
+                ) {
+                  suppressScrollToSelectionAfterDocChange = true;
+                }
               }
               for (const range of oldState.ranges) {
                 if (range.reason === 'selection') continue;
                 const mapped = mapRange(range, tr, newState.doc);
-                if (mapped) ranges.push(mapped);
-                if (
-                  !needsViewportRefresh &&
-                  changedRange !== null &&
-                  mapped &&
-                  mapped.from < changedRange.to &&
-                  changedRange.from < mapped.to
-                ) {
-                  needsViewportRefresh = true;
+                if (mapped) {
+                  ranges.push(mapped);
+                  if (range.reason === 'viewport') {
+                    if (
+                      !needsViewportRefresh &&
+                      newState.selection.from >= mapped.from &&
+                      newState.selection.to <= mapped.to
+                    ) {
+                      lastViewportFrom = mapped.from;
+                      lastViewportTo = mapped.to;
+                    } else {
+                      lastViewportFrom = -1;
+                      lastViewportTo = -1;
+                    }
+                  }
                 }
               }
             } else {
+              const oldViewport = oldState.ranges.find(
+                (range) => range.reason === 'viewport',
+              );
+              if (oldViewport) {
+                const selection = newState.selection;
+                if (
+                  selection.from >= oldViewport.from &&
+                  selection.to <= oldViewport.to
+                ) {
+                  lastViewportFrom = oldViewport.from;
+                  lastViewportTo = oldViewport.to;
+                } else {
+                  lastViewportFrom = -1;
+                  lastViewportTo = -1;
+                }
+              } else {
+                lastViewportFrom = -1;
+                lastViewportTo = -1;
+              }
               ranges.push(...oldState.ranges.filter((range) => range.reason !== 'selection'));
             }
 
@@ -484,6 +524,9 @@ export const MathSyntaxHighlight = Extension.create({
                 oldSelection.to,
               );
             }
+            if (needsViewportRefresh) {
+              needsViewportRefreshAfterDocChange = true;
+            }
             return buildIncrementalState(
               newState.doc,
               ranges,
@@ -501,6 +544,16 @@ export const MathSyntaxHighlight = Extension.create({
           let viewportSettleTimer: number | null = null;
           let lastRecordedScrollTop: number | null = null;
           let lastKnownMaxScrollTop: number | null = null;
+
+          // PM only skips its scroll-preservation scan when the ProseMirror
+          // element itself has this inline style. The editor frame already
+          // disables scroll anchoring, so mirror that on the editor DOM.
+          view.dom.style.setProperty('overflow-anchor', 'none');
+          (
+            view.dom.style as CSSStyleDeclaration & {
+              overflowAnchor?: string;
+            }
+          ).overflowAnchor = 'none';
 
           const getScrollFrame = (): HTMLElement =>
             (frame ?? view.dom) as HTMLElement;
@@ -717,21 +770,33 @@ export const MathSyntaxHighlight = Extension.create({
         props: {
           handleScrollToSelection(view: EditorView) {
             const pending = pendingViewportScrollTop;
-            if (pending === null) return false;
-            // EditorShell may transiently reset scroll to 0 while hydrating a
-            // jumped footnote/outline target. In that window let PM finish the
-            // jump; ordinary scrolling still restores the user's scrollTop.
-            const recentSelectionJump =
-              pending === 0 &&
-              lastSelectionChangeAt > 0 &&
-              Date.now() - lastSelectionChangeAt < 1000 &&
-              view.state.selection.from > view.state.doc.content.size * 0.8;
-            if (recentSelectionJump) return false;
-            const scrollFrame = view.dom.closest<HTMLElement>('.editor-frame') ?? view.dom;
-            const maxScrollTop = Math.max(scrollFrame.scrollHeight - scrollFrame.clientHeight, 0);
-            scrollFrame.scrollTop = Math.min(pending, maxScrollTop);
-            pendingViewportScrollTop = null;
-            return true;
+            if (
+              pending === null &&
+              suppressScrollToSelectionAfterDocChange
+            ) {
+              suppressScrollToSelectionAfterDocChange = false;
+              return true;
+            }
+            const selection = view.state.selection;
+            const selectionInsideViewport =
+              lastViewportFrom >= 0 &&
+              lastViewportTo >= lastViewportFrom &&
+              selection.from >= lastViewportFrom &&
+              selection.to <= lastViewportTo;
+            if (pending !== null) {
+              const recentSelectionJump =
+                pending === 0 &&
+                lastSelectionChangeAt > 0 &&
+                Date.now() - lastSelectionChangeAt < 1000 &&
+                view.state.selection.from > view.state.doc.content.size * 0.8;
+              if (recentSelectionJump) return false;
+              const scrollFrame = view.dom.closest<HTMLElement>('.editor-frame') ?? view.dom;
+              const maxScrollTop = Math.max(scrollFrame.scrollHeight - scrollFrame.clientHeight, 0);
+              scrollFrame.scrollTop = Math.min(pending, maxScrollTop);
+              pendingViewportScrollTop = null;
+              return true;
+            }
+            return selectionInsideViewport;
           },
           decorations(state) {
             return this.getState(state)?.set ?? DecorationSet.empty;
