@@ -1141,6 +1141,9 @@ export function hydrateTargetRange(
 
   const activateStart = performance.now();
   let activatedCount = 0;
+  let drainedTasks = 0;
+  const queueSizeBefore = hydrationQueue.size;
+  const drainRadius = drainQueue ? activationRadius : prefetchRadius;
 
   const batchLimit = drainQueue ? Number.MAX_SAFE_INTEGER : HYDRATION_BATCH_SIZE;
   while (activatedCount < batchLimit) {
@@ -1148,9 +1151,18 @@ export function hydrateTargetRange(
     if (task === null) {
       break;
     }
-    if (Math.abs(task.position - centerPosition) > prefetchRadius) {
+    if (Math.abs(task.position - centerPosition) > drainRadius) {
+      if (drainQueue) {
+        hydrationQueue.enqueue({
+          id: task.id,
+          position: task.position,
+          priority: task.priority,
+        });
+        break;
+      }
       continue;
     }
+    drainedTasks += 1;
     const registration = virtualNodes.get(task.id);
     if (!registration) {
       const external = externalHydrationTargets.get(task.id);
@@ -1197,6 +1209,10 @@ export function hydrateTargetRange(
     (window as unknown as Record<string, unknown>).__marivellPhase4HydrateTimings = {
       scanMs: performance.now() - scanStart,
       activateMs: performance.now() - activateStart,
+      queueSizeBefore,
+      queueSizeAfter: hydrationQueue.size,
+      drainedTasks,
+      drainRadius,
       scanned,
       activated: activatedCount,
     };

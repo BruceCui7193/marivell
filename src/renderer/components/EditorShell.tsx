@@ -1045,6 +1045,7 @@ export default function EditorShell({
     content: JSONContent;
   } | null>(null);
   const modeSwitchCacheRef = useRef<ModeSwitchCache | null>(null);
+  const modeSwitchOutlineRef = useRef<OutlineItem[] | null>(null);
   const visualEditRangeRef = useRef<{ from: number; to: number } | null>(null);
   const modeSwitchRequestRef = useRef(0);
   const sourcePreviewTimerRef = useRef<number | null>(null);
@@ -1963,6 +1964,7 @@ export default function EditorShell({
     let lastSyncHydrateScrollTop = frame.scrollTop;
     let lastRecordedScrollTop = frame.scrollTop;
     let lastScrollBurstWasLarge = false;
+    let pendingLargeJump = false;
     let deferInlineMathHydrationForNextScroll = false;
     let lastKnownMaxScrollTop = Math.max(
       frame.scrollHeight - frame.clientHeight,
@@ -2347,7 +2349,11 @@ export default function EditorShell({
       return { pos, radius: fallbackRadius() };
     };
 
-    const performScrollHydration = (options?: { settle?: boolean; drain?: boolean }): void => {
+    const performScrollHydration = (options?: {
+      settle?: boolean;
+      drain?: boolean;
+      largeJump?: boolean;
+    }): void => {
       if (hydrationInProgress) {
         return;
       }
@@ -2402,7 +2408,11 @@ export default function EditorShell({
       }
     };
 
-    const runScrollHydration = (options?: { settle?: boolean; drain?: boolean }): void => {
+    const runScrollHydration = (options?: {
+      settle?: boolean;
+      drain?: boolean;
+      largeJump?: boolean;
+    }): void => {
       hydrationFrame = null;
       const currentEditor = editorRef.current;
       if (!currentEditor || sourceModeRef.current) {
@@ -2423,7 +2433,12 @@ export default function EditorShell({
         scrollHeightBeforeHydrate,
         clientHeight,
       );
-      const centerAndRadius = getViewportCenterAndRadius();
+      const useCheapJumpCenter =
+        options?.largeJump === true || scrollDelta >= 1000;
+      const centerAndRadius =
+        useCheapJumpCenter
+          ? cheapCenterAndRadius
+          : getViewportCenterAndRadius();
       const shouldHydrate = centerAndRadius !== null || cheapCenterAndRadius !== null;
       if (centerAndRadius === null && cheapCenterAndRadius !== null) {
         ratioCenterCount += 1;
@@ -2543,6 +2558,7 @@ export default function EditorShell({
       scrollHotpathTimings.push({
         totalMs: Math.round(workMs * 10) / 10,
         centerMs: Math.round(centerMs * 10) / 10,
+        centerSource: useCheapJumpCenter ? 'cheap' : 'precise',
         anchorMs: Math.round(anchorMs * 10) / 10,
         hydrateMs: Math.round(hydrateMs * 10) / 10,
         activatedBlocks,
@@ -2580,9 +2596,11 @@ export default function EditorShell({
       if (hydrationFrame !== null) {
         return;
       }
+      const useLargeJump = pendingLargeJump;
+      pendingLargeJump = false;
       hydrationFrame = requestAnimationFrame(() => {
         hydrationFrame = null;
-        performScrollHydration({ drain: true });
+        performScrollHydration({ drain: true, largeJump: useLargeJump });
       });
     };
 
@@ -2604,9 +2622,12 @@ export default function EditorShell({
         return;
       }
       if (largeBurst || isEndpointScroll) {
+        const useLargeJump = largeBurst || isEndpointScroll;
+        pendingLargeJump = false;
         performScrollHydration({
           settle: !isBottomEndpoint,
           drain: true,
+          largeJump: useLargeJump,
         });
         runSettleFallbackScan();
         deferInlineMathHydrationForNextScroll = false;
@@ -2647,6 +2668,7 @@ export default function EditorShell({
           nextScrollTop >= lastKnownMaxScrollTop - 1);
       lastScrollBurstWasLarge = burstDelta >= 1000 || isEndpointScroll;
       if (burstDelta >= 1000 || isEndpointScroll) {
+        pendingLargeJump = true;
         scheduleHydrationFrame();
       } else {
         clearHydrationSettleTimer();
@@ -2874,6 +2896,7 @@ export default function EditorShell({
       'visual-to-source-outline',
       () => extractOutlineFromEditor(targetEditor),
     );
+    modeSwitchOutlineRef.current = nextOutline;
     const applySideEffects = (): void => {
       setLiveStats((current) => (areStatsEqual(current, stats) ? current : stats));
       setLiveDirty(markdown !== document.savedMarkdown);
@@ -3092,6 +3115,7 @@ export default function EditorShell({
       visualStatsRef.current = stats;
       lastEmittedMarkdownRef.current = document.markdown;
       modeSwitchCacheRef.current = buildModeSwitchCache(document.markdown, editor);
+      modeSwitchOutlineRef.current = nextOutline;
       setOutline((current) => (areOutlinesEqual(current, nextOutline) ? current : nextOutline));
       setLiveStats((current) => (areStatsEqual(current, stats) ? current : stats));
       setLiveDirty(document.dirty);
@@ -3113,6 +3137,7 @@ export default function EditorShell({
       visualStatsRef.current = emptyStats;
       lastEmittedMarkdownRef.current = '';
       modeSwitchCacheRef.current = buildModeSwitchCache('', editor);
+      modeSwitchOutlineRef.current = [];
       setOutline((current) => (current.length === 0 ? current : []));
       setLiveStats((current) => (areStatsEqual(current, emptyStats) ? current : emptyStats));
       setLiveDirty(document.dirty);
@@ -3507,6 +3532,14 @@ export default function EditorShell({
     }
 
     if (pendingVisualSelectionRestoreRef.current) {
+      sourceCaretMovedRef.current = false;
+      return;
+    }
+
+    if (
+      pendingModeSwitchScrollRatioRef.current !== null &&
+      !sourceCaretMovedRef.current
+    ) {
       sourceCaretMovedRef.current = false;
       return;
     }
@@ -4134,11 +4167,18 @@ export default function EditorShell({
       if (!editor) {
         return;
       }
-      const stats = computeSourceStats(markdown);
+      const unchangedFastPath = markdown === lastEmittedMarkdownRef.current;
+      const stats = unchangedFastPath
+        ? visualStatsRef.current
+        : computeSourceStats(markdown);
       visualMarkdownRef.current = markdown;
       visualStatsRef.current = stats;
       lastEmittedMarkdownRef.current = markdown;
-      const nextCache = profileModeSwitchPhase(
+      const existingCache =
+        unchangedFastPath && modeSwitchCacheRef.current?.sourceText === markdown
+          ? modeSwitchCacheRef.current
+          : null;
+      const nextCache = existingCache ?? profileModeSwitchPhase(
         'source-to-visual-build-cache',
         () => buildModeSwitchCache(markdown, editor),
       );
@@ -4153,10 +4193,14 @@ export default function EditorShell({
       } else {
         modeSwitchCacheRef.current = null;
       }
-      const nextOutline = profileModeSwitchPhase(
-        'source-to-visual-outline',
-        () => extractOutline(markdown),
-      );
+      const nextOutline =
+        unchangedFastPath && modeSwitchOutlineRef.current
+          ? modeSwitchOutlineRef.current
+          : profileModeSwitchPhase(
+              'source-to-visual-outline',
+              () => extractOutline(markdown),
+            );
+      modeSwitchOutlineRef.current = nextOutline;
       const applySideEffects = (): void => {
         onDocumentChange(markdown, stats);
         onDocumentMetaChange(markdown !== document.savedMarkdown);

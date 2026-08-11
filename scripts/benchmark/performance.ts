@@ -813,11 +813,16 @@ async function runVisualInteractionSuite(
       let applied = false;
       let error = '';
       let previewError = '';
+      let dispatchStart = 0;
+      let dispatchMs = 0;
+      let rafMs = 0;
       try {
         switch (name) {
           case 'typing':
             selectFirstTextBlock(true);
+            dispatchStart = performance.now();
             applied = editor.chain().focus().insertContent('PERF_TYPING').run();
+            dispatchMs = performance.now() - dispatchStart;
             break;
           case 'bold':
             selectFirstTextBlock();
@@ -867,7 +872,9 @@ async function runVisualInteractionSuite(
       } catch (err) {
         error = String(err);
       }
+      const beforeRaf = performance.now();
       await raf();
+      rafMs = performance.now() - beforeRaf;
       if (name === 'block-math' && applied) {
         const blockNode = document.querySelector('.math-block-node');
         if (
@@ -878,7 +885,15 @@ async function runVisualInteractionSuite(
           previewError = 'block math preview not ready after insertion';
         }
       }
-      return { ms: performance.now() - start, applied, error: error || previewError };
+      return {
+        ms: performance.now() - start,
+        applied,
+        error: error || previewError,
+        detail:
+          name === 'typing'
+            ? JSON.stringify({ dispatchMs, rafMs, productMs: dispatchMs })
+            : undefined,
+      };
     };
 
     const results = {};
@@ -1099,6 +1114,8 @@ async function measureScrollJumpScenario(
   scenario: ScrollJumpScenario,
 ): Promise<{
   jumpReadyMs: number;
+  placeholderReadyMs: number;
+  settleOverheadMs: number;
   firstFramePlaceholders: number;
   finalPlaceholderCount: number;
   scrollTopDrift: number;
@@ -1366,6 +1383,7 @@ async function measureScrollJumpScenario(
     let firstFramePlaceholders = -1;
     let firstFramePlaceholderDetails = [];
     let timedOut = false;
+    let placeholderReadyAt = null;
     while (true) {
       await waitForFrame();
       const placeholders = visiblePlaceholderCount();
@@ -1397,6 +1415,9 @@ async function measureScrollJumpScenario(
       }
       if (placeholders === 0 || performance.now() > deadline) {
         timedOut = placeholders !== 0;
+        if (!timedOut) {
+          placeholderReadyAt = performance.now();
+        }
         break;
       }
     }
@@ -1474,6 +1495,14 @@ async function measureScrollJumpScenario(
         : null;
     return {
       jumpReadyMs: performance.now() - start,
+      placeholderReadyMs:
+        placeholderReadyAt === null
+          ? performance.now() - start
+          : placeholderReadyAt - start,
+      settleOverheadMs:
+        placeholderReadyAt === null
+          ? 0
+          : performance.now() - placeholderReadyAt,
       firstFramePlaceholders,
       finalPlaceholderCount: visiblePlaceholderCount(),
       scrollTopDrift,
@@ -1517,6 +1546,8 @@ async function measureScrollJumpScenario(
   })()`;
   return page.evaluate(script) as Promise<{
     jumpReadyMs: number;
+    placeholderReadyMs: number;
+    settleOverheadMs: number;
     firstFramePlaceholders: number;
     finalPlaceholderCount: number;
     scrollTopDrift: number;
@@ -2155,6 +2186,24 @@ async function main(): Promise<void> {
               value: result.detail,
               unit: 'json',
             });
+            if (name === 'typing') {
+              const parsed = JSON.parse(result.detail) as {
+                dispatchMs: number;
+                rafMs: number;
+              };
+              report.push({
+                metric: 'interaction-typing-dispatch-ms',
+                value: round(parsed.dispatchMs),
+                unit: 'ms',
+                note: 'focus+insertContent dispatch inside the main typing timer; selection is also inside the main timer',
+              });
+              report.push({
+                metric: 'interaction-typing-raf-overhead-ms',
+                value: round(parsed.rafMs),
+                unit: 'ms',
+                note: 'two animation frames waited after dispatch',
+              });
+            }
           }
         }
       } else {
@@ -2517,6 +2566,18 @@ async function main(): Promise<void> {
               metric: `${jumpScenario.metric}-jump-ready-ms`,
               value: round(jump.value.jumpReadyMs),
               unit: 'ms',
+            },
+            {
+              metric: `${jumpScenario.metric}-placeholder-ready-ms`,
+              value: round(jump.value.placeholderReadyMs),
+              unit: 'ms',
+              note: 'jump ready when visible placeholders first reach zero',
+            },
+            {
+              metric: `${jumpScenario.metric}-settle-overhead-ms`,
+              value: round(jump.value.settleOverheadMs),
+              unit: 'ms',
+              note: 'extra rAF/settle time after placeholders reach zero',
             },
             {
               metric: `${jumpScenario.metric}-first-frame-placeholders`,
