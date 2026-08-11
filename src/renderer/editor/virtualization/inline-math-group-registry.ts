@@ -1317,12 +1317,13 @@ export function scheduleInlineMathHeightMeasurement(
   display: 'yes' | 'no',
   html: string,
   element?: HTMLElement | null,
+  heightKey?: string | null,
 ): void {
-  const heightKey = getFormulaHeightKey(latex, display, element);
-  if (getCachedNodeHeight(heightKey) !== null || pendingHeightMeasurements.has(heightKey)) {
+  const resolvedHeightKey = heightKey ?? getFormulaHeightKey(latex, display, element);
+  if (getCachedNodeHeight(resolvedHeightKey) !== null || pendingHeightMeasurements.has(resolvedHeightKey)) {
     return;
   }
-  pendingHeightMeasurements.add(heightKey);
+  pendingHeightMeasurements.add(resolvedHeightKey);
 
   const sourceKey = getFormulaCacheKey(latex, display);
   const items = buildFormulaHeightMeasurementItems(
@@ -1331,12 +1332,12 @@ export function scheduleInlineMathHeightMeasurement(
     element,
   );
   if (items.length === 0) {
-    pendingHeightMeasurements.delete(heightKey);
+    pendingHeightMeasurements.delete(resolvedHeightKey);
     return;
   }
 
   void measureFormulaHeights(items).then((heights) => {
-    pendingHeightMeasurements.delete(heightKey);
+    pendingHeightMeasurements.delete(resolvedHeightKey);
     const heightKeys = Object.keys(heights);
     for (const key of heightKeys) {
       setCachedNodeHeight(key, heights[key]!);
@@ -1348,9 +1349,40 @@ export function scheduleInlineMathHeightMeasurement(
 interface SelectionSyncEditor {
   state: {
     selection: { from: number; to: number; empty: boolean };
-    doc: { nodeAt: (pos: number) => { nodeSize: number } | null };
+    doc: {
+      nodeAt: (pos: number) => { type: { name: string }; nodeSize: number } | null;
+      resolve: (pos: number) => {
+        parent: { type: { name: string } };
+        nodeBefore: { type: { name: string } } | null;
+        nodeAfter: { type: { name: string } } | null;
+      };
+    };
   };
   view: { domAtPos: (pos: number) => { node: Node; offset: number } };
+}
+
+function selectionIntersectsInlineMath(
+  editor: SelectionSyncEditor,
+  from: number,
+  to: number,
+  empty: boolean,
+): boolean {
+  if (!empty) {
+    return true;
+  }
+
+  try {
+    const $from = editor.state.doc.resolve(from);
+    if ($from.parent.type.name === 'inlineMath') {
+      return true;
+    }
+    if ($from.nodeBefore?.type.name === 'inlineMath' || $from.nodeAfter?.type.name === 'inlineMath') {
+      return true;
+    }
+    return editor.state.doc.nodeAt(from)?.type.name === 'inlineMath';
+  } catch {
+    return false;
+  }
 }
 
 function findParagraphElementForPos(editor: SelectionSyncEditor, pos: number): HTMLElement | null {
@@ -1373,6 +1405,9 @@ function findParagraphElementForPos(editor: SelectionSyncEditor, pos: number): H
 
 export function syncInlineMathSelection(editor: SelectionSyncEditor): void {
   const { from, to, empty } = editor.state.selection;
+  if (!selectionIntersectsInlineMath(editor, from, to, empty)) {
+    return;
+  }
   reconcilePendingGroups();
 
   const startGroup = ((): InlineMathGroup | null => {

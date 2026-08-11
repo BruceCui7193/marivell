@@ -205,6 +205,9 @@ export const MathInline = Node.create({
       // Cache last rendered text to skip redundant KaTeX renders.
       let lastRenderedText: string | null = null;
       let destroyed = false;
+      let inlineHeightKeyCache: string | null = null;
+      let inlineHeightKeyText: string | null = null;
+      let inlineSizingKey = '';
 
       const getBlockPreviewHeight = (): number => {
         const cachedHeight = getCachedNodeHeight(getBlockMathHeightKey(node, dom));
@@ -354,12 +357,24 @@ export const MathInline = Node.create({
         }
       };
 
-      const getInlineHeightKey = (): string => getFormulaHeightKey(node.textContent, 'no', dom);
+      const getInlineHeightKey = (): string => {
+        const text = node.textContent;
+        if (inlineHeightKeyCache === null || inlineHeightKeyText !== text) {
+          inlineHeightKeyCache = getFormulaHeightKey(text, 'no', dom);
+          inlineHeightKeyText = text;
+        }
+        return inlineHeightKeyCache;
+      };
 
       const applyInlineSizing = (): void => {
         const inlineKey = getInlineHeightKey();
         const height = getCachedNodeHeight(inlineKey) ?? INLINE_MATH_DEFAULT_HEIGHT;
         const width = getCachedNodeWidth(inlineKey);
+        const sizingKey = `${height}|${width ?? ''}|${dom.classList.contains('math-inline-node--placeholder') ? 'placeholder' : 'active'}`;
+        if (sizingKey === inlineSizingKey) {
+          return;
+        }
+        inlineSizingKey = sizingKey;
         previewDOM.style.display = 'inline-block';
         previewDOM.style.boxSizing = 'border-box';
         previewDOM.style.overflow = 'visible';
@@ -382,6 +397,7 @@ export const MathInline = Node.create({
       };
 
       const resetInlineActiveSizing = (): void => {
+        inlineSizingKey = '';
         previewDOM.style.overflow = 'visible';
         previewDOM.style.height = 'auto';
         dom.style.overflow = 'visible';
@@ -422,8 +438,15 @@ export const MathInline = Node.create({
         renderPreview(node.textContent);
         resetInlineActiveSizing();
         const cachedHtml = getCachedFormulaHtml(node.textContent, 'no');
-        if (cachedHtml) {
-          scheduleInlineMathHeightMeasurement(node.textContent, 'no', cachedHtml, dom);
+        const inlineHeightKey = getInlineHeightKey();
+        if (cachedHtml && getCachedNodeHeight(inlineHeightKey) === null) {
+          scheduleInlineMathHeightMeasurement(
+            node.textContent,
+            'no',
+            cachedHtml,
+            dom,
+            inlineHeightKey,
+          );
         }
       };
 

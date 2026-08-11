@@ -1,5 +1,6 @@
 import type { Editor, JSONContent } from '@tiptap/core';
 import { EditorState } from '@tiptap/pm/state';
+import { requestMathSyntaxViewportRefresh } from './plugins/math-syntax-highlight';
 
 /**
  * Replace the whole editor document as an external/programmatic action.
@@ -20,5 +21,6 @@ export function replaceEditorContent(editor: Editor, content: JSONContent): void
     doc,
     plugins: editor.state.plugins,
   });
+  requestMathSyntaxViewportRefresh();
   editor.view.updateState(nextState);
 }

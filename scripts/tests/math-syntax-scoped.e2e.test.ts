@@ -327,6 +327,74 @@ async function main(): Promise<void> {
     assert('caret exits formula and drops editing decoration', exitOk.ok, exitOk.label);
 
     await handle.page.evaluate(`(() => {
+      const editor = window.__marivellEditor;
+      if (!editor) throw new Error('editor missing');
+      let from = -1;
+      let to = -1;
+      editor.state.doc.descendants((node, nodePos) => {
+        if (from !== -1) return false;
+        if (node.isTextblock && node.textContent) {
+          from = nodePos + 1;
+          to = nodePos + 1 + node.textContent.length;
+          return false;
+        }
+        return true;
+      });
+      if (from === -1) throw new Error('text block missing');
+      editor.commands.setTextSelection({ from, to: from });
+      editor.commands.focus();
+      return document.execCommand('insertText', false, 'STAGE2B_TYPING');
+    })()`);
+    const typingReady = await withTimeout(
+      handle.page.waitForFunction(() => document.body.innerText.includes('STAGE2B_TYPING'), undefined, { timeout: 10_000 }),
+      15_000,
+      'typing-ready',
+    );
+    assert('normal typing applies after scoped syntax interactions', typingReady.ok, typingReady.label);
+    const typingState = await handle.page.evaluate(() => {
+      const editor = (window as unknown as {
+        __marivellEditor?: {
+          state: { doc: { textBetween: (from: number, to: number, blockSeparator?: string, leafText?: string) => string } };
+          getJSON: () => unknown;
+        };
+      }).__marivellEditor;
+      if (!editor) throw new Error('editor missing');
+      const text = editor.state.doc.textBetween(0, editor.state.doc.content.size, '\\n', '\\n');
+      return {
+        textIncludes: text.includes('STAGE2B_TYPING'),
+        spanCount: document.querySelectorAll('[class*="math-syntax-"]').length,
+        markerLeak:
+          document.body.innerText.includes('MDEDITORSELECTION') ||
+          JSON.stringify(editor.getJSON()).includes('MDEDITORSELECTION'),
+      };
+    });
+    assert(
+      'typing keeps editor text and scoped syntax decorations correct without marker text',
+      typingState.textIncludes &&
+        typingState.spanCount > 0 &&
+        !typingState.markerLeak,
+      JSON.stringify(typingState),
+    );
+    const selectAllState = await handle.page.evaluate(() => {
+      const editor = (window as unknown as {
+        __marivellEditor?: {
+          commands: { selectAll: () => boolean };
+          state: { doc: { content: { size: number } }; selection: { from: number; to: number } };
+        };
+      }).__marivellEditor;
+      if (!editor) throw new Error('editor missing');
+      const before = editor.state.doc.content.size;
+      const ok = editor.commands.selectAll();
+      const { from, to } = editor.state.selection;
+      return { ok, before, from, to, full: ok && from === 0 && to >= before };
+    });
+    assert(
+      'select-all still covers the full document after typing',
+      selectAllState.full,
+      JSON.stringify(selectAllState),
+    );
+
+    await handle.page.evaluate(`(() => {
       window.dispatchEvent(
         new CustomEvent('markdown-editor:menu-action', {
           detail: 'toggle-source-mode',

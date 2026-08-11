@@ -35,6 +35,8 @@ interface MathSyntaxDiagnostics {
 }
 
 const mathSyntaxKey = new PluginKey<MathSyntaxState>('mathSyntaxHighlight');
+const MAX_LOCAL_DECORATION_RANGE = 4096;
+type ViewportUpdateResult = 'dispatched' | 'retry' | 'empty';
 // Kept outside PM state so viewport redraws can restore the user's scroll.
 let pendingViewportScrollTop: number | null = null;
 let lastViewportFrom = -1;
@@ -44,6 +46,11 @@ let viewportScrollEventCount = 0;
 let viewportRafCount = 0;
 let viewportDispatchCount = 0;
 let viewportSkippedCount = 0;
+let needsViewportRefreshAfterDocChange = false;
+
+export function requestMathSyntaxViewportRefresh(): void {
+  needsViewportRefreshAfterDocChange = true;
+}
 
 function clampDocPos(doc: ProseMirrorNode, pos: number): number {
   return Math.max(0, Math.min(doc.content.size, pos));
@@ -247,23 +254,71 @@ function buildState(
   doc: ProseMirrorNode,
   ranges: MathSyntaxRange[],
   previous: MathSyntaxState,
+  set?: DecorationSet,
 ): MathSyntaxState {
   const next: MathSyntaxState = {
-    set: DecorationSet.empty,
+    set: set ?? DecorationSet.empty,
     ranges,
     fullBuildCount: previous.fullBuildCount,
     localBuildCount: previous.localBuildCount,
     spanCount: 0,
   };
 
-  const activeRanges = ranges.filter((range) => range.from < range.to);
-  if (activeRanges.length > 0) {
-    const decorations = buildDecorationsForRanges(doc, activeRanges);
-    next.localBuildCount += 1;
-    next.spanCount = decorations.length;
-    next.set = DecorationSet.create(doc, decorations);
+  if (set !== undefined) {
+    next.spanCount = set.find().length;
+  } else {
+    const activeRanges = ranges.filter((range) => range.from < range.to);
+    if (activeRanges.length > 0) {
+      const decorations = buildDecorationsForRanges(doc, activeRanges);
+      next.localBuildCount += 1;
+      next.spanCount = decorations.length;
+      next.set = DecorationSet.create(doc, decorations);
+    }
   }
 
+  setDiagnostics(next);
+  return next;
+}
+
+function removeDecorationsInRange(
+  set: DecorationSet,
+  from: number,
+  to: number,
+): DecorationSet {
+  const overlapping = set.find(from, to);
+  return overlapping.length > 0 ? set.remove(overlapping) : set;
+}
+
+function buildIncrementalState(
+  doc: ProseMirrorNode,
+  ranges: MathSyntaxRange[],
+  previous: MathSyntaxState,
+  mappedSet: DecorationSet,
+  changedRanges: MathSyntaxRange[],
+): MathSyntaxState {
+  let set = mappedSet;
+  let rebuilt = false;
+
+  for (const range of changedRanges) {
+    if (range.from >= range.to) {
+      continue;
+    }
+    set = removeDecorationsInRange(set, range.from, range.to);
+  }
+
+  const decorations = buildDecorationsForRanges(doc, changedRanges);
+  if (decorations.length > 0) {
+    set = set.add(doc, decorations);
+    rebuilt = true;
+  }
+
+  const next: MathSyntaxState = {
+    set,
+    ranges,
+    fullBuildCount: previous.fullBuildCount,
+    localBuildCount: previous.localBuildCount + (rebuilt ? 1 : 0),
+    spanCount: set.find().length,
+  };
   setDiagnostics(next);
   return next;
 }
@@ -320,7 +375,17 @@ export const MathSyntaxHighlight = Extension.create({
             lastViewportTo = -1;
             if (tr.selectionSet) lastSelectionChangeAt = Date.now();
             const ranges: MathSyntaxRange[] = [];
+            let mappedSet = oldState.set;
+            let changedRange: { from: number; to: number } | null = null;
             if (tr.docChanged) {
+              const rawChanged = tr.changedRange();
+              if (rawChanged && rawChanged.to - rawChanged.from <= MAX_LOCAL_DECORATION_RANGE) {
+                changedRange = expandRangeToTouchingInlineMath(
+                  newState.doc,
+                  rawChanged.from,
+                  rawChanged.to,
+                );
+              }
               for (const range of oldState.ranges) {
                 if (range.reason === 'selection') continue;
                 const mapped = mapRange(range, tr, newState.doc);
@@ -332,13 +397,72 @@ export const MathSyntaxHighlight = Extension.create({
 
             const selection = selectionRange(newState);
             if (selection) ranges.push(selection);
-            return buildState(newState.doc, ranges, oldState);
+
+            const oldSelection = oldState.ranges.find(
+              (range) => range.reason === 'selection',
+            );
+            const rebuildRanges: MathSyntaxRange[] = [];
+            if (changedRange) {
+              rebuildRanges.push({
+                ...changedRange,
+                reason: 'editing',
+              });
+            }
+            if (selection) {
+              rebuildRanges.push(selection);
+            }
+            if (rebuildRanges.length === 0) {
+              if (tr.docChanged) {
+                needsViewportRefreshAfterDocChange = true;
+                return buildState(newState.doc, ranges, oldState, oldState.set);
+              }
+              return buildState(newState.doc, ranges, oldState, mappedSet);
+            }
+
+            if (tr.docChanged) {
+              mappedSet = oldState.set.map(tr.mapping, newState.doc);
+            }
+            if (changedRange) {
+              mappedSet = removeDecorationsInRange(
+                mappedSet,
+                changedRange.from,
+                changedRange.to,
+              );
+            }
+            if (oldSelection && !tr.docChanged) {
+              mappedSet = removeDecorationsInRange(
+                mappedSet,
+                oldSelection.from,
+                oldSelection.to,
+              );
+            }
+            if (
+              oldSelection &&
+              tr.docChanged &&
+              changedRange &&
+              Math.max(oldSelection.from, changedRange.from) >=
+                Math.min(oldSelection.to, changedRange.to)
+            ) {
+              mappedSet = removeDecorationsInRange(
+                mappedSet,
+                oldSelection.from,
+                oldSelection.to,
+              );
+            }
+            return buildIncrementalState(
+              newState.doc,
+              ranges,
+              oldState,
+              mappedSet,
+              rebuildRanges,
+            );
           },
         },
 
         view(view: EditorView) {
           let frame: HTMLElement | null = null;
           let rafId: number | null = null;
+          let refreshFrame: number | null = null;
 
           const syncFrame = (): void => {
             const next = (view.dom.closest('.editor-frame') ?? view.dom) as HTMLElement;
@@ -366,10 +490,41 @@ export const MathSyntaxHighlight = Extension.create({
             syncFrame();
           };
 
-          const updateViewport = (): void => {
-            if (!frame || frame.classList.contains('is-source')) return;
+          const refreshViewportAfterDocChange = (): void => {
+            if (refreshFrame !== null) {
+              return;
+            }
+            refreshFrame = requestAnimationFrame(() => {
+              refreshFrame = null;
+              if (view.isDestroyed) {
+                return;
+              }
+              lastViewportFrom = -1;
+              lastViewportTo = -1;
+              const result = updateViewport();
+              publishViewportDiagnostics();
+              if (result === 'dispatched' || result === 'empty') {
+                needsViewportRefreshAfterDocChange = false;
+                return;
+              }
+              if (frame?.isConnected) {
+                refreshViewportAfterDocChange();
+              }
+            });
+          };
+
+          const updateViewport = (): ViewportUpdateResult => {
+            if (
+              !frame ||
+              frame.classList.contains('is-source') ||
+              frame.querySelector('.editor-loading') !== null
+            ) {
+              return 'retry';
+            }
             const rect = frame.getBoundingClientRect();
-            if (rect.width <= 0 || rect.height <= 0) return;
+            if (rect.width <= 0 || rect.height <= 0) {
+              return 'retry';
+            }
 
             try {
               const left = rect.left + rect.width / 2;
@@ -381,18 +536,24 @@ export const MathSyntaxHighlight = Extension.create({
                 left,
                 top: rect.top + rect.height - Math.min(64, rect.height * 0.1),
               });
-              if (!top || !bottom) return;
+              if (!top || !bottom) {
+                return 'retry';
+              }
 
               const range = expandRangeToTouchingInlineMath(
                 view.state.doc,
                 top.pos,
                 bottom.pos,
               );
-              if (range.from >= range.to) return;
+              if (range.from >= range.to) {
+                return 'empty';
+              }
               if (lastViewportFrom === range.from && lastViewportTo === range.to) {
                 viewportSkippedCount += 1;
-                return;
+                return 'empty';
               }
+              lastViewportFrom = range.from;
+              lastViewportTo = range.to;
               viewportDispatchCount += 1;
               view.dispatch(
                 view.state.tr.setMeta(mathSyntaxKey, {
@@ -404,22 +565,32 @@ export const MathSyntaxHighlight = Extension.create({
                   },
                 }),
               );
+              return 'dispatched';
             } catch {
               // jsdom and headless probes have no usable layout coordinates.
+              return 'retry';
             }
           };
 
           syncFrame();
           pendingViewportScrollTop = ((frame ?? view.dom) as HTMLElement).scrollTop;
-          updateViewport();
+          refreshViewportAfterDocChange();
           window.addEventListener('resize', scheduleViewportUpdate, { passive: true });
 
           return {
             update() {
+              if (needsViewportRefreshAfterDocChange) {
+                refreshViewportAfterDocChange();
+              }
               syncFrame();
             },
             destroy() {
+              needsViewportRefreshAfterDocChange = false;
               if (rafId !== null) cancelAnimationFrame(rafId);
+              if (refreshFrame !== null) {
+                cancelAnimationFrame(refreshFrame);
+                refreshFrame = null;
+              }
               if (frame) {
                 frame.removeEventListener('scroll', scheduleViewportUpdate);
                 frame.removeEventListener('scrollend', scheduleViewportUpdate);

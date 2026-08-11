@@ -733,3 +733,37 @@ the changes tried here. The viable directions require one of:
 These findings are intentionally recorded without committing code, because the
 plan requires stopping for discussion when a stage cannot satisfy its
 acceptance constraints without changing the architecture.
+
+## Stage 2b Typing and Scroll Soft-Metric Optimization (2026-08-11)
+
+Stage 2b targeted ordinary typing, MathSyntaxHighlight viewport updates, and
+inline math NodeView hot paths. The diagnostic details are in
+`docs/performance-stage2b-diagnosis.md`.
+
+Latest verified large-file run after Stage 2b (independent main-agent run,
+after the initial viewport decoration retry bug was fixed):
+
+| Metric | 2fcdd9c Stage 2 baseline | Stage 2b run |
+| --- | ---: | ---: |
+| visual-open | 6,665 ms | 5,067 ms |
+| renderer-render-to-ready | 3,928 ms | 3,734 ms |
+| syntax-decoration-span-count | 73 | 81 |
+| interaction-typing | 233.5 ms | 221.3 ms |
+| interaction-combined | 1,942.5 ms | 1,826.5 ms |
+| mode-switch-visual-to-source-ms | 1,221.5 ms | 1,326.0 ms |
+| mode-switch-source-to-visual-ms | 2,692.2 ms | 2,822.4 ms |
+| scroll-avg-frame | 250.9 ms | 224.2 ms |
+| scroll-max-frame | 399.9 ms | 372.5 ms |
+| scroll-jump-bottom | 1,212.6 ms | 1,132.7 ms |
+| scroll-jump-middle | 1,741.8 ms | 1,483.8 ms |
+| scroll-drag-sequence | 2,366.3 ms | 1,999.1 ms |
+| scrollDriftPx | 0 | 0 |
+| viewportPlaceholders | 0 | 0 |
+| inline-height-drift | 0 | bottom=0 middle=0 drag=0 |
+| inlineMathActivateReadyMs | 3.3 ms | 3.3 ms |
+
+Status: typing, combined interaction, scroll average, scroll max, and all
+three jump-ready metrics improved on this run. Mode-switch timings remain
+slightly above the cited `2fcdd9c` numbers and are still run-sensitive. Hard
+drift/placeholder gates pass with zero inline-height drift. Stage 2b is
+recorded as progress toward the soft metrics rather than a release gate pass.

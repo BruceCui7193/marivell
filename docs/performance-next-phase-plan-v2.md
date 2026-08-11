@@ -537,3 +537,21 @@ Stage 2 已实现但未达发布线：
 - 已知未完成：大文件 drag 场景 `inline-height-drift=116px`，scroll avg/max 与 jump-ready 相对 Stage 1 仍更慢（最新大文件：avg 239.7ms、max 587.1ms、drag 3042.2ms），尚未达到发布预算。
 - 原因记录：等待 pending hydration queue 全部排空再释放 spacer，虽然稳定了 bottom/middle 锚点，但显著拉长 jump-ready；drag 场景中公式密集锚点的 116px 漂移说明当前高度预留/补偿仍不足。
 - Stage 3 需优先降低队列与 hydration 工作，再处理剩余锚点漂移，不能直接以当前 Stage 2 进入发布门禁。
+
+### 2.8 Stage 2b 执行结果（2026-08-11）
+
+Stage 2b 不再追加 ScrollStabilizer，改为定向优化 typing 与滚动软指标：
+
+- MathSyntaxHighlight 改为局部增量重建：普通输入只 map 现有 decoration
+  set，编辑/选择范围命中公式时才重建局部 range；大事务不触发全文档重建。
+- 非公式输入把视口 decoration 刷新推迟到 rAF，避免每次按键同步重建。
+- 视口 decoration 在 loading overlay 存在时跳过，视觉就绪后补一次。
+- 初始/程序化文档替换通过显式 viewport refresh 请求触发；刷新在
+  `posAtCoords` 可用前持续重试，保证初始视口 decoration 必定出现。
+- inline math NodeView 缓存 height key 与 sizing style，height measurement
+  可复用已计算 key。
+- `syncInlineMathSelection` 对不触碰行内公式的普通 caret 移动提前返回。
+
+大文件 benchmark 对比 `2fcdd9c`：typing、combined、scroll avg/max 与三个
+jump-ready 均下降；模式切换略高且仍有噪声，未达发布线。硬门禁保持
+`scrollDriftPx=0`、`viewportPlaceholders=0`、`inline-height-drift=0`。
