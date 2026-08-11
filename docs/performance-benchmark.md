@@ -817,6 +817,43 @@ above the Stage 3 budget, so Stage 3b should retry the offscreen host only
 after confirming the reduced host does not regress memory/GC or mode-switch
 behavior.
 
+## Stage 3b Offscreen Host Retry Result (2026-08-11)
+
+Stage 3b replaced the source-mode `display: none` visual host with a mounted
+offscreen host (`position: absolute; left: -10000px; visibility: hidden;
+pointer-events: none; aria-hidden=true`) after Stage 3a's DOM reduction. It
+also restored the visual scroll ratio separately from the source scroll ratio,
+avoided an unnecessary full PM dispatch on return to visual mode, and added
+source-host layout/memory/GC diagnostics to the benchmark.
+
+Latest large-file run, same `barfoot_ser24.md` file:
+
+| Metric | Stage 3a run | Stage 3b run |
+| --- | ---: | ---: |
+| mode-switch-visual-to-source-ms | 1,890.7 ms | 3,463.6 ms |
+| mode-switch-source-to-visual-ms | 1,563.7 ms | 1,536.3 ms |
+| mode-switch-no-reparse | true | true |
+| mode-switch-source-host-dom-count | 39,065 nodes | 39,065 nodes |
+| mode-switch-source-host-text-node-count | 23,729 nodes | 23,729 nodes |
+| mode-switch-source-host-layout-active | false (`display: none`) | true |
+| mode-switch-source-host-memory-mb | n/a | 92.9 MB |
+| mode-switch-visual-host-memory-mb | n/a | 92.9 MB |
+| mode-switch-source-host-katex-count | 0 | 0 |
+| mode-switch-source-host-syntax-span-count | 0 | 0 |
+| scrollDriftPx | 0 | 0 |
+| viewportPlaceholders | 0 | 0 |
+| inline-height-drift | 0 | bottom=0 middle=0 drag=18 px |
+| inline-math-activate-ready-ms | 2.7 ms | 3.0 ms |
+
+Status: the offscreen host keeps source-mode DOM at the Stage 3a level and does
+not increase JS heap after forced GC, but it still does not meet the
+`<1000ms` mode-switch budget. The main blocker is that keeping the reduced
+39k-node visual host laid out during source mode regresses visual-to-source
+from the Stage 3a `display: none` baseline. The Stage 3b implementation has been reverted after this run; the numbers above
+are kept as a failed experiment record. The next stage needs a lower-level PM
+DOM strategy or a different layout policy, and should pause for user approval
+before changing the source-mode host model again.
+
 ## Stage 2b Typing and Scroll Soft-Metric Optimization (2026-08-11)
 
 Stage 2b targeted ordinary typing, MathSyntaxHighlight viewport updates, and

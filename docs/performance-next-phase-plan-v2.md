@@ -381,6 +381,12 @@ Stage 3a 达成后，再按 2.4.7 重试离屏 Host。验收仍为 source→visu
 - memory/GC 不恶化；
 - 所有 mode-switch/caret/Undo/Redo/marker 测试通过。
 
+2026-08-11 Stage 3b 重试已执行并记录于 `docs/performance-benchmark.md`。
+离屏 Host 在 39,065 个 DOM 节点下保持 DOM 与 JS heap 稳定，但
+`mode-switch-visual-to-source-ms` 从 Stage 3a 的 1,890.7 ms 回归到 3,463.6 ms，
+`mode-switch-source-to-visual-ms` 为 1,536.3 ms，仍未达到 `<1000ms` 预算。
+代码已回退，失败数据保留；下一阶段需先与用户确认采用更低层 PM DOM 策略或其它布局策略，不再继续硬试当前离屏 Host。
+
 ### 2.5 Stage 4：条件性 React NodeView 优化
 
 #### 2.5.1 触发条件
