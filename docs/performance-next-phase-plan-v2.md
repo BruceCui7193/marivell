@@ -283,13 +283,11 @@ Stage 1 结果记录在 `docs/performance-benchmark.md`，关键变化：
 
 #### 2.4.2 原则
 
-1. 默认不采用“源码模式常驻离屏视觉 DOM”。
-2. 先保持现有 `display: none` 方案，利用 Stage 1/2 降低 DOM 和布局成本。
-3. 如果 DOM 降到合理水平后仍超预算，再按 trace 决定：
-   - 对块级段落使用 `content-visibility: auto` 和准确的 `contain-intrinsic-size`；
-   - 或缓存最近视口布局；
-   - 或限制首次可见范围，滚动时增量补齐。
-4. 不允许卸载普通段落，不允许把段落替换成无文本 placeholder。
+1. 用户已批准采用 `visibility: hidden` / 离屏定位的视觉 Host 挂载方案。
+2. 源码模式期间视觉 host 保持在 DOM 中但位于可视区外（例如 fixed/absolute + left:-10000px、visibility:hidden），保留布局和 PM 坐标计算能力，避免 `display:none` 切回时整树重 layout。
+3. 视觉 host 必须不可聚焦、不可点击、不可被无障碍读到，并且不能影响源码编辑器滚动/坐标。
+4. 不使用 `content-visibility` 处理普通段落/行内公式；只允许在明确证明不破坏 PM 坐标时才用于块级容器。
+5. 不允许卸载普通段落，不允许把段落替换成无文本 placeholder。
 
 #### 2.4.3 实现方向
 
@@ -304,6 +302,8 @@ Stage 1 结果记录在 `docs/performance-benchmark.md`，关键变化：
    - 只允许块级元素；
    - 每个块需要可校验的高度或 `contain-intrinsic-size`；
    - 必须搭配锚点补偿，不能产生 jump。
+
+4. 源码模式时把视觉 host 切到离屏保留布局模式；切回视觉时只恢复位置/可见性，不重新挂载 DOM。恢复前先恢复视觉 selection 与 scroll ratio，再显示 host，避免先跳顶再回位。
 
 #### 2.4.4 测试
 
@@ -320,7 +320,25 @@ Stage 1 结果记录在 `docs/performance-benchmark.md`，关键变化：
 
 ### 2.4.6 Stage 3 调查结论（2026-08-11）
 
-Stage 3 在干净基线 `2fcdd9c` 上完成了一次独立调查并记录于 `docs/performance-benchmark.md`。结论：当前约束下（保留 `display: none`、不常驻离屏视觉 DOM、不让普通段落/公式 contentDOM 失去原生布局与坐标）无法达到 `source→visual < 1000ms`。尝试过的段落级 `content-visibility` 会破坏 ProseMirror 坐标映射；保留源码滚动比例的深滚动首帧会触发约 2.9s 全文档布局。下一步需要用户批准改为保留视觉 host 布局（`visibility: hidden`/离屏 host）或采用更低层的 PM DOM 策略，否则不继续硬执行本 Stage。
+Stage 3 在干净基线 `2fcdd9c` 上完成了一次独立调查并记录于 `docs/performance-benchmark.md`。结论：当前约束下（保留 `display: none`、不常驻离屏视觉 DOM、不让普通段落/公式 contentDOM 失去原生布局与坐标）无法达到 `source→visual < 1000ms`。尝试过的段落级 `content-visibility` 会破坏 ProseMirror 坐标映射；保留源码滚动比例的深滚动首帧会触发约 2.9s 全文档布局。用户已于 2026-08-11 批准采用 `visibility: hidden` / 离屏定位视觉 Host；Stage 3 按 2.4.7 修订方案执行。
+
+### 2.4.7 Stage 3 修订执行方案（2026-08-11 用户已批准）
+
+1. 视觉 Host 改为离屏保留布局模式：
+   - 源码模式下不执行 `display:none`，而是把视觉 host 定位到可视区外并设置 `visibility:hidden`、`pointer-events:none`、`aria-hidden=true`。
+   - 切回视觉模式时恢复 host 位置与可见性，复用已有 PM DOM，不重新挂载整棵树。
+   - 保留 `ModeSwitchCache` 和 fast-path：源码未变不 parse；局部源码变化只替换 changed block。
+2. 首帧验收必须检查：
+   - `source→visual` 从正确滚动位置开始，不先跳顶部；
+   - 视觉首帧文本、公式、光标位置正确；
+   - 连续来回切换不产生 marker 泄漏、不丢内容、不触发全量 parse；
+   - 切换后 Undo/Redo 只影响用户编辑。
+3. 内存与 GC 风险必须量化：
+   - 记录源码模式下视觉 host 是否保持布局、DOM 数、内存占用；
+   - 如果出现明显 GC 卡顿或内存增长，先降低 DOM/decoration，不允许直接接受；
+   - 不使用 `content-visibility` 处理普通段落/行内公式；若块级容器使用，必须通过 caret-alignment 和坐标探针验证。
+4. 验收目标：`source→visual < 1000ms`、`visual→source < 1000ms`，硬门禁全部通过。
+5. 测试范围：caret-alignment、mode-switch、mode-switch-violence、mode-switch-incremental、large-file mode-switch、Undo/Redo、marker 泄漏。
 
 ### 2.5 Stage 4：条件性 React NodeView 优化
 
@@ -429,6 +447,7 @@ Stage 3 在干净基线 `2fcdd9c` 上完成了一次独立调查并记录于 `do
 - MCP 视觉只能作为辅助，不能作为唯一证据；细节必须用 DOM/坐标探针验证。
 - 完成后必须说明工作区是否干净、当前 commit hash。
 - 如果子代理 complete 但没有回复，主代理应向其发送“继续”或让其补交最终结果。
+- 子代理禁止再调用子代理；所有子任务只能由主代理直接分配，避免出现主代理无法掌控的执行链。
 
 #### 3.4.2 子代理 A：Stage 1
 
@@ -481,7 +500,7 @@ Stage 3 在干净基线 `2fcdd9c` 上完成了一次独立调查并记录于 `do
 - `source→visual`、`visual→source` 达到预算。
 - 首帧滚动位置正确。
 - 无 marker 泄漏、无内容篡改。
-- 不采用源码模式常驻离屏视觉 DOM，除非用户明确批准。
+- 用户已批准采用离屏视觉 Host；验收仍要求不破坏 PM 坐标、选区、复制粘贴、内存与 GC 行为。
 
 #### 3.4.5 子代理 D：Stage 4（条件触发）
 
@@ -555,3 +574,14 @@ Stage 2b 不再追加 ScrollStabilizer，改为定向优化 typing 与滚动软�
 大文件 benchmark 对比 `2fcdd9c`：typing、combined、scroll avg/max 与三个
 jump-ready 均下降；模式切换略高且仍有噪声，未达发布线。硬门禁保持
 `scrollDriftPx=0`、`viewportPlaceholders=0`、`inline-height-drift=0`。
+
+## 6. 当前进度（2026-08-11）
+
+- Stage 0：`8554536 perf: add Stage 0 performance diagnosis`
+- Stage 1：`89461c4 perf: scope math syntax decorations to selection and viewport`
+- Stage 2（部分）：`2fcdd9c perf: optimize scroll hot path and stabilize drag anchor`
+- Stage 2b：`90d4bae perf: optimize typing and scroll hot paths with scoped incremental decorations`
+- Stage 3 调查：`cbd8080 docs: record Stage 3 mode-switch investigation`
+- Stage 3 架构：用户已批准离屏视觉 Host，计划已修订为 2.4.7，尚未开始代码执行。
+- 当前分支：`perf/performance-optimization`
+- Git 要求：每个阶段独立 commit；失败实验保留文档；`perf-report.json` 不提交；发布前是否 push 由用户决定。
