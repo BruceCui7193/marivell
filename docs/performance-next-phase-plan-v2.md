@@ -413,6 +413,33 @@ Stage 3c 在 `b20e69b` 上继续保留 `display:none`，不再尝试离屏 Host�
 通过。`<1000ms` 软预算仍未稳定达到，但已明显下降；下一阶段若要继续压到
 1000ms 以下，需要更低层 PM DOM 策略或其它布局策略。
 
+#### 2.4.9.4 Stage 3d：模式切换剩余 long task 降至 1000ms 以下
+
+Stage 3d 在 Stage 3c 代码上完成，保留 `display:none`、源码模式视觉 host
+DOM 降本、width-bucket 缓存与 PM position index hydration。用 benchmark-gated
+阶段插桩拆分 visual→source 与 source→visual 后，剩余热点为：
+
+1. SourceEditor 挂载时把 1.36MB 文档作为 controlled textarea 写入，React
+   textarea/commit 与首次 layout 约 446ms；改为 uncontrolled textarea 后在
+   layout effect 中设置原生 value，并让源码编辑器在 value 安装前
+   `display:none`、安装后 rAF 再显示，挂载阶段降到约 68ms。
+2. 模式切换 overlay 固定等待与 double rAF 叠加在主线程长任务之后；ready
+   路径不再等待 overlay，transition 只保留单 rAF。
+3. `flushVisualSync` 的 `onDocumentChange`、stats、dirty、outline 等副作用
+   在 visual→source 同步执行；模式切换路径改为 `setTimeout(0)` 延后，refs
+   与 mode-switch cache 仍同步更新。
+4. visual→source 开始时提前 suspend height measurement，取消上一交互遗留
+   的公式高度测量，避免其占用切换首 rAF。
+5. 源码编辑器隐藏期间滚动比例恢复会得到 0 maxScrollTop；增加 rAF 重试，
+   等编辑器显示后再恢复滚动。
+
+大文件官方 benchmark 两次：`mode-switch-visual-to-source-ms` 778.7 / 828.7，
+`mode-switch-source-to-visual-ms` 974.9 / 980.0，均 `<1000ms`。Stage 4
+诊断复测 wall 975.3 / 818.5 ms，long task 总耗时 972ms / 576ms；源码模式
+视觉 host DOM 仍为 24,573，KaTeX/syntax 为 0，width-bucket layout reads 为
+1/0，硬门禁 `scrollDriftPx=0`、`viewportPlaceholders=0`、
+`inline-height-drift=0` 通过。
+
 ### 2.5 Stage 4：条件性 React NodeView 优化
 
 #### 2.5.1 触发条件
@@ -668,7 +695,8 @@ Stage 4a 已执行，详细数据见 `docs/performance-stage4-diagnosis.md` 与
 - Stage 2b：`90d4bae perf: optimize typing and scroll hot paths with scoped incremental decorations`
 - Stage 3 调查：`cbd8080 docs: record Stage 3 mode-switch investigation`
 - Stage 3 代码：用户已批准离屏视觉 Host，离屏 Host 与测试已实现；官方 benchmark 仍高于 `<1000ms`，且 visual→source 明显回归，代码已回退，失败数据保留在 `docs/performance-benchmark.md`。下一步必须先降低大文档 DOM/布局成本，再重试离屏 Host。
-- Stage 3c：当前工作区实现（未 commit），保留 `display:none`；源码模式视觉 host DOM 降至 24,573，`visual→source`/`source→visual` 相对 Stage 3a 明显下降，硬门禁通过，`<1000ms` 软预算未稳定达到。
+- Stage 3c：`4e7db10 perf: eliminate mode-switch layout reads and reduce long tasks (Stage 3c)`，保留 `display:none`；源码模式视觉 host DOM 降至 24,573，硬门禁通过。
+- Stage 3d：完成模式切换剩余 long task 压降；大文件主代理复测 `visual→source=803.7ms`、`source→visual=978.2ms`，均 `<1000ms`，硬门禁通过。
 - Stage 4a 诊断：当前 commit `7c5a399`，React NodeView 不是主瓶颈，Stage 4b 不触发；诊断保留在 `docs/performance-stage4-diagnosis.md`。
 - 当前分支：`perf/performance-optimization`
 - Git 要求：每个阶段独立 commit；失败实验保留文档；`perf-report.json` 不提交；发布前是否 push 由用户决定。

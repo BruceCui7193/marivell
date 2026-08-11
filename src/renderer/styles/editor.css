@@ -2924,6 +2924,10 @@
 
 /* ========== Source editor (highlighted) ========== */
 
+.source-editor--pending {
+  display: none !important;
+}
+
 .source-editor {
   position: relative;
   z-index: 1;
@@ -2933,6 +2937,7 @@
   min-height: 0;
   height: 100%;
   overflow: hidden;
+  contain: layout style;
   font-family: "Cascadia Code", "JetBrains Mono", "SF Mono", "Fira Code",
     "Sarasa Mono SC", "Segoe UI", "Microsoft YaHei UI", ui-monospace, monospace;
   font-size: 14px;
@@ -3034,6 +3039,7 @@
   -webkit-text-fill-color: transparent;
   caret-color: var(--ui-accent);
   overflow: auto;
+  contain: layout style;
 }
 
 .source-editor__input::placeholder {

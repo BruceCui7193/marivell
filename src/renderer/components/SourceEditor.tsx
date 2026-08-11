@@ -20,6 +20,32 @@ export interface SourceCursorInfo {
   end: number;
 }
 
+function recordSourceEditorPhase(name: string, ms: number): void {
+  try {
+    if (!window.markdownEditor?.getBenchmarkEnabled?.()) {
+      return;
+    }
+    const target = window as unknown as {
+      __marivellModeSwitchPhases?: Array<{ name: string; ms: number }>;
+    };
+    if (!target.__marivellModeSwitchPhases) {
+      target.__marivellModeSwitchPhases = [];
+    }
+    target.__marivellModeSwitchPhases.push({ name, ms });
+  } catch {
+    // Benchmark-only instrumentation must never affect editor behavior.
+  }
+}
+
+function profileSourceEditorPhase<T>(name: string, operation: () => T): T {
+  const start = performance.now();
+  try {
+    return operation();
+  } finally {
+    recordSourceEditorPhase(name, performance.now() - start);
+  }
+}
+
 interface SourceEditorProps {
   value: string;
   onChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
@@ -226,6 +252,8 @@ const SourceEditor = forwardRef<HTMLTextAreaElement, SourceEditorProps>(function
   { value, onChange, onSelect, onCursorChange, onContextMenu, placeholder },
   forwardedRef,
 ) {
+  const renderStart = performance.now();
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const highlightRef = useRef<HTMLPreElement | null>(null);
   const highlightContentRef = useRef<HTMLSpanElement | null>(null);
@@ -233,21 +261,30 @@ const SourceEditor = forwardRef<HTMLTextAreaElement, SourceEditorProps>(function
   const gutterWindowRef = useRef<HTMLDivElement | null>(null);
   const highlightTimerRef = useRef<number | null>(null);
   const [highlightHtml, setHighlightHtml] = useState(() =>
-    highlightVisibleSourceRange(
-      value,
-      0,
-      Math.min(countSourceLines(value), SOURCE_INITIAL_HIGHLIGHT_LINES),
+    profileSourceEditorPhase(
+      'source-initial-highlight',
+      () => highlightVisibleSourceRange(
+        value,
+        0,
+        Math.min(countSourceLines(value), SOURCE_INITIAL_HIGHLIGHT_LINES),
+      ),
     ),
   );
   const [visibleRange, setVisibleRange] = useState<SourceVisibleRange>(() =>
-    getSourceEditorVisibleRange(countSourceLines(value), 0, 0),
+    profileSourceEditorPhase(
+      'source-initial-visible-range',
+      () => getSourceEditorVisibleRange(countSourceLines(value), 0, 0),
+    ),
   );
   const [sourceMetrics, setSourceMetrics] = useState<SourceEditorMetrics>({
     lineHeight: SOURCE_LINE_HEIGHT_PX,
     paddingTop: SOURCE_PADDING_TOP_PX,
   });
   const sourceMetricsRef = useRef(sourceMetrics);
-  const lineCount = useMemo(() => countSourceLines(value), [value]);
+  const lineCount = useMemo(
+    () => profileSourceEditorPhase('source-count-lines', () => countSourceLines(value)),
+    [value],
+  );
   const safeVisibleRange = useMemo<SourceVisibleRange>(() => {
     const endExclusive = Math.min(visibleRange.endExclusive, lineCount);
     const start = Math.min(visibleRange.start, Math.max(0, endExclusive - 1));
@@ -290,6 +327,21 @@ const SourceEditor = forwardRef<HTMLTextAreaElement, SourceEditorProps>(function
     );
     return nextRange;
   }, [lineCount]);
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (textarea && textarea.value !== value) {
+      textarea.value = value;
+    }
+    const root = rootRef.current;
+    if (root && root.classList.contains('source-editor--pending')) {
+      requestAnimationFrame(() => {
+        if (root.isConnected) {
+          root.classList.remove('source-editor--pending');
+        }
+      });
+    }
+  }, [value]);
 
   useLayoutEffect(() => {
     updateVirtualRange();
@@ -415,8 +467,31 @@ const SourceEditor = forwardRef<HTMLTextAreaElement, SourceEditorProps>(function
     emitCursor();
   }, [emitCursor, value]);
 
+  useLayoutEffect(() => {
+    try {
+      if (window.markdownEditor?.getBenchmarkEnabled?.()) {
+        const target = window as unknown as {
+          __marivellModeSwitchPhases?: Array<{ name: string; ms: number }>;
+        };
+        if (!target.__marivellModeSwitchPhases) {
+          target.__marivellModeSwitchPhases = [];
+        }
+        target.__marivellModeSwitchPhases.push({
+          name: 'source-editor-mount-to-effect',
+          ms: performance.now() - renderStart,
+        });
+      }
+    } catch {
+      // Benchmark-only instrumentation must never affect editor behavior.
+    }
+  }, []);
+
+  recordSourceEditorPhase(
+    'source-editor-function-render',
+    performance.now() - renderStart,
+  );
   return (
-    <div className="source-editor">
+    <div className="source-editor source-editor--pending" ref={rootRef}>
       <div className="source-editor__gutter" aria-hidden="true" ref={gutterRef}>
         <div
           className="source-editor__gutter-window"
@@ -463,7 +538,6 @@ const SourceEditor = forwardRef<HTMLTextAreaElement, SourceEditorProps>(function
           onClick={emitCursor}
           placeholder={placeholder ?? ''}
           spellCheck={false}
-          value={value}
           wrap="off"
         />
       </div>

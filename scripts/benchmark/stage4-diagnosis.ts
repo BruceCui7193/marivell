@@ -302,6 +302,7 @@ async function measureWithObservers(
     const mathBefore = window.__stage4MathStats ? { ...window.__stage4MathStats } : null;
     const heightBefore = window.__stage4HeightStats ? { ...window.__stage4HeightStats } : null;
     const widthBucketBefore = window.__marivellGetEditorWidthBucketDiagnostics?.() ?? null;
+    window.__marivellModeSwitchPhases = [];
     const mutations = { childListAdded: 0, childListRemoved: 0, attributes: 0, characterData: 0 };
     const nodeViewSelectors = '.code-block-node,.image-node,.mermaid-node,.footnote-definition-node,.html-block';
     const nodeViewMutations = {
@@ -400,6 +401,7 @@ async function measureWithObservers(
             }
           : null,
         nodeViewMutations,
+        modeSwitchPhases: (window.__marivellModeSwitchPhases ?? []).slice(),
       },
       error,
     };

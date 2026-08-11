@@ -977,3 +977,55 @@ Stage 4 diagnosis on the same final code measured `visual→source` at
 paths are effectively zero. The `<1000ms` soft mode-switch budget is not met on
 every run yet, but both paths improved substantially from the Stage 3a
 benchmark and the hard drift/placeholder gates pass.
+
+## Stage 3d Mode-Switch Long-Task Reduction (2026-08-11)
+
+Stage 3d ran on top of the Stage 3c implementation and kept its `display:none`,
+source-mode visual host DOM reduction, width-bucket cache, and PM position index
+hydration. The remaining long tasks were split with benchmark-gated phase
+instrumentation in the mode-switch paths. The main remaining costs were:
+
+1. Mounting `SourceEditor` with the 1.36 MB document as a controlled textarea
+   caused a React textarea/commit + layout long task of roughly 446 ms on the
+   large file. Making the textarea uncontrolled, assigning its native value in a
+   layout effect while the source editor is temporarily `display:none`, and only
+   revealing it after the value is installed reduced that phase to roughly 68 ms.
+2. The mode-switch overlay and double-rAF transition added a fixed wait plus
+   event-loop delay before the real switch. The overlay no longer blocks the
+   ready path and the transition uses a single rAF.
+3. `flushVisualSync()` ran `onDocumentChange`, stats, dirty, and outline state
+   updates synchronously before source mode was rendered. In the mode-switch
+   call these side effects are now deferred with `setTimeout(0)`, while refs and
+   the mode-switch cache are still updated synchronously.
+4. Pending formula height measurement could still occupy the first rAF after
+   the toggle. Height measurement is now suspended at the start of
+   visual→source, before the React commit.
+5. Scroll-ratio restore needed a retry until the hidden source editor became
+   visible; otherwise the restored source scroll ratio could be zero.
+
+Latest large-file benchmark (`/home/crh/下载/barfoot_ser24/barfoot_ser24.md`,
+two runs):
+
+| Metric | Stage 3c run | Stage 3d run 1 | Stage 3d run 2 |
+| --- | ---: | ---: | ---: |
+| mode-switch-visual-to-source-ms | 1,303.0 | 778.7 | 828.7 |
+| mode-switch-source-to-visual-ms | 1,209.8 | 974.9 | 980.0 |
+| visual-to-source width-bucket-layout-reads | ~0 | 1 | 1 |
+| source-to-visual width-bucket-layout-reads | ~0 | 0 | 0 |
+| mode-switch-source-host-dom-count | 24,573 | 24,573 | 24,573 |
+| mode-switch-source-host-katex-count | 0 | 0 | 0 |
+| mode-switch-source-host-syntax-span-count | 0 | 0 | 0 |
+| scrollDriftPx | 0 | 0 | 0 |
+| viewportPlaceholders | 0 | 0 | 0 |
+| inline-height-drift | 0 | 0 | 0 |
+| inlineMathActivateReadyMs | 2.2 | 2.7 | 2.8 |
+| mode-switch-no-reparse | true | true | true |
+
+Stage 4 diagnosis on the final Stage 3d code measured `visual→source` at
+975.3 ms with 972 ms long-task total and `source→visual` at 818.5 ms with
+576 ms long-task total. The official benchmark still measures slightly
+differently because it starts from the post-interaction document and does not
+include the diagnostic phase collection, but both mode-switch paths passed
+`<1000ms` in both official runs. No test assertion was relaxed.
+
+主代理复测（`npm run benchmark`）：`mode-switch-visual-to-source-ms=803.7`、`mode-switch-source-to-visual-ms=978.2`，均 `<1000ms`；`visual-open=4964ms`、`renderer-ready=3733ms`，滚动/typing 软预算仍未达标但无新增回归。

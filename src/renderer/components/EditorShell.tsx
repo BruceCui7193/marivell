@@ -364,6 +364,37 @@ type ModeSwitchMetric =
   | 'source-to-visual-full-parse'
   | 'visual-to-source-full-serialize';
 
+interface ModeSwitchPhaseEntry {
+  name: string;
+  ms: number;
+}
+
+function recordModeSwitchPhase(name: string, ms: number): void {
+  try {
+    if (!window.markdownEditor.getBenchmarkEnabled?.()) {
+      return;
+    }
+    const target = window as unknown as {
+      __marivellModeSwitchPhases?: ModeSwitchPhaseEntry[];
+    };
+    if (!target.__marivellModeSwitchPhases) {
+      target.__marivellModeSwitchPhases = [];
+    }
+    target.__marivellModeSwitchPhases.push({ name, ms });
+  } catch {
+    // Benchmark-only instrumentation must never affect editor behavior.
+  }
+}
+
+function profileModeSwitchPhase<T>(name: string, operation: () => T): T {
+  const start = performance.now();
+  try {
+    return operation();
+  } finally {
+    recordModeSwitchPhase(name, performance.now() - start);
+  }
+}
+
 function incrementModeSwitchMetric(metric: ModeSwitchMetric): void {
   try {
     if (!window.markdownEditor.getBenchmarkEnabled?.()) {
@@ -602,7 +633,6 @@ function serializeVisualDocumentLocally(
 
 const VISUAL_META_SYNC_DELAY_MS = 260;
 const VISUAL_DOCUMENT_SYNC_TIMEOUT_MS = 1400;
-const MODE_SWITCH_OVERLAY_DELAY_MS = 180;
 const SEARCH_QUERY_PREFILL_MAX_CHARS = 240;
 const SEARCH_QUERY_PREFILL_MAX_NEWLINES = 2;
 
@@ -727,7 +757,6 @@ interface EditorViewportProps {
   editorFrameRef: RefObject<HTMLDivElement>;
   editorHostRef: RefObject<HTMLDivElement>;
   loading: boolean;
-  modeSwitching: boolean;
   searchPanel: JSX.Element | null;
   sourceMode: boolean;
   sourceDraft: string;
@@ -745,7 +774,6 @@ const EditorViewport = memo(function EditorViewport({
   editorFrameRef,
   editorHostRef,
   loading,
-  modeSwitching,
   searchPanel,
   sourceMode,
   sourceDraft,
@@ -765,12 +793,6 @@ const EditorViewport = memo(function EditorViewport({
       onContextMenu={sourceMode ? undefined : onVisualContextMenu}
     >
       {loading ? <div className="editor-loading">{translate('loadingDocument')}</div> : null}
-      {modeSwitching ? (
-        <div className="editor-loading editor-loading--mode-switch" role="status" aria-live="polite">
-          <span className="editor-loading__spinner" />
-          <span>{translate('switchingMode')}</span>
-        </div>
-      ) : null}
       {searchPanel}
       <div
         ref={editorHostRef}
@@ -976,7 +998,6 @@ export default function EditorShell({
   const scrollMemoryRef = useRef<Map<string, ScrollAnchor | SourceScrollAnchor | number>>(new Map());
   const prevDocPathRef = useRef(document.path);
   const pendingScrollRestoreRef = useRef<ScrollAnchor | SourceScrollAnchor | number | null>(null);
-  const modeSwitchOverlayTimerRef = useRef<number | null>(null);
   const sourceSelectionRef = useRef<SourceSearchMatch>({
     start: 0,
     end: 0,
@@ -1014,7 +1035,6 @@ export default function EditorShell({
   const [liveStats, setLiveStats] = useState(document.stats);
   const [liveDirty, setLiveDirty] = useState(document.dirty);
   const [loadingExternalDocument, setLoadingExternalDocument] = useState(false);
-  const [modeSwitching, setModeSwitching] = useState(false);
   const sourceModeRef = useRef(sourceMode);
   const sourceDraftRef = useRef(sourceDraft);
   const searchPanelOpenRef = useRef(false);
@@ -2410,7 +2430,10 @@ export default function EditorShell({
     );
   }, [document.markdown.length, editor]);
 
-  function flushVisualSync(targetEditor = editor): { markdown: string; stats: DocumentStats } | null {
+  function flushVisualSync(
+    targetEditor = editor,
+    deferSideEffects = false,
+  ): { markdown: string; stats: DocumentStats } | null {
     if (!targetEditor) {
       return null;
     }
@@ -2455,7 +2478,10 @@ export default function EditorShell({
     lastEmittedMarkdownRef.current = markdown;
     visualDocEditedRef.current = false;
     visualEditRangeRef.current = null;
-    const nextCache = buildModeSwitchCache(markdown, targetEditor);
+    const nextCache = profileModeSwitchPhase(
+      'visual-to-source-build-cache',
+      () => buildModeSwitchCache(markdown, targetEditor),
+    );
     if (nextCache) {
       modeSwitchCacheRef.current = {
         ...nextCache,
@@ -2464,11 +2490,21 @@ export default function EditorShell({
     } else {
       modeSwitchCacheRef.current = null;
     }
-    setLiveStats((current) => (areStatsEqual(current, stats) ? current : stats));
-    setLiveDirty(markdown !== document.savedMarkdown);
-    onDocumentChange(markdown, stats);
-    const nextOutline = extractOutlineFromEditor(targetEditor);
-    setOutline((current) => (areOutlinesEqual(current, nextOutline) ? current : nextOutline));
+    const nextOutline = profileModeSwitchPhase(
+      'visual-to-source-outline',
+      () => extractOutlineFromEditor(targetEditor),
+    );
+    const applySideEffects = (): void => {
+      setLiveStats((current) => (areStatsEqual(current, stats) ? current : stats));
+      setLiveDirty(markdown !== document.savedMarkdown);
+      onDocumentChange(markdown, stats);
+      setOutline((current) => (areOutlinesEqual(current, nextOutline) ? current : nextOutline));
+    };
+    if (deferSideEffects) {
+      window.setTimeout(applySideEffects, 0);
+    } else {
+      applySideEffects();
+    }
     return { markdown, stats };
   }
 
@@ -2480,10 +2516,6 @@ export default function EditorShell({
 
       if (pendingVisualDocumentSyncRef.current !== null) {
         cancelIdleWork(pendingVisualDocumentSyncRef.current);
-      }
-
-      if (modeSwitchOverlayTimerRef.current !== null) {
-        window.clearTimeout(modeSwitchOverlayTimerRef.current);
       }
     };
   }, []);
@@ -2990,10 +3022,30 @@ export default function EditorShell({
       return;
     }
 
-    const maxScrollTop = Math.max(target.scrollHeight - target.clientHeight, 0);
-    target.scrollTop = maxScrollTop * ratio;
-    pendingModeSwitchScrollRatioRef.current = null;
-    pendingModeSwitchRatioRestoredRef.current = true;
+    let retryCount = 0;
+    const applyRatio = (): void => {
+      const currentTarget = sourceMode
+        ? sourceTextareaRef.current
+        : editorFrameRef.current;
+      if (!currentTarget) {
+        pendingModeSwitchScrollRatioRef.current = null;
+        pendingModeSwitchRatioRestoredRef.current = true;
+        return;
+      }
+      const maxScrollTop = Math.max(
+        currentTarget.scrollHeight - currentTarget.clientHeight,
+        0,
+      );
+      if (maxScrollTop <= 0 && sourceMode && retryCount < 3) {
+        retryCount += 1;
+        requestAnimationFrame(applyRatio);
+        return;
+      }
+      currentTarget.scrollTop = maxScrollTop * ratio;
+      pendingModeSwitchScrollRatioRef.current = null;
+      pendingModeSwitchRatioRestoredRef.current = true;
+    };
+    applyRatio();
   }, [document.markdown, sourceDraft, sourceMode]);
 
   useLayoutEffect(() => {
@@ -3001,40 +3053,52 @@ export default function EditorShell({
       return;
     }
     if (sourceMode) {
-      setHeightMeasurementSuspended(true);
-      clearMathSyntaxDecorations(editor.view);
-      forceDeactivateAllVirtualNodes();
-      deactivateAllInlineMathGroups();
+      profileModeSwitchPhase('source-deactivate-height-suspend', () => {
+        setHeightMeasurementSuspended(true);
+      });
+      profileModeSwitchPhase('source-deactivate-syntax-clear', () => {
+        clearMathSyntaxDecorations(editor.view);
+      });
+      profileModeSwitchPhase('source-deactivate-virtual-nodes', () => {
+        forceDeactivateAllVirtualNodes();
+      });
+      profileModeSwitchPhase('source-deactivate-inline-groups', () => {
+        deactivateAllInlineMathGroups();
+      });
       return;
     }
-    setHeightMeasurementSuspended(false);
-    requestMathSyntaxViewportRefresh();
+    profileModeSwitchPhase('visual-reactivate-height-resume', () => {
+      setHeightMeasurementSuspended(false);
+      requestMathSyntaxViewportRefresh();
+    });
     const frame = editorFrameRef.current;
     if (frame) {
       let centerPosition: number | null = null;
       let positionRadius: number | null = null;
-      try {
-        const rect = frame.getBoundingClientRect();
-        const centerX = rect.left + rect.width / 2;
-        const center = posAtCoords(editor, centerX, rect.top + rect.height / 2);
-        const top = posAtCoords(editor, centerX, rect.top + 1);
-        const bottom = posAtCoords(editor, centerX, rect.bottom - 1);
-        if (center && top && bottom && rect.height > 0) {
-          centerPosition = center.pos;
-          positionRadius = Math.max(
-            1,
-            Math.ceil(
-              Math.max(
-                center.pos - top.pos,
-                bottom.pos - center.pos,
-                bottom.pos - top.pos,
+      profileModeSwitchPhase('visual-reactivate-position-map', () => {
+        try {
+          const rect = frame.getBoundingClientRect();
+          const centerX = rect.left + rect.width / 2;
+          const center = posAtCoords(editor, centerX, rect.top + rect.height / 2);
+          const top = posAtCoords(editor, centerX, rect.top + 1);
+          const bottom = posAtCoords(editor, centerX, rect.bottom - 1);
+          if (center && top && bottom && rect.height > 0) {
+            centerPosition = center.pos;
+            positionRadius = Math.max(
+              1,
+              Math.ceil(
+                Math.max(
+                  center.pos - top.pos,
+                  bottom.pos - center.pos,
+                  bottom.pos - top.pos,
+                ),
               ),
-            ),
-          );
+            );
+          }
+        } catch {
+          // The ratio fallback below is enough for a transient first-frame layout.
         }
-      } catch {
-        // The ratio fallback below is enough for a transient first-frame layout.
-      }
+      });
       if (centerPosition === null || positionRadius === null) {
         const docSize = editor.state.doc.content.size;
         const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
@@ -3049,12 +3113,20 @@ export default function EditorShell({
           ),
         );
       }
-      hydrateTargetRange(frame, centerPosition, positionRadius, true);
-      hydrateInlineMathGroupsAroundPosition(
-        frame,
-        centerPosition,
-        positionRadius,
-      );
+      const hydrateCenter = centerPosition;
+      const hydrateRadius = positionRadius;
+      if (hydrateCenter !== null && hydrateRadius !== null) {
+        profileModeSwitchPhase('visual-reactivate-hydrate-blocks', () => {
+          hydrateTargetRange(frame, hydrateCenter, hydrateRadius, true);
+        });
+        profileModeSwitchPhase('visual-reactivate-hydrate-inline', () => {
+          hydrateInlineMathGroupsAroundPosition(
+            frame,
+            hydrateCenter,
+            hydrateRadius,
+          );
+        });
+      }
     }
   }, [editor, sourceMode]);
 
@@ -3519,7 +3591,10 @@ export default function EditorShell({
       visualMarkdownRef.current = markdown;
       visualStatsRef.current = stats;
       lastEmittedMarkdownRef.current = markdown;
-      const nextCache = buildModeSwitchCache(markdown, editor);
+      const nextCache = profileModeSwitchPhase(
+        'source-to-visual-build-cache',
+        () => buildModeSwitchCache(markdown, editor),
+      );
       if (nextCache) {
         modeSwitchCacheRef.current = nextCache;
         if (visualSelection) {
@@ -3533,7 +3608,10 @@ export default function EditorShell({
       }
       setLiveStats((currentStats) => (areStatsEqual(currentStats, stats) ? currentStats : stats));
       setLiveDirty(markdown !== document.savedMarkdown);
-      const nextOutline = extractOutline(markdown);
+      const nextOutline = profileModeSwitchPhase(
+        'source-to-visual-outline',
+        () => extractOutline(markdown),
+      );
       setOutline((currentOutline) =>
         areOutlinesEqual(currentOutline, nextOutline) ? currentOutline : nextOutline,
       );
@@ -3543,9 +3621,13 @@ export default function EditorShell({
   );
 
   const toggleSourceModePreservingViewport = useCallback(() => {
+    const switchStart = performance.now();
     pendingModeSwitchRatioRestoredRef.current = false;
     captureModeSwitchScrollRatio();
     const currentSourceMode = sourceModeRef.current;
+    if (!currentSourceMode) {
+      setHeightMeasurementSuspended(true);
+    }
     if (currentSourceMode && editor) {
       const input = sourceTextareaRef.current;
       const markdown = sourceDraftRef.current;
@@ -3572,15 +3654,21 @@ export default function EditorShell({
           to: currentVisualSelection.to,
           kind: currentVisualSelection instanceof NodeSelection ? 'node' : 'text',
         };
-        const flushed = flushVisualSync(editor);
+        const flushed = profileModeSwitchPhase(
+          'visual-to-source-flush',
+          () => flushVisualSync(editor, true),
+        );
         const markdown =
           flushed?.markdown ??
           lastEmittedMarkdownRef.current ??
           documentMarkdownRef.current;
-        const selection = buildSourceSelectionFromVisualEditor(
-          editor,
-          markdown,
-          modeSwitchCacheRef.current,
+        const selection = profileModeSwitchPhase(
+          'visual-to-source-selection-map',
+          () => buildSourceSelectionFromVisualEditor(
+            editor,
+            markdown,
+            modeSwitchCacheRef.current,
+          ),
         );
         if (modeSwitchCacheRef.current) {
           modeSwitchCacheRef.current.visualSelectionMapping = {
@@ -3597,11 +3685,15 @@ export default function EditorShell({
         skipSourceDraftExternalSyncRef.current = true;
         setSourceDraft(markdown);
         sourceDraftRef.current = markdown;
-        const stats = computeSourceStats(markdown);
-        setLiveStats((currentStats) => (areStatsEqual(currentStats, stats) ? currentStats : stats));
-        queueSourcePreview(markdown, selection);
+        profileModeSwitchPhase('visual-to-source-queue-preview', () => {
+          queueSourcePreview(markdown, selection);
+        });
         setSourceMode(true);
         sourceModeRef.current = true;
+        recordModeSwitchPhase(
+          'visual-to-source-total',
+          performance.now() - switchStart,
+        );
         return;
       }
 
@@ -3661,20 +3753,26 @@ export default function EditorShell({
           editor.view.dispatch(editor.state.tr.setSelection(nextSelection));
           externalUpdateRef.current = false;
         } else {
-          const mappedFrom = sourceOffsetToPmPosWithAnchors(
-            markdown,
-            cached?.sourceBlocks ?? [],
-            selection.start,
-            editor.state.doc.content.size,
+          const mappedFrom = profileModeSwitchPhase(
+            'source-to-visual-selection-map',
+            () => sourceOffsetToPmPosWithAnchors(
+              markdown,
+              cached?.sourceBlocks ?? [],
+              selection.start,
+              editor.state.doc.content.size,
+            ),
           );
           const mappedTo =
             mappedFrom === null
               ? null
-              : sourceOffsetToPmPosWithAnchors(
-                  markdown,
-                  cached?.sourceBlocks ?? [],
-                  selection.end,
-                  editor.state.doc.content.size,
+              : profileModeSwitchPhase(
+                  'source-to-visual-selection-map',
+                  () => sourceOffsetToPmPosWithAnchors(
+                    markdown,
+                    cached?.sourceBlocks ?? [],
+                    selection.end,
+                    editor.state.doc.content.size,
+                  ),
                 );
           const from = mappedFrom ?? Math.min(selection.start, editor.state.doc.content.size);
           const to = mappedTo ?? Math.max(from, Math.min(selection.end, editor.state.doc.content.size));
@@ -3701,9 +3799,16 @@ export default function EditorShell({
           end: selection.end,
         };
         lastVisualSelectionRef.current = nextVisualSelection;
-        syncSourceToVisualState(markdown, selection, nextVisualSelection);
+        profileModeSwitchPhase(
+          'source-to-visual-sync-state',
+          () => syncSourceToVisualState(markdown, selection, nextVisualSelection),
+        );
         setSourceMode(false);
         sourceModeRef.current = false;
+        recordModeSwitchPhase(
+          'source-to-visual-total',
+          performance.now() - switchStart,
+        );
         return;
       }
 
@@ -3750,9 +3855,16 @@ export default function EditorShell({
               start: selection.start,
               end: selection.end,
             };
-            syncSourceToVisualState(markdown, selection, null);
+            profileModeSwitchPhase(
+              'source-to-visual-sync-state',
+              () => syncSourceToVisualState(markdown, selection, null),
+            );
             setSourceMode(false);
             sourceModeRef.current = false;
+            recordModeSwitchPhase(
+              'source-to-visual-total',
+              performance.now() - switchStart,
+            );
             return;
           } catch {
             externalUpdateRef.current = false;
@@ -3783,7 +3895,10 @@ export default function EditorShell({
           start: selection.start,
           end: selection.end,
         };
-        syncSourceToVisualState(markdown, selection, null);
+        profileModeSwitchPhase(
+          'source-to-visual-sync-state',
+          () => syncSourceToVisualState(markdown, selection, null),
+        );
       };
       if (cacheHit && cachedPreview) {
         applyParsedMarkedContent(cachedPreview.content);
@@ -3815,6 +3930,10 @@ export default function EditorShell({
 
     setSourceMode(false);
     sourceModeRef.current = false;
+    recordModeSwitchPhase(
+      'source-to-visual-total',
+      performance.now() - switchStart,
+    );
   }, [
     armSkipNextDocChange,
     captureModeSwitchScrollRatio,
@@ -3828,20 +3947,13 @@ export default function EditorShell({
   ]);
 
   const toggleSourceModeWithTransition = useCallback(() => {
-    if (modeSwitchOverlayTimerRef.current !== null) {
-      window.clearTimeout(modeSwitchOverlayTimerRef.current);
-      modeSwitchOverlayTimerRef.current = null;
-    }
-
-    setModeSwitching(true);
+    const transitionStart = performance.now();
     requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        toggleSourceModePreservingViewport();
-        modeSwitchOverlayTimerRef.current = window.setTimeout(() => {
-          setModeSwitching(false);
-          modeSwitchOverlayTimerRef.current = null;
-        }, MODE_SWITCH_OVERLAY_DELAY_MS);
-      });
+      toggleSourceModePreservingViewport();
+      recordModeSwitchPhase(
+        'overlay-delay',
+        performance.now() - transitionStart,
+      );
     });
   }, [toggleSourceModePreservingViewport]);
 
@@ -4680,7 +4792,6 @@ export default function EditorShell({
           editorFrameRef={editorFrameRef}
           editorHostRef={editorHostRef}
           loading={loadingExternalDocument}
-          modeSwitching={modeSwitching}
           onFrameMouseDown={handleFrameMouseDown}
           onSourceChange={handleSourceChange}
           onSourceSelect={handleSourceSelect}
