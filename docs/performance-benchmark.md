@@ -668,3 +668,68 @@ and all hard gates pass. Typing, scroll average, middle jump-ready, and drag
 jump-ready remain noisy and are not yet reliably better than the 60fce80
 baseline; Stage 2 is therefore recorded as partial progress, not a release
 gate pass.
+
+## Stage 3 Investigation: Mode-Switch and Layout (2026-08-11)
+
+Stage 3 was evaluated against the committed `2fcdd9c` baseline. The large-file
+benchmark remains dominated by the source-to-visual host transition, not by the
+mode-switch JS logic itself.
+
+Latest large-file run on the clean baseline:
+
+| Metric | Value |
+| --- | ---: |
+| visual-open | 6715 ms |
+| renderer-render-to-ready | 3888 ms |
+| mode-switch-visual-to-source-ms | 1325.8 ms |
+| mode-switch-source-to-visual-ms | 2840.6 ms |
+| mode-switch-no-reparse | true |
+| scrollDriftPx | 0 |
+| viewportPlaceholders | 0 |
+
+### Source-to-visual timing breakdown
+
+A benchmark-only instrumentation of the fast path measured the synchronous
+toggle work at about 37 ms (selection dispatch, cache sync, and `setSourceMode`
+combined). The remaining latency comes from making the `display: none` visual
+host visible again:
+
+- The visual host becomes visible roughly 1.15 s after the toggle event in a
+  large-file CDP trace; the mode-switch overlay and double-rAF transition
+  account for part of this, and the rest is renderer/layout work after React
+  commit.
+- CDP metrics during source-to-visual showed ~2.9 s of `LayoutDuration` when
+  scroll restoration forced the viewport to a deep position, versus ~0.8 s
+  when the visual viewport stayed at the top.
+- The formula/height prefetch runs while the source editor is active, but its
+  synchronous work was not the dominant part of the switch cost.
+
+### Rejected experiments
+
+1. Block-level `content-visibility: auto` on paragraphs/headings/lists/etc.
+   showed strong profile gains (`source-to-visual` ~1.4 s) but broke
+   ProseMirror coordinate mapping (`posAtCoords` returned null for the first
+   heading) and failed the existing caret-alignment e2e assertions. It was
+   reverted.
+2. Preserving the source-editor scroll ratio as the first visual frame while
+   keeping `display: none` caused full-document layout to a deep scroll
+   position and regressed source-to-visual from ~2 s to ~4.6-4.9 s. It was
+   reverted.
+3. Gating hidden-host formula measurement during source mode did not improve
+   the official benchmark and was reverted to keep the diff minimal.
+
+### Conclusion for Stage 3
+
+Under the current constraints (keep `display: none`, do not keep the visual
+host offscreen-mounted, do not break native paragraph layout/PM coordinates),
+the source-to-visual latency cannot be brought below the release budget with
+the changes tried here. The viable directions require one of:
+
+- user approval to preserve the visual host layout while source mode is active
+  (`visibility: hidden`/offscreen host instead of `display: none`), or
+- a lower-level ProseMirror DOM strategy that avoids full re-layout on
+  re-display without `content-visibility` on text blocks.
+
+These findings are intentionally recorded without committing code, because the
+plan requires stopping for discussion when a stage cannot satisfy its
+acceptance constraints without changing the architecture.

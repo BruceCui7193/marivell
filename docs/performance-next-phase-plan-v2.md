@@ -318,6 +318,10 @@ Stage 1 结果记录在 `docs/performance-benchmark.md`，关键变化：
 - 无 marker 泄漏、无内容篡改。
 - 所有既有模式切换测试通过。
 
+### 2.4.6 Stage 3 调查结论（2026-08-11）
+
+Stage 3 在干净基线 `2fcdd9c` 上完成了一次独立调查并记录于 `docs/performance-benchmark.md`。结论：当前约束下（保留 `display: none`、不常驻离屏视觉 DOM、不让普通段落/公式 contentDOM 失去原生布局与坐标）无法达到 `source→visual < 1000ms`。尝试过的段落级 `content-visibility` 会破坏 ProseMirror 坐标映射；保留源码滚动比例的深滚动首帧会触发约 2.9s 全文档布局。下一步需要用户批准改为保留视觉 host 布局（`visibility: hidden`/离屏 host）或采用更低层的 PM DOM 策略，否则不继续硬执行本 Stage。
+
 ### 2.5 Stage 4：条件性 React NodeView 优化
 
 #### 2.5.1 触发条件
