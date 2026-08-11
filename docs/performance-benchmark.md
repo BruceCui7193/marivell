@@ -1130,3 +1130,32 @@ while bottom and drag remained ready; it is recorded as a flaky run, not an
 effective result. Jump-ready is still dominated by benchmark-time PM coordinate
 measurement and large native DOM layout, so the `16.6/33/200ms` release budget
 is not yet met. No assertion or perf budget was relaxed.
+
+## Stage D3-D5 Main-Agent Verification (2026-08-12)
+
+After D3 zero-change scroll frames, D4 template-clone injection, and D5
+zero-rect typing hot path were merged, main agent ran the large-file benchmark
+exclusively on `/home/crh/下载/barfoot_ser24/barfoot_ser24.md`:
+
+| Metric | Before D3 | After D3-D5 |
+| --- | ---: | ---: |
+| visual-open | ~4,964ms | 5,025ms |
+| renderer-ready | ~3,733ms | 3,878ms |
+| typing | ~145-155ms | 192.5ms |
+| interaction-combined | ~1,270-1,417ms | 1,567.7ms |
+| mode-switch visual->source | ~536-700ms | 759.5ms |
+| mode-switch source->visual | ~790-950ms | 844.5ms |
+| scroll-avg | ~150ms | 67.9ms |
+| scroll-max | ~263-360ms | 167.6ms |
+| scroll-jump-ready (worst) | ~1,250-1,450ms | 1,362.2ms |
+| scroll-frame-dom-mutations | n/a | 4 (only first frame) |
+| scroll-frame-rect-reads | n/a | 0 |
+| scroll-frame-posatcoords | n/a | 0 |
+| template-cache-hits | 0 | 32 |
+| template-cache-misses | 0 | 246 |
+| katex-inject-p95 | n/a | 0.9ms |
+| drift / placeholder / inline-drift | 0/0/0 | 0/0/0 |
+
+All hard gates passed. Scroll frame hot path is now close to zero-change.
+Remaining soft-budget gaps are typing/combined, jump-ready, visual-open,
+scroll avg/max, and mode-switch below the excellent target.
