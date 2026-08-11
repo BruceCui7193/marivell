@@ -1159,3 +1159,29 @@ exclusively on `/home/crh/下载/barfoot_ser24/barfoot_ser24.md`:
 All hard gates passed. Scroll frame hot path is now close to zero-change.
 Remaining soft-budget gaps are typing/combined, jump-ready, visual-open,
 scroll avg/max, and mode-switch below the excellent target.
+
+## Stage D6-D7-U5 Main-Agent Verification (2026-08-12)
+
+Main agent re-ran the large-file benchmark after D6 windowed IO, D7 UIFF/BFR,
+and U5 resource governance, plus a probe fix for large-file UIFF timeout:
+
+| Metric | After D3-D5 | After D6-D7-U5 |
+| --- | ---: | ---: |
+| visual-open | 5,025ms | 4,898ms |
+| renderer-ready | 3,878ms | 3,774ms |
+| typing | 192.5ms | 215.2ms |
+| interaction-combined | 1,567.7ms | 1,598.1ms |
+| mode-switch visual->source | 759.5ms | 729.7ms |
+| mode-switch source->visual | 844.5ms | 1,036.9ms |
+| scroll-avg | 67.9ms | 47.6ms |
+| scroll-max | 167.6ms | 144.3ms |
+| scroll-jump-ready (worst) | 1,362.2ms | 2,053.3ms |
+| scroll-frame-dom-mutations | 4 | 0 |
+| scroll-frame-rect-reads | 0 | 0 |
+| scroll-frame-posatcoords | 0 | 0 |
+| uiff-passed | n/a | true |
+| bfr-worker-queue-empty | n/a | true |
+
+All hard gates passed. UIFF/BFR are now stable on the large file. Remaining
+soft-budget gaps are typing/combined, source->visual, jump-ready, scroll
+avg/max, and the excellent/ultimate targets.
