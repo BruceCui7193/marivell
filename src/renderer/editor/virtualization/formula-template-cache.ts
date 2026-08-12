@@ -1,3 +1,4 @@
+import { endFunctionTimer, startFunctionTimer } from './function-timers';
 export const FORMULA_TEMPLATE_CACHE_MAX_COUNT = 2400;
 export const FORMULA_TEMPLATE_CACHE_MAX_BYTES = 48 * 1024 * 1024;
 
@@ -58,8 +59,10 @@ function evictFormulaTemplates(): void {
 }
 
 function buildFormulaTemplate(html: string): HTMLTemplateElement {
+  startFunctionTimer('buildFormulaTemplate');
   const template = document.createElement('template');
   template.innerHTML = html;
+  endFunctionTimer('buildFormulaTemplate');
   return template;
 }
 
@@ -107,13 +110,18 @@ export function cloneFormulaTemplateContent(
   key: string,
   html?: string | null,
 ): DocumentFragment | null {
+  startFunctionTimer('cloneFormulaTemplateContent');
   const template = getOrCreateFormulaTemplate(key, html);
   if (template === null) {
+    endFunctionTimer('cloneFormulaTemplateContent');
     return null;
   }
   try {
-    return template.content.cloneNode(true) as DocumentFragment;
+    const fragment = template.content.cloneNode(true) as DocumentFragment;
+    endFunctionTimer('cloneFormulaTemplateContent');
+    return fragment;
   } catch {
+    endFunctionTimer('cloneFormulaTemplateContent');
     return null;
   }
 }

@@ -1,3 +1,4 @@
+import { endFunctionTimer, startFunctionTimer } from '../virtualization/function-timers';
 import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey, type EditorState, type Transaction } from '@tiptap/pm/state';
 import { Decoration, DecorationSet, type EditorView } from '@tiptap/pm/view';
@@ -579,8 +580,10 @@ export const MathSyntaxHighlight = Extension.create({
           };
 
           const runViewportUpdate = (): ViewportUpdateResult => {
+            startFunctionTimer('MathSyntaxHighlight.runViewportUpdate');
             if (!frame || frame.classList.contains('is-source')) {
               return 'retry';
+              endFunctionTimer('MathSyntaxHighlight.runViewportUpdate');
             }
             const scrollFrame = getScrollFrame();
             lastKnownMaxScrollTop = Math.max(
@@ -588,6 +591,7 @@ export const MathSyntaxHighlight = Extension.create({
               0,
             );
             const result = updateViewport();
+            endFunctionTimer('MathSyntaxHighlight.runViewportUpdate');
             publishViewportDiagnostics();
             return result;
           };
@@ -676,15 +680,18 @@ export const MathSyntaxHighlight = Extension.create({
           };
 
           const updateViewport = (): ViewportUpdateResult => {
+            startFunctionTimer('MathSyntaxHighlight.updateViewport');
             if (
               !frame ||
               frame.classList.contains('is-source') ||
               frame.querySelector('.editor-loading') !== null
             ) {
+              endFunctionTimer('MathSyntaxHighlight.updateViewport');
               return 'retry';
             }
             const rect = frame.getBoundingClientRect();
             if (rect.width <= 0 || rect.height <= 0) {
+              endFunctionTimer('MathSyntaxHighlight.updateViewport');
               return 'retry';
             }
 
@@ -699,6 +706,7 @@ export const MathSyntaxHighlight = Extension.create({
                 top: rect.top + rect.height - Math.min(64, rect.height * 0.1),
               });
               if (!top || !bottom) {
+                endFunctionTimer('MathSyntaxHighlight.updateViewport');
                 return 'retry';
               }
 
@@ -708,17 +716,20 @@ export const MathSyntaxHighlight = Extension.create({
                 bottom.pos,
               );
               if (range.from >= range.to) {
+                endFunctionTimer('MathSyntaxHighlight.updateViewport');
                 return 'empty';
               }
               if (lastViewportFrom === range.from && lastViewportTo === range.to) {
                 viewportSkippedCount += 1;
                 lastViewportUpdateAt = performance.now();
+                endFunctionTimer('MathSyntaxHighlight.updateViewport');
                 return 'empty';
               }
               lastViewportFrom = range.from;
               lastViewportTo = range.to;
               lastViewportUpdateAt = performance.now();
               viewportDispatchCount += 1;
+              endFunctionTimer('MathSyntaxHighlight.updateViewport');
               view.dispatch(
                 view.state.tr.setMeta(mathSyntaxKey, {
                   type: 'viewport',
@@ -731,6 +742,7 @@ export const MathSyntaxHighlight = Extension.create({
               );
               return 'dispatched';
             } catch {
+              endFunctionTimer('MathSyntaxHighlight.updateViewport');
               // jsdom and headless probes have no usable layout coordinates.
               return 'retry';
             }

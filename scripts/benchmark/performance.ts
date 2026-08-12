@@ -1150,6 +1150,7 @@ async function measureScrollJumpScenario(
   placeholderScanCalls: number;
   inlinePlaceholderScanCalls: number;
   timedOut: boolean;
+  functionCosts: Record<string, { totalMs: number; maxMs: number; count: number }> | null;
 }> {
   const scenarioName = JSON.stringify(scenario);
   const script = `(async () => {
@@ -1370,6 +1371,11 @@ async function measureScrollJumpScenario(
     });
     mutationObserverDiag.observe(frame, { subtree: true, childList: true, attributes: true, characterData: true });
     // --- End diagnostic observers ---
+
+    // --- Reset function timers for D10 attribution ---
+    if (typeof benchmarkWindow.__marivellResetFunctionTimings === 'function') {
+      benchmarkWindow.__marivellResetFunctionTimings();
+    }
 
     if (typeof benchmarkWindow.__marivellResetHydrationSyncForTest === 'function') {
       benchmarkWindow.__marivellResetHydrationSyncForTest();
@@ -1639,6 +1645,7 @@ async function measureScrollJumpScenario(
       frameStamps,
       layoutShifts,
       mutationBursts,
+      functionCosts: typeof benchmarkWindow.__marivellFunctionTimings === 'function' ? benchmarkWindow.__marivellFunctionTimings() : null,
       timedOut,
     };
   })()`;
@@ -2822,6 +2829,11 @@ async function runBenchmark(): Promise<void> {
               metric: `${jumpScenario.metric}-mutation-bursts`,
               value: JSON.stringify(jump.value.mutationBursts),
               unit: "json",
+            },
+            {
+              metric: `${jumpScenario.metric}-function-costs`,
+              value: JSON.stringify(jump.value.functionCosts ?? {}),
+              unit: 'json',
             },
           );
           scrollFirstFrameReady[jumpScenario.metric] = jump.value.firstFrameReady;

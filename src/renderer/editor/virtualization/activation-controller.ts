@@ -1,3 +1,4 @@
+import { endFunctionTimer, startFunctionTimer } from './function-timers';
 import { createHydrationQueue } from './hydration-queue';
 
 interface VirtualNodeCallbacks {
@@ -886,6 +887,7 @@ export function registerVirtualNodeView(
 }
 
 export function forceActivate(id: string): void {
+  if (id !== '') startFunctionTimer('forceActivate');
   const registration = virtualNodes.get(id);
   if (!registration) {
     cancelPendingActivation(id);
@@ -902,6 +904,7 @@ export function forceActivate(id: string): void {
   } else if (registration.state === 'pending') {
     registration.state = 'active';
   }
+  endFunctionTimer('forceActivate');
 }
 
 export function forceActivateById(id: string): void {
@@ -992,6 +995,7 @@ export function forceActivateViewport(
     const top = containerRect.top - rootMargin;
     const bottom = containerRect.bottom + rootMargin;
 
+    startFunctionTimer('forceActivateViewport');
     for (const registration of Array.from(virtualNodes.values())) {
       if (stats) {
         stats.scanned += 1;
@@ -1019,6 +1023,7 @@ export function forceActivateViewport(
       activatedCount += 1;
     }
 
+    endFunctionTimer('forceActivateViewport');
     return activatedCount;
   };
 
@@ -1082,6 +1087,7 @@ export function hydrateTargetRange(
   includeAllVirtualNodes = false,
   drainQueue = false,
 ): number {
+  startFunctionTimer('hydrateTargetRange');
   virtualNodePositionIndexTestCounters.hydrateTargetRangeCalls += 1;
   if (typeof window !== 'undefined') {
     const benchmarkWindow = window as unknown as {
@@ -1234,5 +1240,6 @@ export function hydrateTargetRange(
     };
   }
 
+  endFunctionTimer('hydrateTargetRange');
   return activatedCount;
 }

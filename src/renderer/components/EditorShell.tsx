@@ -54,6 +54,10 @@ import {
   type SourceScrollAnchor,
 } from '../editor/scroll-anchor';
 import {
+  startFunctionTimer,
+  endFunctionTimer,
+} from '../editor/virtualization/function-timers';
+import {
   forceHydrateAll,
   forceActivateViewport,
   forceDeactivateAllVirtualNodes,
@@ -2653,6 +2657,7 @@ export default function EditorShell({
       drain?: boolean;
       largeJump?: boolean;
     }): void => {
+      startFunctionTimer('EditorShell.runScrollHydration');
       hydrationFrame = null;
       const currentEditor = editorRef.current;
       if (!currentEditor || sourceModeRef.current) {
@@ -2906,6 +2911,7 @@ export default function EditorShell({
         scrollTop: Math.round(frame.scrollTop),
       });
       publishScrollHotpathDiagnostics();
+      endFunctionTimer('EditorShell.runScrollHydration');
       (window as unknown as Record<string, unknown>).__marivellPhase4Timings = {
         totalMs: workMs,
         posAtCoordsMs,

@@ -27,6 +27,7 @@ import {
   type ExternalIoCandidate,
 } from './activation-controller';
 
+import { endFunctionTimer, startFunctionTimer } from './function-timers';
 const TEXTBLOCK_SELECTOR = [
   'p',
   'h1',
@@ -909,6 +910,7 @@ function prepareGroup(group: InlineMathGroup): void {
 }
 
 function activateGroup(group: InlineMathGroup): void {
+  startFunctionTimer('activateGroup');
   if (activatingGroupId === group.id) {
     return;
   }
@@ -930,6 +932,7 @@ function activateGroup(group: InlineMathGroup): void {
   } finally {
     activatingGroupId = null;
   }
+  endFunctionTimer('activateGroup');
 }
 
 export function deactivateAllInlineMathGroups(): number {
@@ -1071,6 +1074,7 @@ export function activateInlineMathGroupsInViewport(
   allowLayoutRetry = true,
   skipAnchorRestore = false,
 ): number {
+  startFunctionTimer('activateInlineMathGroupsInViewport');
   const sorted = getSortedGroups();
   if (!frame || typeof IntersectionObserver === 'undefined') {
     const anchor = inlineMathScrollAnchorProvider?.capture() ?? null;
@@ -1109,6 +1113,7 @@ export function activateInlineMathGroupsInViewport(
         }
       });
     }
+    endFunctionTimer('activateInlineMathGroupsInViewport');
     return 0;
   }
   layoutRetryFrames.delete(frame);
@@ -1150,6 +1155,7 @@ export function activateInlineMathGroupsInViewport(
       }
     }
     syncInlineMathIo(frame, centerPosition, radius * 1.5);
+    endFunctionTimer('activateInlineMathGroupsInViewport');
     return activated;
   }
 
@@ -1220,6 +1226,7 @@ export function activateInlineMathGroupsInViewport(
 }
 
 export function forceHydrateAllInlineMathGroups(): number {
+  startFunctionTimer('activateInlineMathGroupsInViewport');
   const sorted = getSortedGroups();
   const anchor = inlineMathScrollAnchorProvider?.capture() ?? null;
   let activated = 0;
@@ -1322,6 +1329,7 @@ export function hydrateInlineMathGroupsAroundPosition(
   viewportRadius: number,
   _margin = 1600,
 ): number {
+  startFunctionTimer('hydrateInlineMathGroupsAroundPosition');
   const radius = Math.max(Number.isFinite(viewportRadius) ? viewportRadius : 1, 1);
   const activationRadius = radius * 1.5;
   const groupsInRange = getInlineMathGroupsInPositionRange(centerPosition, radius * 6);
@@ -1362,6 +1370,7 @@ export function hydrateInlineMathGroupsAroundPosition(
     inlineMathActivationReadyMs = Math.max(inlineMathActivationReadyMs, activationFallbackMs);
     publishInlineMathActivationMetrics();
   }
+  endFunctionTimer('hydrateInlineMathGroupsAroundPosition');
   return activated;
 }
 

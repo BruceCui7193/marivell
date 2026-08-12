@@ -1,3 +1,4 @@
+import { endFunctionTimer, startFunctionTimer } from './virtualization/function-timers';
 import type { Editor } from '@tiptap/core';
 import { coordsAtPos, posAtCoords } from './virtualization/coordinate-service';
 
@@ -7,6 +8,7 @@ export interface ScrollAnchor {
 }
 
 export function captureVisualScrollAnchor(frame: HTMLElement, editor: Editor): ScrollAnchor | null {
+  startFunctionTimer('captureVisualScrollAnchor');
   try {
     const frameRect = frame.getBoundingClientRect();
     if (frameRect.width <= 0 || frameRect.height <= 0) {
@@ -27,11 +29,14 @@ export function captureVisualScrollAnchor(frame: HTMLElement, editor: Editor): S
       return null;
     }
 
-    return {
+    const result = {
       pmPos: point.pos,
       offsetTop: coords.top - frameRect.top,
     };
+    endFunctionTimer('captureVisualScrollAnchor');
+    return result;
   } catch {
+    endFunctionTimer('captureVisualScrollAnchor');
     return null;
   }
 }
@@ -41,6 +46,7 @@ export function restoreVisualScrollAnchor(
   editor: Editor,
   anchor: ScrollAnchor,
 ): void {
+  startFunctionTimer('restoreVisualScrollAnchor');
   try {
     const frameRect = frame.getBoundingClientRect();
     if (frameRect.width <= 0 || frameRect.height <= 0) {
@@ -56,7 +62,9 @@ export function restoreVisualScrollAnchor(
     const delta = anchor.offsetTop - (coords.top - frameRect.top);
     const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
     frame.scrollTop = Math.max(0, Math.min(frame.scrollTop + delta, maxScrollTop));
+    endFunctionTimer('restoreVisualScrollAnchor');
   } catch {
+    endFunctionTimer('restoreVisualScrollAnchor');
     // jsdom and transient ProseMirror layouts may not expose usable coordinates.
   }
 }

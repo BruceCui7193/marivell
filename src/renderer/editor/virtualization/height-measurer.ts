@@ -1,3 +1,4 @@
+import { endFunctionTimer, startFunctionTimer } from './function-timers';
 import { getHeightCacheKey, setCachedNodeWidth } from './height-cache';
 
 export interface FormulaHeightMeasurementItem {
@@ -541,11 +542,14 @@ function flushReads(): void {
 export function measureFormulaHeights(
   items: FormulaHeightMeasurementItem[],
 ): Promise<Record<string, number>> {
+  startFunctionTimer('measureFormulaHeights');
   if (!items.length) {
+    endFunctionTimer('measureFormulaHeights');
     return Promise.resolve({});
   }
 
   if (typeof document === 'undefined') {
+    endFunctionTimer('measureFormulaHeights');
     return Promise.resolve({});
   }
 
@@ -561,6 +565,7 @@ export function measureFormulaHeights(
       Object.assign(heights, chunkHeights);
       remaining -= 1;
       if (remaining === 0) {
+        endFunctionTimer('measureFormulaHeights');
         resolveAll(heights);
       }
     };
