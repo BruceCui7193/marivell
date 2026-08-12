@@ -2460,6 +2460,7 @@ export default function EditorShell({
         attempts: number;
         coordsOk: boolean;
         finalDelta: number | null;
+        domFallbackUsed: boolean;
         compensationApplied: number;
         source: string;
       } = {
@@ -2469,6 +2470,7 @@ export default function EditorShell({
         attempts: 0,
         coordsOk: false,
         finalDelta: null,
+        domFallbackUsed: false,
         compensationApplied: 0,
         source: scrollHydrationAnchorForFallback !== null ? 'fallback' : 'fresh',
       };
@@ -2478,7 +2480,34 @@ export default function EditorShell({
           const frameRect = frame.getBoundingClientRect();
           const coords = coordsAtPos(currentEditor, anchor.pmPos);
           if (!coords) {
+            // domAtPos fallback when ProseMirror coords are unavailable (D10 fix)
+            let anchorTop: number | null = null;
+            try {
+              const domPosition = currentEditor.view.domAtPos(anchor.pmPos);
+              const anchorElement =
+                domPosition.node.nodeType === Node.ELEMENT_NODE
+                  ? domPosition.node as Element
+                  : domPosition.node.parentElement;
+              anchorTop =
+                anchorElement instanceof Element
+                  ? anchorElement.getBoundingClientRect().top
+                  : null;
+            } catch {
+              anchorTop = null;
+            }
+            if (anchorTop === null) {
+              settleDiag.coordsOk = false;
+              break;
+            }
             settleDiag.coordsOk = false;
+            settleDiag.domFallbackUsed = true;
+            const delta = (anchorTop - frameRect.top) - anchor.offsetTop;
+            settleDiag.finalDelta = delta;
+            if (Math.abs(delta) < 0.5) {
+              break;
+            }
+            applySurfaceAnchorCompensation(delta);
+            settleDiag.compensationApplied += 1;
             break;
           }
           settleDiag.coordsOk = true;
@@ -2623,6 +2652,43 @@ export default function EditorShell({
           const bottomScrollTop = Math.round(maxScrollTop);
           if (Math.abs(frame.scrollTop - bottomScrollTop) >= 0.01) {
             frame.scrollTop = bottomScrollTop;
+          }
+          // D10 fix: apply anchor compensation even at bottom so inline-height-drift resolves
+          if (anchorBeforeHydrate !== null) {
+            try {
+              const frameRect = frame.getBoundingClientRect();
+              const coords = coordsAtPos(currentEditor, anchorBeforeHydrate.pmPos);
+              let anchorTop: number | null = coords?.top ?? null;
+              if (anchorTop === null) {
+                // domAtPos fallback when ProseMirror coords are unavailable
+                try {
+                  const domPosition = currentEditor.view.domAtPos(anchorBeforeHydrate.pmPos);
+                  const anchorElement =
+                    domPosition.node.nodeType === Node.ELEMENT_NODE
+                      ? domPosition.node as Element
+                      : domPosition.node.parentElement;
+                  anchorTop =
+                    anchorElement instanceof Element
+                      ? anchorElement.getBoundingClientRect().top
+                      : null;
+                } catch {
+                  anchorTop = null;
+                }
+              }
+              if (anchorTop !== null) {
+                const delta = (anchorTop - frameRect.top) - anchorBeforeHydrate.offsetTop;
+                anchorCompensationAttempts += 1;
+                lastAnchorCompensationDelta = delta;
+                if (Math.abs(delta) >= 0.5) {
+                  applySurfaceAnchorCompensation(delta);
+                  // Re-pin to bottom after compensation
+                  const newMax = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+                  frame.scrollTop = Math.round(newMax);
+                }
+              }
+            } catch {
+              // Anchor compensation is best-effort
+            }
           }
         } else if (anchorBeforeHydrate !== null) {
           surfaceCompensationY = scrollAnchorCompensationRef.current;

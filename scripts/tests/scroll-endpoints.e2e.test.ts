@@ -158,6 +158,10 @@ interface StableScrollState {
   firstVisibleText: string;
   markerVisible: boolean;
   markerRect: { top: number; bottom: number } | null;
+  visiblePlaceholders: number;
+  inlineHeightDrift: number | 'n/a';
+  inlineHeightDriftNote: string;
+  settleScanDiagnostics: Record<string, unknown> | null;
 }
 
 const buildStableScrollScript = (
@@ -232,6 +236,28 @@ const buildStableScrollScript = (
       }
     }
   }
+  // D10: collect inline-height-drift and placeholder diagnostics
+  let visiblePlaceholders = 0;
+  try {
+    const ph = frame.querySelectorAll(
+      '.math-inline-node--placeholder, [data-virtual-type="inline-math"][data-placeholder="true"]',
+    );
+    visiblePlaceholders = ph.length;
+  } catch { visiblePlaceholders = -1; }
+
+  let inlineHeightDrift = 'n/a';
+  let inlineHeightDriftNote = 'diagnostics not available';
+  let settleScanDiagnostics = null;
+  try {
+    const scan = window.__marivellSettleScanDiagnostics;
+    settleScanDiagnostics = scan ?? null;
+    if (scan && scan.finalDelta !== null) {
+      inlineHeightDrift = Math.abs(scan.finalDelta);
+      inlineHeightDriftNote = 'coordsOk=' + scan.coordsOk +
+        ' domFallback=' + (scan.domFallbackUsed || false) +
+        ' compensation=' + scan.compensationApplied;
+    }
+  } catch { /* diagnostics unavailable */ }
   return {
     scrollTop: frame.scrollTop,
     maxScrollTop: Math.max(frame.scrollHeight - frame.clientHeight, 0),
@@ -245,6 +271,10 @@ const buildStableScrollScript = (
     firstVisibleText,
     markerVisible,
     markerRect,
+    visiblePlaceholders,
+    inlineHeightDrift,
+    inlineHeightDriftNote,
+    settleScanDiagnostics,
   };
 })()`;
 
@@ -576,6 +606,15 @@ async function main(): Promise<void> {
       'bottom endpoint is stable across post-stable rAFs',
       bottom.value.postStableEvents === 0 && bottom.value.postStableTopChanges === 0,
       JSON.stringify(bottom.value),
+    );
+    assert(
+      'bottom inline-height-drift is within tolerance after D10 fix',
+      typeof bottom.value.inlineHeightDrift === 'number' && bottom.value.inlineHeightDrift <= 1,
+      JSON.stringify({
+        drift: bottom.value.inlineHeightDrift,
+        note: bottom.value.inlineHeightDriftNote,
+        settleScan: bottom.value.settleScanDiagnostics,
+      }),
     );
 
     const release = await withTimeout(
