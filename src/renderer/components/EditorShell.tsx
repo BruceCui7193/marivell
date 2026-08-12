@@ -2453,20 +2453,51 @@ export default function EditorShell({
       if (anchor === null) {
         return;
       }
+      const settleDiag: {
+        ran: boolean;
+        anchorPmPos: number | null;
+        anchorOffsetTop: number | null;
+        attempts: number;
+        coordsOk: boolean;
+        finalDelta: number | null;
+        compensationApplied: number;
+        source: string;
+      } = {
+        ran: true,
+        anchorPmPos: anchor.pmPos,
+        anchorOffsetTop: anchor.offsetTop,
+        attempts: 0,
+        coordsOk: false,
+        finalDelta: null,
+        compensationApplied: 0,
+        source: scrollHydrationAnchorForFallback !== null ? 'fallback' : 'fresh',
+      };
       try {
         for (let attempt = 0; attempt < 3; attempt += 1) {
+          settleDiag.attempts = attempt + 1;
           const frameRect = frame.getBoundingClientRect();
           const coords = coordsAtPos(currentEditor, anchor.pmPos);
           if (!coords) {
+            settleDiag.coordsOk = false;
             break;
           }
+          settleDiag.coordsOk = true;
           const delta = (coords.top - frameRect.top) - anchor.offsetTop;
+          settleDiag.finalDelta = delta;
           if (Math.abs(delta) < 0.5) {
             break;
           }
           applySurfaceAnchorCompensation(delta);
+          settleDiag.compensationApplied += 1;
         }
+        (window as unknown as Record<string, unknown>).__marivellSettleScanDiagnostics =
+          settleDiag;
       } catch {
+        (window as unknown as Record<string, unknown>).__marivellSettleScanDiagnostics = {
+          ran: true, attempts: 0, coordsOk: false, finalDelta: null,
+          compensationApplied: 0, anchorPmPos: anchor.pmPos,
+          anchorOffsetTop: anchor.offsetTop, source: 'exception',
+        };
         // Anchor compensation is best-effort when PM layout is transient.
       }
     };
