@@ -634,11 +634,9 @@ export const MathSyntaxHighlight = Extension.create({
               nextScrollTop <= 1 ||
               (lastKnownMaxScrollTop !== null &&
                 nextScrollTop >= lastKnownMaxScrollTop - 1);
-            if (delta >= 1000 || isEndpoint) {
-              scheduleImmediateViewportUpdate();
-            } else {
-              scheduleViewportSettle();
-            }
+            // D10: defer large jumps to settle timer instead of rAF
+            // to avoid long tasks competing with first-frame rendering.
+            scheduleViewportSettle();
             lastRecordedScrollTop = nextScrollTop;
           };
 
