@@ -895,6 +895,15 @@ function collectGroupFormulaEntries(group: InlineMathGroup): FormulaIndexEntry[]
   return entries;
 }
 
+function hasResidualPlaceholders(group: InlineMathGroup): boolean {
+  for (const registration of group.formulas) {
+    if (!registration.destroyed && !registration.active) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function prepareGroup(group: InlineMathGroup): void {
   if (group.active) {
     return;
@@ -1130,7 +1139,7 @@ export function activateInlineMathGroupsInViewport(
     const toActivate: InlineMathGroup[] = [];
     for (const group of groupsToScan) {
       const distance = getGroupDistance(group, centerPosition as number);
-      if (group.active) {
+      if (group.active && !hasResidualPlaceholders(group)) {
         group.requested = true;
         if (!hasAllFormulaHtmlPrepared()) {
           requestPrefetch(collectGroupFormulaEntries(group).slice(0, 48));
@@ -1195,7 +1204,7 @@ export function activateInlineMathGroupsInViewport(
     if (stats) {
       stats.visible += 1;
     }
-    if (!group.active) {
+    if (!group.active || hasResidualPlaceholders(group)) {
       toActivate.push(group);
     } else {
       group.requested = true;
@@ -1233,7 +1242,7 @@ export function forceHydrateAllInlineMathGroups(): number {
   try {
     withInlineMathActivationMeasurement(() => {
       for (const group of sorted) {
-        if (group.active) {
+        if (group.active && !hasResidualPlaceholders(group)) {
           group.requested = true;
           if (!hasAllFormulaHtmlPrepared()) {
             requestPrefetch(collectGroupFormulaEntries(group).slice(0, 48));
