@@ -2033,6 +2033,8 @@ export default function EditorShell({
       frame.scrollHeight - frame.clientHeight,
       0,
     );
+    let lateStabilizerActive = false;
+    let lateStabilizerCancelId: number | null = null;
     let scrollHydrationAnchorForFallback: { pmPos: number; offsetTop: number } | null = null;
     let surfaceCompensationY = scrollAnchorCompensationRef.current;
     let scrollEventCount = 0;
@@ -2531,6 +2533,114 @@ export default function EditorShell({
       }
     };
 
+    const startLateAnchorStabilization = (): void => {
+      const anchor = scrollHydrationAnchorForFallback;
+      if (!anchor || lateStabilizerActive) {
+        return;
+      }
+      lateStabilizerActive = true;
+      const startedAt = performance.now();
+      const diag: {
+        startedAt: number;
+        attempts: number;
+        finalDelta: number | null;
+        coordsOk: boolean;
+        domFallbackUsed: boolean;
+        compensationApplied: number;
+        lastRunAtMs: number;
+        stoppedReason: string;
+      } = {
+        startedAt,
+        attempts: 0,
+        finalDelta: null,
+        coordsOk: false,
+        domFallbackUsed: false,
+        compensationApplied: 0,
+        lastRunAtMs: 0,
+        stoppedReason: 'pending',
+      };
+
+      const poll = (attempt: number): void => {
+        const currentEditor = editorRef.current;
+        if (!currentEditor || !frame.isConnected || attempt > 7) {
+          diag.stoppedReason = attempt > 7 ? 'max-attempts' : 'editor-gone';
+          diag.finalDelta = diag.finalDelta ?? 0;
+          diag.lastRunAtMs = performance.now() - startedAt;
+          (window as unknown as Record<string, unknown>).__marivellLateAnchorStabilizationDiagnostics = diag;
+          lateStabilizerActive = false;
+          return;
+        }
+
+        diag.attempts = attempt + 1;
+        const frameRect = frame.getBoundingClientRect();
+        let delta = null;
+
+        try {
+          const coords = coordsAtPos(currentEditor, anchor.pmPos);
+          if (coords) {
+            diag.coordsOk = true;
+            delta = (coords.top - frameRect.top) - anchor.offsetTop;
+          }
+        } catch {
+          // Fall through to DOM fallback
+        }
+
+        if (delta === null) {
+          try {
+            const domPosition = currentEditor.view.domAtPos(anchor.pmPos);
+            const anchorElement =
+              domPosition.node.nodeType === Node.ELEMENT_NODE
+                ? domPosition.node
+                : domPosition.node.parentElement;
+            const anchorTop =
+              anchorElement instanceof Element
+                ? anchorElement.getBoundingClientRect().top
+                : null;
+            if (anchorTop !== null) {
+              diag.domFallbackUsed = true;
+              delta = (anchorTop - frameRect.top) - anchor.offsetTop;
+            }
+          } catch {
+            // Fall through
+          }
+        }
+
+        diag.finalDelta = delta;
+        diag.lastRunAtMs = performance.now() - startedAt;
+
+        if (delta === null) {
+          diag.stoppedReason = 'no-coords';
+          (window as unknown as Record<string, unknown>).__marivellLateAnchorStabilizationDiagnostics = diag;
+          lateStabilizerActive = false;
+          return;
+        }
+
+        if (Math.abs(delta) < 0.5) {
+          diag.stoppedReason = 'stable';
+          (window as unknown as Record<string, unknown>).__marivellLateAnchorStabilizationDiagnostics = diag;
+          lateStabilizerActive = false;
+          return;
+        }
+
+        applySurfaceAnchorCompensation(delta);
+        diag.compensationApplied += 1;
+
+        const delays = [0, 50, 100, 200, 350, 500, 700, 900];
+        const delay = delays[attempt] ?? 500;
+        lateStabilizerCancelId = window.setTimeout(() => requestAnimationFrame(() => poll(attempt + 1)), delay);
+      };
+
+      lateStabilizerCancelId = window.setTimeout(() => requestAnimationFrame(() => poll(0)), 0);
+    };
+
+    const cancelLateAnchorStabilization = (): void => {
+      if (lateStabilizerCancelId !== null) {
+        clearTimeout(lateStabilizerCancelId);
+        lateStabilizerCancelId = null;
+      }
+      lateStabilizerActive = false;
+    };
+
     const runScrollHydration = (options?: {
       settle?: boolean;
       drain?: boolean;
@@ -2855,6 +2965,9 @@ export default function EditorShell({
         });
         runSettleFallbackScan();
         deferInlineMathHydrationForNextScroll = false;
+        if (scrollHydrationAnchorForFallback !== null && !isBottomEndpoint) {
+          window.setTimeout(() => startLateAnchorStabilization(), 50);
+        }
         return;
       }
       hydrationSettleTimer = scheduleIdleWork(() => {
@@ -2868,6 +2981,7 @@ export default function EditorShell({
     };
 
     const hydrateScrollTarget = () => {
+      cancelLateAnchorStabilization();
       scrollEventCount += 1;
       const nextScrollTop = frame.scrollTop;
       const previousScrollTop = lastRecordedScrollTop;
@@ -2922,6 +3036,7 @@ export default function EditorShell({
         hydrationFrame = null;
       }
       setInlineMathScrollAnchorProvider(null);
+      cancelLateAnchorStabilization();
     };
   }, [editor]);
 

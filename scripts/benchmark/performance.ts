@@ -1547,6 +1547,7 @@ async function measureScrollJumpScenario(
       forceInlineMs,
       activateProfile: window.__marivellHydrateActivateProfile ?? [],
       settleScanDiagnostics: window.__marivellSettleScanDiagnostics ?? null,
+      lateStabilizationDiagnostics: window.__marivellLateAnchorStabilizationDiagnostics ?? null,
       timedOut,
     };
   })()`;
@@ -1583,6 +1584,7 @@ async function measureScrollJumpScenario(
     forceInlineMs: number;
     activateProfile: Array<{ id: string; nodeType?: string; ms: number }>;
     settleScanDiagnostics: Record<string, unknown> | null;
+    lateStabilizationDiagnostics: Record<string, unknown> | null;
     timedOut: boolean;
   }>;
 }
@@ -2618,6 +2620,11 @@ async function runBenchmark(): Promise<void> {
             {
               metric: `${jumpScenario.metric}-settle-scan`,
               value: JSON.stringify(jump.value.settleScanDiagnostics),
+              unit: 'json',
+            },
+            {
+              metric: `${jumpScenario.metric}-late-stabilization`,
+              value: JSON.stringify(jump.value.lateStabilizationDiagnostics),
               unit: 'json',
             },
             {
