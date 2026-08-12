@@ -1,5 +1,25 @@
 export type U2BatchRenderKind = 'canvas-raster' | 'bitmap-data-url';
 
+let u2EnabledCache: boolean | null = null;
+
+export function isU2Enabled(): boolean {
+  if (u2EnabledCache === null) {
+    const markdownEditor = (window as unknown as {
+      markdownEditor?: { getUltimateU2Enabled?: () => boolean };
+    }).markdownEditor;
+    u2EnabledCache = markdownEditor?.getUltimateU2Enabled?.() === true;
+  }
+  return u2EnabledCache;
+}
+
+export function resetU2EnabledCacheForTest(): void {
+  u2EnabledCache = null;
+}
+
+export function setU2EnabledForTest(enabled: boolean): void {
+  u2EnabledCache = enabled;
+}
+
 export interface SingleNodeFormulaCandidate {
   key: string;
   latex: string;
@@ -291,6 +311,8 @@ export interface SingleNodeBatchStats {
   total: number;
   completed: number;
   failed: number;
+  cancelled: number;
+  skipped: number;
   batchCount: number;
   batchSize: number;
   concurrency: number;
@@ -347,6 +369,8 @@ export class SingleNodeBatchProcessor<T, R> {
   private batchCount = 0;
   private completed = 0;
   private failed = 0;
+  private cancelled = 0;
+  private skipped = 0;
   private active = 0;
   private swapsInFrame = 0;
   private maxSwapsInFrameObserved = 0;
@@ -354,6 +378,7 @@ export class SingleNodeBatchProcessor<T, R> {
   private pumping = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private flushResolvers: Array<() => void> = [];
+  private readonly cancelledKeys = new Set<string>();
 
   constructor(options: SingleNodeBatchProcessorOptions<T, R>) {
     const normalized = {
@@ -369,9 +394,51 @@ export class SingleNodeBatchProcessor<T, R> {
   }
 
   enqueue(tasks: SingleNodeBatchTask<T>[]): void {
-    this.queue.push(...tasks);
+    for (const task of tasks) {
+      this.cancelledKeys.delete(task.key);
+      this.queue.push(task);
+    }
     this.queue.sort((left, right) => (left.priority ?? 1) - (right.priority ?? 1));
     this.schedulePump();
+  }
+
+  has(key: string): boolean {
+    return this.queue.some((task) => task.key === key) || this.cancelledKeys.has(key);
+  }
+
+  size(): number {
+    return this.queue.length + this.active;
+  }
+
+  isCancelled(key: string): boolean {
+    return this.cancelledKeys.has(key);
+  }
+
+  cancel(key: string): void {
+    if (this.cancelledKeys.has(key)) {
+      return;
+    }
+    this.cancelledKeys.add(key);
+    this.cancelled += 1;
+    const nextQueue = this.queue.filter((task) => task.key !== key);
+    this.queue.length = 0;
+    this.queue.push(...nextQueue);
+  }
+
+  cancelAll(): void {
+    for (const task of this.queue) {
+      if (!this.cancelledKeys.has(task.key)) {
+        this.cancelledKeys.add(task.key);
+        this.cancelled += 1;
+      }
+    }
+    this.queue.length = 0;
+    for (const item of this.items) {
+      if (!this.cancelledKeys.has(item.task.key)) {
+        this.cancelledKeys.add(item.task.key);
+        this.cancelled += 1;
+      }
+    }
   }
 
   async flush(): Promise<SingleNodeBatchStats> {
@@ -444,6 +511,10 @@ export class SingleNodeBatchProcessor<T, R> {
             const result = await this.options.generate(task);
             this.generationTimes.push(performance.now() - generateStart);
             item.result = result;
+            if (this.isCancelled(task.key)) {
+              this.skipped += 1;
+              continue;
+            }
             const swapStart = performance.now();
             await this.swapWithFrameLimit(result, task);
             this.swapTimes.push(performance.now() - swapStart);
@@ -478,6 +549,8 @@ export class SingleNodeBatchProcessor<T, R> {
       total: this.items.length,
       completed: this.completed,
       failed: this.failed,
+      cancelled: this.cancelled,
+      skipped: this.skipped,
       batchCount: this.batchCount,
       batchSize: this.batchSize,
       concurrency: this.concurrency,

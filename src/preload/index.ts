@@ -19,6 +19,7 @@ import type {
 
 const api: MarkdownEditorApi = {
   newWindow: () => ipcRenderer.invoke('window:new'),
+  getUltimateU2Enabled: () => process.env.MARIVELL_ULTIMATE_U2 === '1',
   openDocumentDialog: () => ipcRenderer.invoke('dialog:open-document'),
   openDocumentDialogInNewWindow: () => ipcRenderer.invoke('dialog:open-document-new-window'),
   openDocumentPath: (filePath: string) => ipcRenderer.invoke('document:open-path', filePath),

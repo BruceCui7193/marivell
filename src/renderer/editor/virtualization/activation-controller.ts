@@ -1,5 +1,9 @@
 import { endFunctionTimer, startFunctionTimer } from './function-timers';
 import { createHydrationQueue } from './hydration-queue';
+import {
+  cancelAllU2SingleNodeSwaps,
+  restoreAllU2SingleNodePreviews,
+} from './u2-activation-controller';
 
 interface VirtualNodeCallbacks {
   activate(): void;
@@ -944,6 +948,7 @@ if (typeof window !== 'undefined') {
 
 export function forceHydrateAll(): number {
   return withScrollAnchorRestore(() => {
+    restoreAllU2SingleNodePreviews();
     let activatedCount = 0;
     if (typeof window !== 'undefined') {
       const benchmarkWindow = window as unknown as {
@@ -984,6 +989,7 @@ export function forceHydrateAll(): number {
 }
 
 export function forceDeactivateAllVirtualNodes(): number {
+  cancelAllU2SingleNodeSwaps();
   let deactivatedCount = 0;
   for (const [id, registration] of Array.from(virtualNodes)) {
     cancelPendingActivation(id);

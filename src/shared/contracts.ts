@@ -140,6 +140,7 @@ export interface BenchmarkAppMetrics {
 
 export interface MarkdownEditorApi {
   newWindow: () => Promise<void>;
+  getUltimateU2Enabled: () => boolean;
   openDocumentDialog: () => Promise<OpenedDocument | null>;
   openDocumentDialogInNewWindow: () => Promise<boolean>;
   openDocumentPath: (filePath: string) => Promise<OpenedDocument>;

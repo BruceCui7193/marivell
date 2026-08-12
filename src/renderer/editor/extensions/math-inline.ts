@@ -28,6 +28,17 @@ import {
   syncInlineMathPlaceholderKey,
   type InlineMathRegistration,
 } from '../virtualization/inline-math-group-registry';
+import {
+  isU2Enabled,
+  resetU2EnabledCacheForTest,
+} from '../virtualization/formula-single-node';
+import {
+  cancelU2SingleNodeSwap,
+  getU2ActivationDiagnostics,
+  requestU2SingleNodeSwap,
+  resetU2ActivationDiagnosticsForTest,
+  restoreU2SingleNodePreview,
+} from '../virtualization/u2-activation-controller';
 import { translate } from '../../i18n';
 
 declare module '@tiptap/core' {
@@ -46,6 +57,14 @@ let __mathDebug = false;
 try { __mathDebug = localStorage.getItem('__mathDebug') === '1'; } catch {}
 function mathLog(...args: unknown[]): void {
   if (__mathDebug) console.log('[math]', ...args);
+}
+
+if (typeof window !== 'undefined') {
+  const benchmarkWindow = window as unknown as Record<string, unknown>;
+  benchmarkWindow.__marivellResetU2EnabledForTest = resetU2EnabledCacheForTest;
+  benchmarkWindow.__marivellGetU2ActivationDiagnostics = getU2ActivationDiagnostics;
+  benchmarkWindow.__marivellResetU2ActivationDiagnostics =
+    resetU2ActivationDiagnosticsForTest;
 }
 
 interface BlockMathPlaceholderView {
@@ -236,6 +255,9 @@ export const MathInline = Node.create({
       let inlineHeightKeyCache: string | null = null;
       let inlineHeightKeyText: string | null = null;
       let inlineSizingKey = '';
+      let u2TaskId: string | null = null;
+      let u2SingleNodeActive = false;
+      let u2TaskSeq = 0;
 
       const ensurePreviewAttached = (): void => {
         if (previewDOM.parentNode !== dom) {
@@ -249,6 +271,7 @@ export const MathInline = Node.create({
       };
 
       const showBlockPlaceholder = (): void => {
+        cancelU2Task();
         blockPreviewActive = false;
         lastRenderedText = null;
         placeholderView.styleKey = null;
@@ -393,6 +416,7 @@ export const MathInline = Node.create({
         previewDOM.style.overflow = 'visible';
         previewDOM.style.height = 'auto';
         previewDOM.style.minHeight = `${activeHeight}px`;
+        requestU2Swap();
       };
 
       const getInlineMathPosition = (): number | null => {
@@ -473,6 +497,7 @@ export const MathInline = Node.create({
       };
 
       const showInlinePlaceholder = (): void => {
+        cancelU2Task();
         inlinePreviewActive = false;
         lastRenderedText = null;
         dom.classList.add('math-inline-node--placeholder');
@@ -504,6 +529,11 @@ export const MathInline = Node.create({
         renderPreview(node.textContent);
         resetInlineActiveSizing();
         previewDOM.style.display = 'inline-block';
+        if (isInlineEditing()) {
+          restoreU2Task();
+        } else {
+          requestU2Swap();
+        }
         const cachedHtml = getCachedFormulaHtml(node.textContent, 'no');
         const inlineHeightKey = getInlineHeightKey();
         if (
@@ -530,6 +560,102 @@ export const MathInline = Node.create({
         if (dom.contains(document.activeElement)) return true;
         if (dom.classList.contains('is-editing')) return true;
         return isBlockMathSelected();
+      };
+
+      const isU2BlockEditing = (): boolean =>
+        dom.classList.contains('is-editing') ||
+        dom.contains(document.activeElement) ||
+        isBlockMathSelected() ||
+        isBlockMathSubmenuOpen();
+
+      const isU2EditingNow = (): boolean =>
+        isBlock ? isU2BlockEditing() : isInlineEditing();
+
+      const isFormulaInViewport = (): boolean => {
+        const frame = dom.closest<HTMLElement>('.editor-frame');
+        if (!frame || !dom.isConnected) {
+          return true;
+        }
+        const frameRect = frame.getBoundingClientRect();
+        const rect = dom.getBoundingClientRect();
+        return rect.bottom > frameRect.top && rect.top < frameRect.bottom;
+      };
+
+      const restoreU2Preview = (): void => {
+        u2TaskId = null;
+        u2SingleNodeActive = false;
+        previewDOM.dataset.u2Swapped = '';
+        lastRenderedText = null;
+        if (isBlock) {
+          renderPreview(node.textContent);
+          previewDOM.style.display = '';
+          previewDOM.style.overflow = 'visible';
+          previewDOM.style.height = 'auto';
+          previewDOM.style.minHeight = `${getBlockPreviewHeight()}px`;
+          dom.style.contain = '';
+          dom.style.contentVisibility = '';
+        } else {
+          renderPreview(node.textContent);
+          resetInlineActiveSizing();
+          previewDOM.style.display = 'inline-block';
+          previewDOM.style.lineHeight = '';
+        }
+      };
+
+      const cancelU2Task = (): void => {
+        if (u2TaskId) {
+          cancelU2SingleNodeSwap(u2TaskId);
+        }
+        u2TaskId = null;
+        u2SingleNodeActive = false;
+        previewDOM.dataset.u2Swapped = '';
+      };
+
+      const restoreU2Task = (): void => {
+        if (u2TaskId) {
+          restoreU2SingleNodePreview(u2TaskId);
+        }
+        u2TaskId = null;
+        u2SingleNodeActive = false;
+        previewDOM.dataset.u2Swapped = '';
+      };
+
+      const requestU2Swap = (): void => {
+        if (!isU2Enabled() || destroyed || u2SingleNodeActive || u2TaskId !== null) {
+          return;
+        }
+        if (isU2EditingNow()) {
+          restoreU2Task();
+          return;
+        }
+        const katex = previewDOM.querySelector<HTMLElement>('.katex');
+        if (!katex) {
+          return;
+        }
+        const display = isBlock ? 'yes' : 'no';
+        const id = `u2:${nodeViewId}:${++u2TaskSeq}`;
+        u2TaskId = id;
+        const cachedHtml =
+          getCachedFormulaHtml(node.textContent, display) ?? katex.outerHTML;
+        requestU2SingleNodeSwap({
+          id,
+          latex: node.textContent,
+          display,
+          html: cachedHtml,
+          preview: previewDOM,
+          wrapper: dom,
+          priority: isFormulaInViewport() ? 0 : 1,
+          isCurrent: () =>
+            !destroyed &&
+            dom.isConnected &&
+            previewDOM.isConnected &&
+            u2TaskId === id &&
+            !isU2EditingNow(),
+          restore: restoreU2Preview,
+          onSwapped: () => {
+            u2SingleNodeActive = true;
+          },
+        });
       };
 
       const updateInlinePreview = (): void => {
@@ -640,6 +766,7 @@ export const MathInline = Node.create({
           const textChanged = newNode.textContent !== node.textContent;
           node = newNode;
           if (textChanged) {
+            restoreU2Task();
             lastRenderedText = isBlock ? null : '';
             if (inlineRegistration) {
               inlineRegistration.formulaKey = null;
@@ -677,6 +804,7 @@ export const MathInline = Node.create({
         deselectNode() {},
         destroy() {
           destroyed = true;
+          cancelU2Task();
           blockMathPlaceholderViews.delete(placeholderView);
           unregisterInlineGroup?.();
           unregisterInlineGroup = null;
