@@ -2047,6 +2047,12 @@ export default function EditorShell({
     let lateStabilizerCancelId: number | null = null;
     let pendingSyncJumpScrollTop: number | null = null;
     let scrollHydrationAnchorForFallback: { pmPos: number; offsetTop: number } | null = null;
+    // D10 hydration session deduplication: avoid repeated position hydration
+    // and anchor capture/restore across settle rounds within the same large jump.
+    let hydrationSessionAnchor: { pmPos: number; offsetTop: number } | null = null;
+    let sessionPositionHydrated = false;
+    let sessionHydratedCenter: number | null = null;
+    let sessionHydratedDocSize: number | null = null;
     let surfaceCompensationY = scrollAnchorCompensationRef.current;
     let scrollEventCount = 0;
     let hydrateRunCount = 0;
@@ -2698,10 +2704,31 @@ export default function EditorShell({
       let anchorCoordsOk = false;
       let lastAnchorCompensationDelta: number | null = null;
       let activatedInlineGroups = 0;
+      // D10: skip position hydration in settle rounds if already done this session
+      const currentDocSize = currentEditor.state.doc.content.size;
+      const skipPositionHydration =
+        options?.settle === true &&
+        sessionPositionHydrated &&
+        hydrationSessionAnchor !== null &&
+        sessionHydratedCenter !== null &&
+        sessionHydratedDocSize === currentDocSize;
       const anchorStart = performance.now();
-      const anchorBeforeHydrate = shouldHydrate
-        ? (anchorCaptureCount += 1, captureHydrationAnchor(currentEditor))
-        : null;
+      let anchorBeforeHydrate: { pmPos: number; offsetTop: number } | null = null;
+      if (skipPositionHydration) {
+        // Skip position hydration but still capture a fresh anchor
+        // for runSettleFallbackScan to use in compensation.
+        if (shouldHydrate) {
+          anchorCaptureCount += 1;
+          anchorBeforeHydrate = captureHydrationAnchor(currentEditor);
+        }
+      } else if (shouldHydrate) {
+        anchorCaptureCount += 1;
+        anchorBeforeHydrate = captureHydrationAnchor(currentEditor);
+      }
+      if (!skipPositionHydration && anchorBeforeHydrate !== null) {
+        hydrationSessionAnchor = anchorBeforeHydrate;
+      }
+      // Always update the fallback anchor so compensation has current coordinates
       scrollHydrationAnchorForFallback = anchorBeforeHydrate;
       const anchorMs = performance.now() - anchorStart;
       const hydrateStart = performance.now();
@@ -2714,7 +2741,7 @@ export default function EditorShell({
           false,
           options?.drain === true,
         );
-        if (!deferInlineMathHydrationForNextScroll) {
+        if (!skipPositionHydration && !deferInlineMathHydrationForNextScroll) {
           activatedInlineGroups += hydrateInlineMathGroupsAroundPosition(
             frame,
             centerPos,
@@ -2722,6 +2749,9 @@ export default function EditorShell({
           );
         }
         lastSyncHydrateScrollTop = frame.scrollTop;
+        sessionPositionHydrated = true;
+        sessionHydratedCenter = centerPos;
+        sessionHydratedDocSize = currentDocSize;
       }
       if (options?.largeJump === true) {
         visibleFallbackTimings = hydrateVisibleViewportFallback(frame, {
@@ -3020,6 +3050,11 @@ export default function EditorShell({
       lastScrollBurstWasLarge = burstDelta >= 1000 || isEndpointScroll;
       if (burstDelta >= 1000 || isEndpointScroll) {
         pendingLargeJump = true;
+        // D10: reset hydration session for new large jump
+        sessionPositionHydrated = false;
+        hydrationSessionAnchor = null;
+        sessionHydratedCenter = null;
+        sessionHydratedDocSize = null;
         // D10: queue a microtask for sync hydration. When multiple
         // scrollTop assignments fire synchronously (e.g. benchmark drag:
         // 0 -> max -> target), each overwrites pendingSyncJumpScrollTop,
