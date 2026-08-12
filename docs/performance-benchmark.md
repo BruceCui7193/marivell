@@ -1219,3 +1219,31 @@ Remaining budget gaps are typing, scroll avg/max, and jump-ready. Jump-ready is
 dominated by benchmark placeholder/settle waits and late KaTeX-driven anchor
 stabilization; the next work item is to cut that wait with faster
 placeholder-to-KaTeX activation and/or the U3 coordinate engine.
+
+### Stage D10 Dedupe + Re-activation Main-Agent Verification (2026-08-12)
+
+After adding function attribution, deduplicating large-jump hydration, and
+re-activating visible inline groups with residual placeholders
+(`30685e3`, `d83ec3d`, `d6c9192`), main agent re-ran the large-file benchmark:
+
+| Metric | Previous D10 | After dedupe |
+| --- | ---: | ---: |
+| visual-open | 4,884ms | 4,829ms |
+| renderer-ready | 3,739ms | 3,722ms |
+| typing | 205.7ms | 174.7ms |
+| interaction-combined | 1,498.7ms | 1,510.1ms |
+| mode-switch visual->source | 734.5ms | 724.4ms |
+| mode-switch source->visual | 774.7ms | 785.9ms |
+| scroll-avg | 46.0ms | 42.5ms |
+| scroll-max | 140.2ms | 156.9ms |
+| scroll-jump-ready (worst) | 2,665.7ms | 2,564.4ms |
+| scrollDriftPx | 0 | 0 |
+| viewportPlaceholders | 0 | 0 |
+| inline-height-drift | 0 | 0 |
+| inline-math-activate-ready | 2.6ms | 2.6ms |
+
+Function attribution shows remaining jump cost is dominated by repeated
+`captureVisualScrollAnchor` + `restoreVisualScrollAnchor` and
+`hydrateInlineMathGroupsAroundPosition` during multi-round settle. One UIFF
+run failed on a 3px click deviation plus a CDP insert timeout; previous runs
+passed, so it is treated as flaky pending another exclusive rerun.
