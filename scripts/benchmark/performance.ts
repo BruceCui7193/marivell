@@ -1323,6 +1323,54 @@ async function measureScrollJumpScenario(
       benchmarkWindow.__marivellResetFormulaTemplateCacheStatsForTest();
     }
     const start = performance.now();
+
+    // --- Diagnostic observers: longtask, layout-shift, mutation bursts ---
+    const longTasks = [];
+    let longTaskObserver = null;
+    try {
+      longTaskObserver = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          longTasks.push({
+            startTime: entry.startTime,
+            duration: entry.duration,
+            name: entry.name,
+            attribution: (entry.attribution || []).map(
+              (a) => {
+                const attr = a;
+                return {
+                  name: attr.name,
+                  containerType: attr.containerType,
+                  containerSrc: attr.containerSrc,
+                };
+              },
+            ) ?? [],
+          });
+        }
+      });
+      longTaskObserver.observe({ type: 'longtask' });
+    } catch (_) { /* longtask not supported in this browser */ }
+
+    const layoutShifts = [];
+    let layoutShiftObserver = null;
+    try {
+      layoutShiftObserver = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          layoutShifts.push({
+            startTime: entry.startTime,
+            value: entry.value ?? 0,
+          });
+        }
+      });
+      layoutShiftObserver.observe({ type: 'layout-shift' });
+    } catch (_) { /* layout-shift not supported in this browser */ }
+
+    const mutationBursts = [];
+    const mutationObserverDiag = new MutationObserver((records) => {
+      mutationBursts.push({ at: performance.now() - start, count: records.length });
+    });
+    mutationObserverDiag.observe(frame, { subtree: true, childList: true, attributes: true, characterData: true });
+    // --- End diagnostic observers ---
+
     if (typeof benchmarkWindow.__marivellResetHydrationSyncForTest === 'function') {
       benchmarkWindow.__marivellResetHydrationSyncForTest();
     }
@@ -1352,8 +1400,11 @@ async function measureScrollJumpScenario(
       inlineMathPlaceholderFirstSeenAt = performance.now();
     }
     const firstInlineFrame = new Promise((resolve) => requestAnimationFrame(resolve));
+    const rAFBefore = performance.now();
     frame.dispatchEvent(new Event('scroll'));
     await firstInlineFrame;
+    const frame1Now = performance.now();
+    const frame1Ms = frame1Now - rAFBefore;
     const firstInlinePlaceholders = countInlineMathPlaceholdersForMetric();
     const firstViewportKatexStats = visibleInlineMathKatexStats();
     inlineMathViewportKatexCount = firstViewportKatexStats.total;
@@ -1383,8 +1434,17 @@ async function measureScrollJumpScenario(
       }
     }
     const deadline = performance.now() + 15_000;
+    const frameStamps = [];
+    let frameStartTime = frame1Now;
+    // Record the first rAF frame (from dispatch to firstInlineFrame resolution)
+    frameStamps.push({ at: frame1Now - start, ms: frame1Ms });
     const waitForFrame = () => new Promise((resolve) => {
-      requestAnimationFrame(() => requestAnimationFrame(resolve));
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const now = performance.now();
+        frameStamps.push({ at: now - start, ms: now - frameStartTime });
+        frameStartTime = now;
+        resolve(undefined);
+      }));
     });
     let firstFramePlaceholders = -1;
     let firstFramePlaceholderDetails = [];
@@ -1511,6 +1571,15 @@ async function measureScrollJumpScenario(
       typeof benchmarkWindow.__marivellGetFormulaTemplateCacheStats === 'function'
         ? benchmarkWindow.__marivellGetFormulaTemplateCacheStats()
         : null;
+
+    // Disconnect diagnostic observers
+    mutationObserverDiag.disconnect();
+    if (longTaskObserver) longTaskObserver.disconnect();
+    if (layoutShiftObserver) layoutShiftObserver.disconnect();
+
+    // Filter long tasks to only those after start
+    const relevantLongTasks = longTasks.filter((t) => t.startTime >= start);
+
     return {
       jumpReadyMs: performance.now() - start,
       placeholderReadyMs:
@@ -1566,6 +1635,10 @@ async function measureScrollJumpScenario(
       inlinePlaceholderScanCalls,
       settleScanDiagnostics: window.__marivellSettleScanDiagnostics ?? null,
       lateStabilizationDiagnostics: window.__marivellLateAnchorStabilizationDiagnostics ?? null,
+      longTasks: relevantLongTasks,
+      frameStamps,
+      layoutShifts,
+      mutationBursts,
       timedOut,
     };
   })()`;
@@ -1607,6 +1680,10 @@ async function measureScrollJumpScenario(
     inlinePlaceholderScanCalls: number;
     settleScanDiagnostics: Record<string, unknown> | null;
     lateStabilizationDiagnostics: Record<string, unknown> | null;
+    longTasks: Array<{ startTime: number; duration: number; name: string; attribution: unknown[] }>;
+    frameStamps: Array<{ at: number; ms: number }>;
+    layoutShifts: Array<{ startTime: number; value: number }>;
+    mutationBursts: Array<{ at: number; count: number }>;
     timedOut: boolean;
   }>;
 }
@@ -2724,6 +2801,27 @@ async function runBenchmark(): Promise<void> {
               metric: `${jumpScenario.metric}-katex-inject-max-ms`,
               value: round(jump.value.katexInjectMaxMs),
               unit: 'ms',
+            },
+            {
+              metric: `${jumpScenario.metric}-longtasks`,
+              value: JSON.stringify(jump.value.longTasks),
+              unit: "json",
+              note: `count=${jump.value.longTasks.length}`,
+            },
+            {
+              metric: `${jumpScenario.metric}-frame-stamps`,
+              value: JSON.stringify(jump.value.frameStamps),
+              unit: "json",
+            },
+            {
+              metric: `${jumpScenario.metric}-layout-shifts`,
+              value: JSON.stringify(jump.value.layoutShifts),
+              unit: "json",
+            },
+            {
+              metric: `${jumpScenario.metric}-mutation-bursts`,
+              value: JSON.stringify(jump.value.mutationBursts),
+              unit: "json",
             },
           );
           scrollFirstFrameReady[jumpScenario.metric] = jump.value.firstFrameReady;
