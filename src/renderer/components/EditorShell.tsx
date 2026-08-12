@@ -2041,6 +2041,7 @@ export default function EditorShell({
     );
     let lateStabilizerActive = false;
     let lateStabilizerCancelId: number | null = null;
+    let pendingSyncJumpScrollTop: number | null = null;
     let scrollHydrationAnchorForFallback: { pmPos: number; offsetTop: number } | null = null;
     let surfaceCompensationY = scrollAnchorCompensationRef.current;
     let scrollEventCount = 0;
@@ -2633,7 +2634,7 @@ export default function EditorShell({
 
         const delays = [0, 50, 100, 200];
         const delay = delays[attempt] ?? 500;
-        lateStabilizerCancelId = window.setTimeout(() => requestAnimationFrame(() => poll(attempt + 1)), delay);
+        lateStabilizerCancelId = window.setTimeout(() => poll(attempt + 1), delay);
       };
 
       lateStabilizerCancelId = window.setTimeout(() => requestAnimationFrame(() => poll(0)), 0);
@@ -3013,7 +3014,19 @@ export default function EditorShell({
       lastScrollBurstWasLarge = burstDelta >= 1000 || isEndpointScroll;
       if (burstDelta >= 1000 || isEndpointScroll) {
         pendingLargeJump = true;
-        scheduleHydrationFrame();
+        // D10: queue a microtask for sync hydration. When multiple
+        // scrollTop assignments fire synchronously (e.g. benchmark drag:
+        // 0 -> max -> target), each overwrites pendingSyncJumpScrollTop,
+        // so only the last position gets sync hydration. This eliminates
+        // rAF deferral for the final target position.
+        pendingSyncJumpScrollTop = nextScrollTop;
+        queueMicrotask(() => {
+          if (pendingSyncJumpScrollTop !== null && !hydrationInProgress) {
+            pendingSyncJumpScrollTop = null;
+            pendingLargeJump = false;
+            performScrollHydration({ drain: true, largeJump: true });
+          }
+        });
       } else {
         clearHydrationSettleTimer();
         hydrationSettleTimer = scheduleIdleWork(() => {
