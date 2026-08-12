@@ -2631,7 +2631,7 @@ export default function EditorShell({
         applySurfaceAnchorCompensation(delta);
         diag.compensationApplied += 1;
 
-        const delays = [0, 50, 100, 200, 400, 700, 1200, 2000];
+        const delays = [0, 50, 100, 200];
         const delay = delays[attempt] ?? 500;
         lateStabilizerCancelId = window.setTimeout(() => requestAnimationFrame(() => poll(attempt + 1)), delay);
       };
