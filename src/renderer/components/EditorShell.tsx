@@ -2045,6 +2045,11 @@ export default function EditorShell({
     );
     let lateStabilizerActive = false;
     let lateStabilizerCancelId: number | null = null;
+    let lateStabilizerEndedAt = 0;
+    // D10 cascade break: prevent repeated settle within the same jump session
+    let sessionSettlePerformed = false;
+    let applyingCompensation = false;
+    let justAppliedCompensation = false;
     let pendingSyncJumpScrollTop: number | null = null;
     let scrollHydrationAnchorForFallback: { pmPos: number; offsetTop: number } | null = null;
     // D10 hydration session deduplication: avoid repeated position hydration
@@ -2090,6 +2095,8 @@ export default function EditorShell({
       if (Math.abs(delta) < 0.5 || Math.abs(delta) > Math.max(frame.clientHeight * 4, 2000)) {
         return;
       }
+      const prevApplyingCompensation = applyingCompensation;
+      applyingCompensation = true;
       surfaceCompensationY -= delta;
       const surface =
         frame.querySelector<HTMLElement>('.editor-surface .ProseMirror') ??
@@ -2101,6 +2108,9 @@ export default function EditorShell({
           : `${surfaceCompensationY}px`;
       }
       scrollAnchorCompensationRef.current = surfaceCompensationY;
+      applyingCompensation = prevApplyingCompensation;
+      justAppliedCompensation = true;
+      window.setTimeout(() => { justAppliedCompensation = false; }, 250);
     };
 
     const compensateBottomAnchor = (anchor: { pmPos: number; offsetTop: number }): void => {
@@ -2585,6 +2595,7 @@ export default function EditorShell({
           diag.lastRunAtMs = performance.now() - startedAt;
           (window as unknown as Record<string, unknown>).__marivellLateAnchorStabilizationDiagnostics = diag;
           lateStabilizerActive = false;
+          lateStabilizerEndedAt = performance.now();
           return;
         }
 
@@ -2629,6 +2640,7 @@ export default function EditorShell({
           diag.stoppedReason = 'no-coords';
           (window as unknown as Record<string, unknown>).__marivellLateAnchorStabilizationDiagnostics = diag;
           lateStabilizerActive = false;
+          lateStabilizerEndedAt = performance.now();
           return;
         }
 
@@ -2636,6 +2648,7 @@ export default function EditorShell({
           diag.stoppedReason = 'stable';
           (window as unknown as Record<string, unknown>).__marivellLateAnchorStabilizationDiagnostics = diag;
           lateStabilizerActive = false;
+          lateStabilizerEndedAt = performance.now();
           return;
         }
 
@@ -2656,6 +2669,7 @@ export default function EditorShell({
         lateStabilizerCancelId = null;
       }
       lateStabilizerActive = false;
+      lateStabilizerEndedAt = performance.now();
     };
 
     const runScrollHydration = (options?: {
@@ -2995,10 +3009,25 @@ export default function EditorShell({
         hydrationFrame = null;
       }
       clearHydrationSettleTimer();
+      // D10 cascade break: ignore scrollend during late anchor stabilization
+      if (lateStabilizerActive) {
+        return;
+      }
+      // D10 cascade break: ignore scrollend triggered by compensation
+      if (justAppliedCompensation) {
+        return;
+      }
       if (sourceModeRef.current) {
         return;
       }
       if (largeBurst || isEndpointScroll) {
+        // D10: skip redundant settle if already performed this session
+        if (sessionSettlePerformed) {
+          if (scrollHydrationAnchorForFallback !== null && !isBottomEndpoint) {
+            window.setTimeout(() => startLateAnchorStabilization(), 50);
+          }
+          return;
+        }
         const useLargeJump = largeBurst || isEndpointScroll;
         pendingLargeJump = false;
         performScrollHydration({
@@ -3011,20 +3040,25 @@ export default function EditorShell({
         if (scrollHydrationAnchorForFallback !== null && !isBottomEndpoint) {
           window.setTimeout(() => startLateAnchorStabilization(), 50);
         }
+        sessionSettlePerformed = true;
         return;
       }
       hydrationSettleTimer = scheduleIdleWork(() => {
         hydrationSettleTimer = null;
         if (hydrationFrame === null && !sourceModeRef.current) {
+          if (sessionSettlePerformed) {
+            return;
+          }
           deferInlineMathHydrationForNextScroll = false;
           performScrollHydration({ settle: true, drain: true });
           runSettleFallbackScan();
+          sessionSettlePerformed = true;
         }
       }, 360);
     };
 
     const hydrateScrollTarget = () => {
-      cancelLateAnchorStabilization();
+      // D10 cascade break: only cancel stabilizer on real large jumps, not compensation scrolls
       scrollEventCount += 1;
       const nextScrollTop = frame.scrollTop;
       const previousScrollTop = lastRecordedScrollTop;
@@ -3049,11 +3083,16 @@ export default function EditorShell({
           nextScrollTop >= lastKnownMaxScrollTop - 1);
       lastScrollBurstWasLarge = burstDelta >= 1000 || isEndpointScroll;
       if (burstDelta >= 1000 || isEndpointScroll) {
+        if (applyingCompensation) {
+          return;
+        }
         pendingLargeJump = true;
+        cancelLateAnchorStabilization();
         // D10: reset hydration session for new large jump
         sessionPositionHydrated = false;
         hydrationSessionAnchor = null;
         sessionHydratedCenter = null;
+        sessionSettlePerformed = false;
         sessionHydratedDocSize = null;
         // D10: queue a microtask for sync hydration. When multiple
         // scrollTop assignments fire synchronously (e.g. benchmark drag:
@@ -3069,6 +3108,13 @@ export default function EditorShell({
           }
         });
       } else {
+        // D10 cascade break: skip idle settle for compensation scrolls during stabilization
+        if (applyingCompensation) {
+          return;
+        }
+        cancelLateAnchorStabilization();
+        // D10: new genuine scroll resets settle guard
+        sessionSettlePerformed = false;
         clearHydrationSettleTimer();
         hydrationSettleTimer = scheduleIdleWork(() => {
           hydrationSettleTimer = null;
