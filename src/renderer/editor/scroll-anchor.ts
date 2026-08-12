@@ -5,6 +5,9 @@ import { coordsAtPos, posAtCoords } from './virtualization/coordinate-service';
 export interface ScrollAnchor {
   pmPos: number;
   offsetTop: number;
+  scrollTop?: number;
+  scrollHeight?: number;
+  clientHeight?: number;
 }
 
 export function captureVisualScrollAnchor(frame: HTMLElement, editor: Editor): ScrollAnchor | null {
@@ -32,6 +35,9 @@ export function captureVisualScrollAnchor(frame: HTMLElement, editor: Editor): S
     const result = {
       pmPos: point.pos,
       offsetTop: coords.top - frameRect.top,
+      scrollTop: frame.scrollTop,
+      scrollHeight: frame.scrollHeight,
+      clientHeight: frame.clientHeight,
     };
     endFunctionTimer('captureVisualScrollAnchor');
     return result;
@@ -48,6 +54,22 @@ export function restoreVisualScrollAnchor(
 ): void {
   startFunctionTimer('restoreVisualScrollAnchor');
   try {
+    // Fast path: skip the expensive getBoundingClientRect() + coordsAtPos +
+    // scrollTop write when the frame state hasn't changed since capture.
+    // Order matters: reading scrollTop/scrollHeight/clientHeight skips the
+    // forced layout that getBoundingClientRect() would trigger.
+    if (
+      typeof anchor.scrollTop === 'number' &&
+      typeof anchor.scrollHeight === 'number' &&
+      typeof anchor.clientHeight === 'number' &&
+      frame.scrollTop === anchor.scrollTop &&
+      frame.scrollHeight === anchor.scrollHeight &&
+      frame.clientHeight === anchor.clientHeight
+    ) {
+      endFunctionTimer('restoreVisualScrollAnchor');
+      return;
+    }
+
     const frameRect = frame.getBoundingClientRect();
     if (frameRect.width <= 0 || frameRect.height <= 0) {
       return;

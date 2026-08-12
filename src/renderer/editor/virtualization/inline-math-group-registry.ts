@@ -67,8 +67,8 @@ export interface InlineMathRegistration {
 }
 
 export interface InlineMathScrollAnchorProvider {
-  capture(): { pmPos: number; offsetTop: number; scrollTop?: number; atBottom?: boolean } | null;
-  restore(anchor: { pmPos: number; offsetTop: number; scrollTop?: number; atBottom?: boolean }): void;
+  capture(): { pmPos: number; offsetTop: number; scrollTop?: number; scrollHeight?: number; clientHeight?: number; atBottom?: boolean } | null;
+  restore(anchor: { pmPos: number; offsetTop: number; scrollTop?: number; scrollHeight?: number; clientHeight?: number; atBottom?: boolean }): void;
 }
 
 export interface InlineMathViewportScanStats {
@@ -118,6 +118,10 @@ let inlineMathScrollAnchorProvider: InlineMathScrollAnchorProvider | null = null
 let inlineMathActivationFrameStart: number | null = null;
 let inlineMathActivationMaxFrameMs = 0;
 let inlineMathActivationReadyMs = 0;
+let lastHydrateCenter: number | null = null;
+let lastHydrateRadius: number | null = null;
+let lastHydratePendingCount: number | null = null;
+let lastHydrateActivated: number | null = null;
 
 interface InlineMathGroupIndexTestCounters {
   sorts: number;
@@ -1339,6 +1343,20 @@ export function hydrateInlineMathGroupsAroundPosition(
   _margin = 1600,
 ): number {
   startFunctionTimer('hydrateInlineMathGroupsAroundPosition');
+
+  // Skip redundant scans: if the same center+radius already yielded zero
+  // activations and no new pending groups arrived, the result won't change.
+  const currentPendingCount = pendingGroups.size;
+  if (
+    lastHydrateCenter === centerPosition &&
+    lastHydrateRadius === viewportRadius &&
+    lastHydratePendingCount === currentPendingCount &&
+    lastHydrateActivated === 0
+  ) {
+    endFunctionTimer('hydrateInlineMathGroupsAroundPosition');
+    return 0;
+  }
+
   const radius = Math.max(Number.isFinite(viewportRadius) ? viewportRadius : 1, 1);
   const activationRadius = radius * 1.5;
   const groupsInRange = getInlineMathGroupsInPositionRange(centerPosition, radius * 6);
@@ -1379,6 +1397,10 @@ export function hydrateInlineMathGroupsAroundPosition(
     inlineMathActivationReadyMs = Math.max(inlineMathActivationReadyMs, activationFallbackMs);
     publishInlineMathActivationMetrics();
   }
+  lastHydrateCenter = centerPosition;
+  lastHydrateRadius = viewportRadius;
+  lastHydratePendingCount = currentPendingCount;
+  lastHydrateActivated = activated;
   endFunctionTimer('hydrateInlineMathGroupsAroundPosition');
   return activated;
 }
@@ -1723,6 +1745,10 @@ export function resetInlineMathGroupRegistryForTest(): void {
   inlineMathActivationMaxFrameMs = 0;
   inlineMathActivationFrameStart = null;
   inlineMathScrollAnchorProvider = null;
+  lastHydrateCenter = null;
+  lastHydrateRadius = null;
+  lastHydratePendingCount = null;
+  lastHydrateActivated = null;
   unsubscribeHeightCacheSeeded();
   unsubscribeHeightCacheSeeded = subscribeNodeHeightCacheSeeded(refreshPlaceholderHeights);
   unsubscribeHeightCacheInvalidation();

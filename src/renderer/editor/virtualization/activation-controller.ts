@@ -28,6 +28,16 @@ export interface ScrollAnchorSnapshot {
   pmPos: number;
   offsetTop: number;
   scrollTop?: number;
+  scrollHeight?: number;
+  clientHeight?: number;
+}
+
+export interface ScrollAnchorSnapshot {
+  pmPos: number;
+  offsetTop: number;
+  scrollTop?: number;
+  scrollHeight?: number;
+  clientHeight?: number;
 }
 
 export interface ScrollAnchorProvider {
