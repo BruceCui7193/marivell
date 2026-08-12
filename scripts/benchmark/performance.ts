@@ -1145,6 +1145,10 @@ async function measureScrollJumpScenario(
   katexInjectP50Ms: number;
   katexInjectP95Ms: number;
   katexInjectMaxMs: number;
+  placeholderScanMs: number;
+  inlinePlaceholderScanMs: number;
+  placeholderScanCalls: number;
+  inlinePlaceholderScanCalls: number;
   timedOut: boolean;
 }> {
   const scenarioName = JSON.stringify(scenario);
@@ -1386,10 +1390,20 @@ async function measureScrollJumpScenario(
     let firstFramePlaceholderDetails = [];
     let timedOut = false;
     let placeholderReadyAt = null;
+    let placeholderScanMs = 0;
+    let inlinePlaceholderScanMs = 0;
+    let placeholderScanCalls = 0;
+    let inlinePlaceholderScanCalls = 0;
     while (true) {
       await waitForFrame();
+      let __t0 = performance.now();
       const placeholders = visiblePlaceholderCount();
+      placeholderScanMs += performance.now() - __t0;
+      placeholderScanCalls += 1;
+      __t0 = performance.now();
       const inlinePlaceholders = visibleInlineMathPlaceholderCount();
+      inlinePlaceholderScanMs += performance.now() - __t0;
+      inlinePlaceholderScanCalls += 1;
       if (inlinePlaceholders > 0 && inlineMathPlaceholderFirstSeenAt === null) {
         inlineMathPlaceholderFirstSeenAt = performance.now();
       }
@@ -1546,6 +1560,10 @@ async function measureScrollJumpScenario(
       forceInlineActivated,
       forceInlineMs,
       activateProfile: window.__marivellHydrateActivateProfile ?? [],
+      placeholderScanMs,
+      inlinePlaceholderScanMs,
+      placeholderScanCalls,
+      inlinePlaceholderScanCalls,
       settleScanDiagnostics: window.__marivellSettleScanDiagnostics ?? null,
       lateStabilizationDiagnostics: window.__marivellLateAnchorStabilizationDiagnostics ?? null,
       timedOut,
@@ -1583,6 +1601,10 @@ async function measureScrollJumpScenario(
     forceInlineActivated: number;
     forceInlineMs: number;
     activateProfile: Array<{ id: string; nodeType?: string; ms: number }>;
+    placeholderScanMs: number;
+    inlinePlaceholderScanMs: number;
+    placeholderScanCalls: number;
+    inlinePlaceholderScanCalls: number;
     settleScanDiagnostics: Record<string, unknown> | null;
     lateStabilizationDiagnostics: Record<string, unknown> | null;
     timedOut: boolean;
@@ -2594,6 +2616,18 @@ async function runBenchmark(): Promise<void> {
               value: round(jump.value.settleOverheadMs),
               unit: 'ms',
               note: 'extra rAF/settle time after placeholders reach zero',
+            },
+            {
+              metric: `${jumpScenario.metric}-placeholder-scan-ms`,
+              value: round(jump.value.placeholderScanMs),
+              unit: 'ms',
+              note: `total scan time for visiblePlaceholderCount() across ${jump.value.placeholderScanCalls} calls`,
+            },
+            {
+              metric: `${jumpScenario.metric}-inline-placeholder-scan-ms`,
+              value: round(jump.value.inlinePlaceholderScanMs),
+              unit: 'ms',
+              note: `total scan time for visibleInlineMathPlaceholderCount() across ${jump.value.inlinePlaceholderScanCalls} calls`,
             },
             {
               metric: `${jumpScenario.metric}-first-frame-placeholders`,
