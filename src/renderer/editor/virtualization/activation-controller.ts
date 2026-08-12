@@ -719,6 +719,23 @@ export function setIoEnabledForTest(enabled: boolean): void {
   }
 }
 
+export function cancelPendingHydrationForTest(): void {
+  pendingActivations.clear();
+  hydrationQueue.clear();
+  if (pendingActivationFrame !== null) {
+    if (typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(pendingActivationFrame);
+    }
+    pendingActivationFrame = null;
+  }
+  if (hydrationFrame !== null) {
+    if (typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(hydrationFrame);
+    }
+    hydrationFrame = null;
+  }
+}
+
 export function getIoDiagnosticsForTest(): {
   enabled: boolean;
   observationLimit: number;

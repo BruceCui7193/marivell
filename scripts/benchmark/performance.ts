@@ -373,6 +373,27 @@ interface FirstFrameContractResult {
 }
 
 async function measureFirstFrameContract(page: Page): Promise<FirstFrameContractResult> {
+  await page.evaluate(async () => {
+    const deadline = performance.now() + 1500;
+    while (performance.now() < deadline) {
+      const diagnostics = (window as unknown as Record<string, unknown>)
+        .__marivellLateAnchorStabilizationDiagnostics as { stoppedReason?: string } | null;
+      const reason = diagnostics?.stoppedReason ?? '';
+      const pending =
+        reason === 'pending' ||
+        reason === 'stable-drift-pending' ||
+        reason === 'post-hydration-pending' ||
+        reason === 'stable-drift-correcting';
+      if (!pending) {
+        break;
+      }
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    for (let index = 0; index < 5; index += 1) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  });
   const clickTarget = await page.evaluate(() => {
     const frame = document.querySelector<HTMLElement>('.editor-frame');
     if (!frame) {
@@ -436,10 +457,26 @@ async function measureFirstFrameContract(page: Page): Promise<FirstFrameContract
               ? editor?.view?.coordsAtPos(pointPos.pos) ?? null
               : null;
             if (coords) {
-              return {
-                x: coords.left,
-                y: coords.top + Math.max(1, (coords.bottom - coords.top) / 2),
-              };
+              const clickY = coords.top + Math.max(1, (coords.bottom - coords.top) / 2);
+              const mapped = editor?.view?.posAtCoords({
+                left: coords.left,
+                top: clickY,
+              });
+              if (
+                mapped &&
+                mapped.pos === pointPos.pos &&
+                Math.abs(coords.left - rect.left) <= 4 &&
+                Math.abs(coords.top - rect.top) <= 4 &&
+                coords.left >= frameRect.left &&
+                coords.left <= frameRect.right &&
+                clickY >= frameRect.top &&
+                clickY <= frameRect.bottom
+              ) {
+                return {
+                  x: coords.left,
+                  y: clickY,
+                };
+              }
             }
           }
         }
@@ -1307,6 +1344,39 @@ async function measureScrollJumpScenario(
     }
 
     const benchmarkWindow = window;
+    benchmarkWindow.__marivellSettleScanDiagnostics = null;
+    benchmarkWindow.__marivellLateAnchorStabilizationDiagnostics = null;
+    if (typeof benchmarkWindow.__marivellResetScrollSessionForTest === 'function') {
+      benchmarkWindow.__marivellResetScrollSessionForTest();
+    }
+    const scrollTopDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      'scrollTop',
+    );
+    const scrollWriteLog = [];
+    if (scrollTopDescriptor?.get && scrollTopDescriptor?.set) {
+      Object.defineProperty(frame, 'scrollTop', {
+        configurable: true,
+        get() {
+          return scrollTopDescriptor.get.call(this);
+        },
+        set(value) {
+          const from = scrollTopDescriptor.get.call(this);
+          const stack = new Error().stack ?? '';
+          scrollWriteLog.push({
+            at: performance.now(),
+            from,
+            to: value,
+            stack: stack.split(String.fromCharCode(10)).slice(1, 5).join(' | '),
+          });
+          if (scrollWriteLog.length > 200) {
+            scrollWriteLog.shift();
+          }
+          scrollTopDescriptor.set.call(this, value);
+        },
+      });
+      benchmarkWindow.__marivellScrollWriteLog = scrollWriteLog;
+    }
     const countInlineMathPlaceholdersForMetric = () =>
       typeof benchmarkWindow.__marivellGetInlineMathPlaceholderCountInViewport === 'function'
         ? benchmarkWindow.__marivellGetInlineMathPlaceholderCountInViewport() ?? 0
@@ -2854,6 +2924,29 @@ async function runBenchmark(): Promise<void> {
             metric: jumpScenario.metric,
             value: 'timeout',
             unit: `${interactionTimeoutMs}ms`,
+          });
+          const timeoutDiagnostics = await handle.page.evaluate(() => {
+            const frame = document.querySelector('.editor-frame');
+            const benchmarkWindow = window as unknown as Record<string, unknown>;
+            return {
+              scrollTop: frame instanceof HTMLElement ? frame.scrollTop : null,
+              hotpath: benchmarkWindow.__marivellScrollHotpathDiagnostics ?? null,
+              late: benchmarkWindow.__marivellLateAnchorStabilizationDiagnostics ?? null,
+              phase: benchmarkWindow.__marivellPhase4Timings ?? null,
+              settle: benchmarkWindow.__marivellSettleScanDiagnostics ?? null,
+              fallback: benchmarkWindow.__marivellVisibleFallbackTimings ?? null,
+              scrollWrites: Array.isArray(benchmarkWindow.__marivellScrollWriteLog)
+                ? benchmarkWindow.__marivellScrollWriteLog.slice(-40)
+                : null,
+              inlinePlaceholders: typeof benchmarkWindow.__marivellGetInlineMathPlaceholderCountInViewport === 'function'
+                ? benchmarkWindow.__marivellGetInlineMathPlaceholderCountInViewport()
+                : null,
+            };
+          });
+          report.push({
+            metric: `${jumpScenario.metric}-timeout-diagnostics`,
+            value: JSON.stringify(timeoutDiagnostics),
+            unit: 'json',
           });
           scrollFirstFrameReady[jumpScenario.metric] = false;
           inlineHeightDrifts[jumpScenario.metric] = 'n/a';

@@ -58,6 +58,7 @@ import {
   endFunctionTimer,
 } from '../editor/virtualization/function-timers';
 import {
+  cancelPendingHydrationForTest,
   forceHydrateAll,
   forceActivateViewport,
   forceDeactivateAllVirtualNodes,
@@ -2045,11 +2046,15 @@ export default function EditorShell({
     );
     let lateStabilizerActive = false;
     let lateStabilizerCancelId: number | null = null;
+    let driftVerificationTimerId: number | null = null;
+    let scrollSessionId = 0;
+    let scrollSessionPhase: 'active' | 'settling' | 'settled' = 'active';
     let lateStabilizerEndedAt = 0;
     // D10 cascade break: prevent repeated settle within the same jump session
     let sessionSettlePerformed = false;
     let applyingCompensation = false;
     let justAppliedCompensation = false;
+    let compensationScrollSuppressUntil = 0;
     let pendingSyncJumpScrollTop: number | null = null;
     let scrollHydrationAnchorForFallback: { pmPos: number; offsetTop: number } | null = null;
     // D10 hydration session deduplication: avoid repeated position hydration
@@ -2110,6 +2115,7 @@ export default function EditorShell({
       scrollAnchorCompensationRef.current = surfaceCompensationY;
       applyingCompensation = prevApplyingCompensation;
       justAppliedCompensation = true;
+      compensationScrollSuppressUntil = performance.now() + 600;
       window.setTimeout(() => { justAppliedCompensation = false; }, 250);
     };
 
@@ -2560,6 +2566,151 @@ export default function EditorShell({
       }
     };
 
+    interface AnchorDriftDiag {
+      startedAt: number;
+      attempts: number;
+      driftChecks: number;
+      finalDelta: number | null;
+      coordsOk: boolean;
+      domFallbackUsed: boolean;
+      compensationApplied: number;
+      lastRunAtMs: number;
+      stoppedReason: string;
+      source: string;
+      anchorPmPos: number;
+    }
+
+    const DRIFT_VERIFICATION_DELAYS = [50, 100];
+    const MAX_DRIFT_VERIFICATION_CHECKS = DRIFT_VERIFICATION_DELAYS.length;
+
+    const publishAnchorDriftDiagnostics = (diag: AnchorDriftDiag): void => {
+      (window as unknown as Record<string, unknown>).__marivellLateAnchorStabilizationDiagnostics = diag;
+    };
+
+    const measureAnchorDelta = (
+      editorForCheck: typeof editor,
+      anchor: { pmPos: number; offsetTop: number },
+      frameRect: DOMRect,
+    ): { delta: number; coordsOk: boolean; domFallbackUsed: boolean } | null => {
+      try {
+        const coords = coordsAtPos(editorForCheck, anchor.pmPos);
+        if (coords) {
+          return {
+            delta: (coords.top - frameRect.top) - anchor.offsetTop,
+            coordsOk: true,
+            domFallbackUsed: false,
+          };
+        }
+      } catch {
+        // Fall through to DOM fallback
+      }
+      try {
+        const domPosition = editorForCheck.view.domAtPos(anchor.pmPos);
+        const anchorElement =
+          domPosition.node.nodeType === Node.ELEMENT_NODE
+            ? domPosition.node as Element
+            : domPosition.node.parentElement;
+        const anchorTop =
+          anchorElement instanceof Element
+            ? anchorElement.getBoundingClientRect().top
+            : null;
+        if (anchorTop !== null) {
+          return {
+            delta: (anchorTop - frameRect.top) - anchor.offsetTop,
+            coordsOk: false,
+            domFallbackUsed: true,
+          };
+        }
+      } catch {
+        // Fall through
+      }
+      return null;
+    };
+
+    const pinFrameScrollTop = (targetScrollTop: number): void => {
+      const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+      const pinnedScrollTop = Math.max(0, Math.min(targetScrollTop, maxScrollTop));
+      if (Math.abs(frame.scrollTop - pinnedScrollTop) >= 0.01) {
+        frame.scrollTop = pinnedScrollTop;
+      }
+      lastAnchorRestoredScrollTopRef.current = pinnedScrollTop;
+    };
+
+    const runDriftVerificationCheck = (
+      anchor: { pmPos: number; offsetTop: number },
+      diag: AnchorDriftDiag,
+      checkIndex: number,
+      driftVerificationScrollTop: number,
+      driftVerificationScrollSessionId: number,
+    ): void => {
+      driftVerificationTimerId = null;
+      const currentEditor = editorRef.current;
+      if (
+        !currentEditor ||
+        !frame.isConnected ||
+        Math.abs(frame.scrollTop - driftVerificationScrollTop) >= 0.5 ||
+        scrollSessionId !== driftVerificationScrollSessionId
+      ) {
+        diag.stoppedReason = 'stable-drift-cancelled';
+        diag.lastRunAtMs = performance.now() - diag.startedAt;
+        publishAnchorDriftDiagnostics(diag);
+        lateStabilizerActive = false;
+        lateStabilizerEndedAt = performance.now();
+        return;
+      }
+
+      diag.driftChecks += 1;
+      diag.attempts = checkIndex + 1;
+      const frameRect = frame.getBoundingClientRect();
+      const measured = measureAnchorDelta(currentEditor, anchor, frameRect);
+      diag.lastRunAtMs = performance.now() - diag.startedAt;
+      if (!measured) {
+        diag.coordsOk = false;
+        diag.domFallbackUsed = false;
+        diag.finalDelta = null;
+        diag.stoppedReason = 'stable-drift-no-coords';
+        publishAnchorDriftDiagnostics(diag);
+        lateStabilizerActive = false;
+        lateStabilizerEndedAt = performance.now();
+        return;
+      }
+
+      diag.coordsOk = measured.coordsOk;
+      diag.domFallbackUsed = diag.domFallbackUsed || measured.domFallbackUsed;
+      diag.finalDelta = measured.delta;
+      if (Math.abs(measured.delta) >= 0.5) {
+        applySurfaceAnchorCompensation(measured.delta);
+        diag.compensationApplied += 1;
+        pinFrameScrollTop(driftVerificationScrollTop);
+      }
+
+      if (checkIndex + 1 < MAX_DRIFT_VERIFICATION_CHECKS) {
+        diag.stoppedReason = 'stable-drift-pending';
+        publishAnchorDriftDiagnostics(diag);
+        driftVerificationTimerId = window.setTimeout(
+          () => runDriftVerificationCheck(
+            anchor,
+            diag,
+            checkIndex + 1,
+            driftVerificationScrollTop,
+            driftVerificationScrollSessionId,
+          ),
+          DRIFT_VERIFICATION_DELAYS[checkIndex + 1],
+        );
+        return;
+      }
+
+      diag.stoppedReason =
+        diag.coordsOk && diag.finalDelta !== null && Math.abs(diag.finalDelta) >= 0.5
+          ? 'stable-drift-corrected'
+          : diag.coordsOk
+            ? 'stable-drift-verified'
+            : 'stable-drift-no-coords';
+      publishAnchorDriftDiagnostics(diag);
+      lateStabilizerActive = false;
+      lateStabilizerEndedAt = performance.now();
+    };
+
     const startLateAnchorStabilization = (): void => {
       const anchor = scrollHydrationAnchorForFallback;
       if (!anchor || lateStabilizerActive) {
@@ -2570,21 +2721,27 @@ export default function EditorShell({
       const diag: {
         startedAt: number;
         attempts: number;
+        driftChecks: number;
         finalDelta: number | null;
         coordsOk: boolean;
         domFallbackUsed: boolean;
         compensationApplied: number;
         lastRunAtMs: number;
         stoppedReason: string;
+        source: string;
+        anchorPmPos: number;
       } = {
         startedAt,
         attempts: 0,
+        driftChecks: 0,
         finalDelta: null,
         coordsOk: false,
         domFallbackUsed: false,
         compensationApplied: 0,
         lastRunAtMs: 0,
         stoppedReason: 'pending',
+        source: 'late-stabilizer',
+        anchorPmPos: anchor.pmPos,
       };
 
       const poll = (attempt: number): void => {
@@ -2645,12 +2802,36 @@ export default function EditorShell({
         }
 
         if (Math.abs(delta) < 0.5) {
-          diag.stoppedReason = 'stable';
-          (window as unknown as Record<string, unknown>).__marivellLateAnchorStabilizationDiagnostics = diag;
-          lateStabilizerActive = false;
-          lateStabilizerEndedAt = performance.now();
+          // D10 drag drift: when compensation was applied earlier in this
+          // session, residual KaTeX/layout changes may still move the anchor
+          // after the stabilizer reports stable. Recheck in a short bounded
+          // loop so compensation converges before the benchmark settle scan.
+          if (diag.compensationApplied > 0) {
+            diag.stoppedReason = 'stable-drift-pending';
+            lateStabilizerActive = true;
+            lateStabilizerEndedAt = performance.now();
+            publishAnchorDriftDiagnostics(diag);
+            const driftVerificationScrollTop = frame.scrollTop;
+            const driftVerificationScrollSessionId = scrollSessionId;
+            driftVerificationTimerId = window.setTimeout(
+              () => runDriftVerificationCheck(
+                anchor,
+                diag,
+                0,
+                driftVerificationScrollTop,
+                driftVerificationScrollSessionId,
+              ),
+              DRIFT_VERIFICATION_DELAYS[0],
+            );
+          } else {
+            diag.stoppedReason = 'stable';
+            publishAnchorDriftDiagnostics(diag);
+            lateStabilizerActive = false;
+            lateStabilizerEndedAt = performance.now();
+          }
           return;
         }
+
 
         applySurfaceAnchorCompensation(delta);
         diag.compensationApplied += 1;
@@ -2667,6 +2848,12 @@ export default function EditorShell({
       if (lateStabilizerCancelId !== null) {
         clearTimeout(lateStabilizerCancelId);
         lateStabilizerCancelId = null;
+      }
+      // D10: a pending drift verification belongs to the current scroll
+      // session; clear it so a later timer cannot compensate a stale anchor.
+      if (driftVerificationTimerId !== null) {
+        clearTimeout(driftVerificationTimerId);
+        driftVerificationTimerId = null;
       }
       lateStabilizerActive = false;
       lateStabilizerEndedAt = performance.now();
@@ -2715,6 +2902,7 @@ export default function EditorShell({
       );
       let visibleFallbackTimings: VisibleViewportFallbackTimings | null = null;
       let anchorCompensationAttempts = 0;
+      let anchorCompensationApplied = 0;
       let anchorCoordsOk = false;
       let lastAnchorCompensationDelta: number | null = null;
       let activatedInlineGroups = 0;
@@ -2847,6 +3035,7 @@ export default function EditorShell({
                 lastAnchorCompensationDelta = delta;
                 if (Math.abs(delta) >= 0.5) {
                   applySurfaceAnchorCompensation(delta);
+                  anchorCompensationApplied += 1;
                   // Re-pin to bottom after compensation
                   const newMax = Math.max(frame.scrollHeight - frame.clientHeight, 0);
                   frame.scrollTop = Math.round(newMax);
@@ -2884,6 +3073,7 @@ export default function EditorShell({
                 break;
               }
               applySurfaceAnchorCompensation(delta);
+              anchorCompensationApplied += 1;
             }
           } catch {
             // Anchor compensation is best-effort when PM layout is transient.
@@ -2932,6 +3122,40 @@ export default function EditorShell({
                 // Deferred compensation is best-effort after the first frame.
               }
             });
+          }
+          if (
+            anchorCompensationApplied > 0 &&
+            !lateStabilizerActive &&
+            driftVerificationTimerId === null
+          ) {
+            const postHydrationDiag: AnchorDriftDiag = {
+              startedAt: performance.now(),
+              attempts: anchorCompensationAttempts,
+              driftChecks: 0,
+              finalDelta: lastAnchorCompensationDelta,
+              coordsOk: anchorCoordsOk,
+              domFallbackUsed: false,
+              compensationApplied: anchorCompensationApplied,
+              lastRunAtMs: 0,
+              stoppedReason: 'post-hydration-pending',
+              source: 'runScrollHydration',
+              anchorPmPos: anchorBeforeHydrate.pmPos,
+            };
+            publishAnchorDriftDiagnostics(postHydrationDiag);
+            lateStabilizerActive = true;
+            lateStabilizerEndedAt = performance.now();
+            const driftVerificationScrollTop = frame.scrollTop;
+            const driftVerificationScrollSessionId = scrollSessionId;
+            driftVerificationTimerId = window.setTimeout(
+              () => runDriftVerificationCheck(
+                anchorBeforeHydrate,
+                postHydrationDiag,
+                0,
+                driftVerificationScrollTop,
+                driftVerificationScrollSessionId,
+              ),
+              DRIFT_VERIFICATION_DELAYS[0],
+            );
           }
         }
         lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
@@ -3041,6 +3265,7 @@ export default function EditorShell({
           window.setTimeout(() => startLateAnchorStabilization(), 50);
         }
         sessionSettlePerformed = true;
+        scrollSessionPhase = 'settled';
         return;
       }
       hydrationSettleTimer = scheduleIdleWork(() => {
@@ -3053,16 +3278,23 @@ export default function EditorShell({
           performScrollHydration({ settle: true, drain: true });
           runSettleFallbackScan();
           sessionSettlePerformed = true;
+          scrollSessionPhase = 'settled';
         }
       }, 360);
     };
 
-    const hydrateScrollTarget = () => {
+    const hydrateScrollTarget = (event: Event) => {
       // D10 cascade break: only cancel stabilizer on real large jumps, not compensation scrolls
       scrollEventCount += 1;
       const nextScrollTop = frame.scrollTop;
       const previousScrollTop = lastRecordedScrollTop;
       lastRecordedScrollTop = nextScrollTop;
+      if (
+        justAppliedCompensation &&
+        Math.abs(nextScrollTop - previousScrollTop) < 0.01
+      ) {
+        return;
+      }
       setHeightMeasurementScrollPaused(true);
       if (heightPauseTimer !== null) {
         clearTimeout(heightPauseTimer);
@@ -3081,12 +3313,22 @@ export default function EditorShell({
         nextScrollTop <= 1 ||
         (lastKnownMaxScrollTop > 0 &&
           nextScrollTop >= lastKnownMaxScrollTop - 1);
+      if (
+        !event.isTrusted &&
+        performance.now() < compensationScrollSuppressUntil &&
+        burstDelta < 1000 &&
+        !isEndpointScroll
+      ) {
+        return;
+      }
       lastScrollBurstWasLarge = burstDelta >= 1000 || isEndpointScroll;
       if (burstDelta >= 1000 || isEndpointScroll) {
         if (applyingCompensation) {
           return;
         }
+        scrollSessionPhase = 'settling';
         pendingLargeJump = true;
+        scrollSessionId += 1;
         cancelLateAnchorStabilization();
         // D10: reset hydration session for new large jump
         sessionPositionHydrated = false;
@@ -3112,6 +3354,14 @@ export default function EditorShell({
         if (applyingCompensation) {
           return;
         }
+        if (
+          !event.isTrusted &&
+          (scrollSessionPhase === 'settled' || sessionSettlePerformed)
+        ) {
+          return;
+        }
+        scrollSessionPhase = 'settling';
+        scrollSessionId += 1;
         cancelLateAnchorStabilization();
         // D10: new genuine scroll resets settle guard
         sessionSettlePerformed = false;
@@ -3125,6 +3375,39 @@ export default function EditorShell({
           }
         }, 360);
       }
+    };
+
+    const resetScrollSessionForTest = (): void => {
+      cancelPendingHydrationForTest();
+      clearHydrationSettleTimer();
+      cancelLateAnchorStabilization();
+      if (hydrationFrame !== null) {
+        cancelAnimationFrame(hydrationFrame);
+        hydrationFrame = null;
+      }
+      if (heightPauseTimer !== null) {
+        clearTimeout(heightPauseTimer);
+        heightPauseTimer = null;
+      }
+      pendingLargeJump = false;
+      pendingSyncJumpScrollTop = null;
+      sessionSettlePerformed = false;
+      scrollSessionPhase = 'active';
+      scrollSessionId += 1;
+      lastScrollBurstWasLarge = false;
+      lastRecordedScrollTop = frame.scrollTop;
+      lastSyncHydrateScrollTop = frame.scrollTop;
+      lastAnchorRestoredScrollTopRef.current = frame.scrollTop;
+      scrollHydrationAnchorForFallback = null;
+      hydrationSessionAnchor = null;
+      sessionPositionHydrated = false;
+      sessionHydratedCenter = null;
+      sessionHydratedDocSize = null;
+      justAppliedCompensation = false;
+      compensationScrollSuppressUntil = 0;
+      setHeightMeasurementScrollPaused(false);
+      (window as unknown as Record<string, unknown>).__marivellResetScrollSessionForTest =
+        resetScrollSessionForTest;
     };
     frame.addEventListener('scroll', hydrateScrollTarget, { passive: true });
     frame.addEventListener('scrollend', hydrateScrollEnd, { passive: true });
