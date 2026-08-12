@@ -1185,3 +1185,37 @@ and U5 resource governance, plus a probe fix for large-file UIFF timeout:
 All hard gates passed. UIFF/BFR are now stable on the large file. Remaining
 soft-budget gaps are typing/combined, source->visual, jump-ready, scroll
 avg/max, and the excellent/ultimate targets.
+
+## Stage D10 Main-Agent Verification (2026-08-12)
+
+Main agent re-ran the large-file benchmark after D10 queue-drain fixes, visible
+viewport fallback, bottom/late anchor stabilization, margin tuning, and sync
+large-jump hydration. Commits: `71c8e76`, `7d5f4ff`, `4cfb931`, `b9a4bc8`,
+`d20d71b`, `bca2b9b`, `7b6a870`, `71c7b05`, `0ae2c2f`.
+
+| Metric | After D6-D7-U5 | After D10 |
+| --- | ---: | ---: |
+| visual-open | 4,898ms | 4,884ms |
+| renderer-ready | 3,774ms | 3,739ms |
+| typing | 215.2ms | 205.7ms |
+| interaction-combined | 1,598.1ms | 1,498.7ms |
+| mode-switch visual->source | 729.7ms | 734.5ms |
+| mode-switch source->visual | 1,036.9ms | 774.7ms |
+| scroll-avg | 47.6ms | 46.0ms |
+| scroll-max | 144.3ms | 140.2ms |
+| scroll-jump-ready (worst) | 2,053.3ms | 2,665.7ms |
+| scroll-frame-dom-mutations | 0 | 2 |
+| scroll-frame-rect-reads | 0 | 56 |
+| scroll-frame-posatcoords | 0 | 30 |
+| scrollDriftPx | 0 | 0 |
+| viewportPlaceholders | 0 | 0 |
+| inline-height-drift | 0 | 0 |
+| inline-math-activate-ready | n/a | 2.6ms |
+| uiff-passed | true | true |
+
+Status: all hard functional gates pass on the large file: scroll drift,
+viewport placeholders, inline-height drift, first-frame placeholders, and UIFF.
+Remaining budget gaps are typing, scroll avg/max, and jump-ready. Jump-ready is
+dominated by benchmark placeholder/settle waits and late KaTeX-driven anchor
+stabilization; the next work item is to cut that wait with faster
+placeholder-to-KaTeX activation and/or the U3 coordinate engine.
