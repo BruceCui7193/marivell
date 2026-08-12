@@ -309,6 +309,8 @@ export interface VisibleViewportFallbackTimings {
   visibleVirtualNodes: number;
   visibleInlineGroups: number;
   frameScrollTop: number;
+  rootMargin: number;
+  inlineMargin: number;
   targetScrollTop: number;
 }
 
@@ -325,8 +327,10 @@ export function hydrateVisibleViewportFallback(
 ): VisibleViewportFallbackTimings {
   const startedAt = performance.now();
   const virtualScanStartedAt = performance.now();
+  const effectiveRootMargin = options.rootMargin ?? 400;
+  const effectiveInlineMargin = options.inlineMargin ?? 1600;
   const virtualStats = { scanned: 0, visible: 0, activated: 0 };
-  forceActivateViewport(frame, options.rootMargin ?? 800, virtualStats, true);
+  forceActivateViewport(frame, effectiveRootMargin, virtualStats, true);
   const virtualMs = performance.now() - virtualScanStartedAt;
 
   const inlineScanStartedAt = performance.now();
@@ -334,7 +338,7 @@ export function hydrateVisibleViewportFallback(
   if (options.includeInlineMath !== false) {
     activateInlineMathGroupsInViewport(
       frame,
-      options.inlineMargin ?? 1600,
+      effectiveInlineMargin,
       undefined,
       undefined,
       inlineStats,
@@ -355,6 +359,8 @@ export function hydrateVisibleViewportFallback(
     visibleVirtualNodes: virtualStats.visible,
     visibleInlineGroups: inlineStats.visible,
     frameScrollTop: frame.scrollTop,
+    rootMargin: effectiveRootMargin,
+    inlineMargin: effectiveInlineMargin,
     targetScrollTop: options.targetScrollTop ?? frame.scrollTop,
   };
   (window as unknown as Record<string, unknown>).__marivellVisibleFallbackTimings = timings;
@@ -2625,7 +2631,7 @@ export default function EditorShell({
         applySurfaceAnchorCompensation(delta);
         diag.compensationApplied += 1;
 
-        const delays = [0, 50, 100, 200, 350, 500, 700, 900];
+        const delays = [0, 50, 100, 200, 400, 700, 1200, 2000];
         const delay = delays[attempt] ?? 500;
         lateStabilizerCancelId = window.setTimeout(() => requestAnimationFrame(() => poll(attempt + 1)), delay);
       };
