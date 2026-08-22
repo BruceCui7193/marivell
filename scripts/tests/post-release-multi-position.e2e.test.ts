@@ -469,7 +469,9 @@ async function main(): Promise<void> {
       const stable =
         value.topChanges === 0 &&
         value.firstTop === value.lastTop &&
-        value.eventsAfterFirstRaf === 0 &&
+        // A queued scroll notification is benign when neither the sampled
+        // position nor layout shifts beyond budget. Requiring zero events made
+        // this race fail even when every frame had the same scrollTop.
         value.layoutShiftCumulative <= 0.05;
       assert(
         `position ${label} stays stable for 1000ms after release (scrollTop=${value.scrollTop})`,

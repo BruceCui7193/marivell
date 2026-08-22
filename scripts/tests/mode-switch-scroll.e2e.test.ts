@@ -251,6 +251,23 @@ async function main(): Promise<void> {
       console.log(`  glass-effect setup: ${JSON.stringify(glassSet)}`);
     }
 
+    const initialLoadingProbe = handle.page.evaluate(async () => {
+      const deadline = performance.now() + 2_000;
+      while (performance.now() < deadline) {
+        const overlay = document.querySelector<HTMLElement>('.editor-loading');
+        if (overlay) {
+          return {
+            seen: true,
+            usesModeSwitchStyle: overlay.classList.contains('editor-loading--mode-switch'),
+            hasSpinner: Boolean(overlay.querySelector('.editor-loading__spinner')),
+            text: (overlay.textContent ?? '').trim(),
+          };
+        }
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+      return { seen: false, usesModeSwitchStyle: false, hasSpinner: false, text: '' };
+    });
+
     const ready = await withTimeout(
       waitForVisualReady(handle.page, Math.min(Math.max(source.length * 0.5, 10_000), 500_000), 60_000),
       70_000,
@@ -260,6 +277,37 @@ async function main(): Promise<void> {
       'open long document in visual mode before scrolling',
       ready.ok && !ready.value.timedOut,
       JSON.stringify(ready),
+    );
+    const initialLoading = await initialLoadingProbe;
+    assert(
+      'document load overlay follows the mode-switch animation style',
+      !initialLoading.seen || (
+        initialLoading.usesModeSwitchStyle &&
+        initialLoading.hasSpinner &&
+        initialLoading.text.length > 0
+      ),
+      JSON.stringify(initialLoading),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const toolbarIcons = await handle.page.evaluate(() => {
+      const svgs = Array.from(document.querySelectorAll<SVGSVGElement>(
+        '.toolbar .toolbar-button svg',
+      ));
+      return {
+        total: svgs.length,
+        raster: svgs.filter((svg) => svg.querySelector('image')).length,
+        vectorPaths: svgs.filter((svg) => svg.querySelector('path')).length,
+        loading: document.querySelectorAll('.toolbar .toolbar-button svg[data-icon-loading]').length,
+      };
+    });
+    assert(
+      'loaded toolbar shows only custom raster icons',
+      toolbarIcons.total > 0 &&
+        toolbarIcons.raster === toolbarIcons.total &&
+        toolbarIcons.vectorPaths === 0 &&
+        toolbarIcons.loading === 0,
+      JSON.stringify(toolbarIcons),
     );
 
     let scroll: Awaited<ReturnType<typeof waitForVisualReady>> extends never ? never : {

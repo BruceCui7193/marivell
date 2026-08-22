@@ -77,6 +77,44 @@ section('linux mime icons');
   assert('linux installer cleans old system desktop and icons', script.includes('LEGACY_SPACED_APP_DIR="/opt/Markdown Editor Pro"') && script.includes('LEGACY_SHARE_ICON_256'));
 }
 
+section('toolbar icons');
+
+{
+  const iconsSource = read('src/renderer/components/icons.tsx');
+  assert('toolbar has no vector fallback registry', !iconsSource.includes('const iconPaths'));
+  assert('toolbar never renders vector fallback paths', !iconsSource.includes('<path'));
+  assert('toolbar has no vector-only exception list', !iconsSource.includes('vectorOnlyIcons'));
+  assert(
+    'toolbar reserves its layout while custom assets decode',
+    iconsSource.includes('data-icon-loading'),
+  );
+
+  const shellSource = read('src/renderer/components/EditorShell.tsx');
+  assert(
+    'document loading uses the mode-switch overlay style',
+    shellSource.includes('editor-loading editor-loading--mode-switch'),
+  );
+  assert(
+    'document loading shows the same spinner',
+    shellSource.includes('<span className="editor-loading__spinner" />'),
+  );
+
+  const fileNames = Array.from(
+    new Set(Array.from(iconsSource.matchAll(/'([^']+\.ico)'/g), (match) => match[1])),
+  );
+  assert('toolbar icon manifest is not empty', fileNames.length > 0, String(fileNames.length));
+
+  for (const folder of ['ico_dark', 'ico_light']) {
+    for (const fileName of fileNames) {
+      const data = readFileSync(path.join(projectRoot, 'build/toolbar', folder, fileName));
+      assert(
+        `${folder}/${fileName} is a custom toolbar asset`,
+        data.subarray(0, 4).toString('latin1') === '\u0000\u0000\u0001\u0000',
+      );
+    }
+  }
+}
+
 console.log(`\n${'='.repeat(48)}`);
 console.log(`Results: ${passed} passed, ${failed} failed`);
 if (failures.length) {

@@ -903,7 +903,12 @@ const EditorViewport = memo(function EditorViewport({
       onMouseDown={onFrameMouseDown}
       onContextMenu={sourceMode ? undefined : onVisualContextMenu}
     >
-      {loading ? <div className="editor-loading">{translate('loadingDocument')}</div> : null}
+      {loading ? (
+        <div className="editor-loading editor-loading--mode-switch" role="status" aria-live="polite">
+          <span className="editor-loading__spinner" />
+          <span>{translate('loadingDocument')}</span>
+        </div>
+      ) : null}
       {searchPanel}
       <div
         ref={editorHostRef}
