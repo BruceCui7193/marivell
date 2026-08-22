@@ -1,7 +1,7 @@
 {
   "name": "marivell",
   "productName": "Marivell",
-  "version": "1.1.0",
+  "version": "1.2.0-beta.1",
   "description": "A Markdown editor built with Electron, React, TypeScript, and Vite.",
   "main": "./out/main/index.js",
   "author": {
@@ -13,6 +13,8 @@
   "type": "module",
   "scripts": {
     "dev": "electron-vite dev",
+    "typecheck": "tsc --noEmit",
+    "verify": "npm run typecheck && npm test",
     "test": "npm run test:unit && npm run test:fixtures",
     "test:unit": "tsx scripts/tests/pure-logic.test.ts && tsx scripts/tests/build-assets.test.ts && tsx scripts/tests/editor-mode-switch.test.ts && tsx scripts/tests/editor-history.test.ts && tsx scripts/tests/mode-edit.test.ts && tsx scripts/tests/math-clipboard.test.ts && tsx scripts/tests/workflow-stress.test.ts && tsx scripts/tests/workflow-deep.test.ts && tsx scripts/tests/logic-edge.test.ts && tsx scripts/tests/layout-regression.test.ts && tsx scripts/tests/render-interaction.test.ts && tsx scripts/tests/mode-switch-violence.test.ts && tsx scripts/tests/feature-violence.test.ts",
     "test:fixtures": "tsx scripts/tests/markdown-fixtures.test.ts",

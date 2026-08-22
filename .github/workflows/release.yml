@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   test:
     name: Tests
@@ -27,6 +31,16 @@ jobs:
 
       - name: Install dependencies
         run: npm ci --legacy-peer-deps
+
+      - name: Verify tag version
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          EXPECTED_VERSION: ${{ github.ref_name }}
+        run: |
+          node -e "const actual = require('./package.json').version; const expected = process.env.EXPECTED_VERSION.replace(/^v/, ''); if (actual !== expected) { throw new Error('Version mismatch: package=' + actual + ', tag=' + expected); }"
+
+      - name: Typecheck
+        run: npm run typecheck
 
       - name: Run tests
         run: npm test
@@ -89,6 +103,9 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -99,5 +116,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create --repo "${{ github.repository }}" "$GITHUB_REF_NAME" artifacts/* --generate-notes --prerelease || \
+          create_args=(--title "$GITHUB_REF_NAME")
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            create_args+=(--prerelease)
+          fi
+          notes_file=".github/releases/${GITHUB_REF_NAME}.md"
+          if [[ -f "$notes_file" ]]; then
+            create_args+=(--notes-file "$notes_file")
+          else
+            create_args+=(--generate-notes)
+          fi
+          gh release create --repo "${{ github.repository }}" "$GITHUB_REF_NAME" "${create_args[@]}" artifacts/* || \
             gh release upload --repo "${{ github.repository }}" "$GITHUB_REF_NAME" artifacts/* --clobber
