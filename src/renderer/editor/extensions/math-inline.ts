@@ -348,7 +348,11 @@ export const MathInline = Node.create({
       };
 
       const renderPreview = (text: string) => {
-        if (text === lastRenderedText) return;
+        const previewNeedsRender =
+          text !== lastRenderedText ||
+          dom.classList.contains('math-inline-node--placeholder') ||
+          !previewDOM.querySelector('.katex');
+        if (!previewNeedsRender) return;
         lastRenderedText = text;
         const injectStart = performance.now();
         try {

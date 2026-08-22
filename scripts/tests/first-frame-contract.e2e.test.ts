@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright-core';
+import { installPlaceholderHelpers } from './test-utils/placeholder';
 
 const execFileAsync = promisify(execFile);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -253,6 +254,9 @@ async function collectVisualContract(
   page: Page,
 ): Promise<{
   placeholders: number;
+  visibleUnrenderedInlineMathCount: number;
+  visibleUnloadedImageCount: number;
+  grayLatexDirectTextCount: number;
   visibleFormulas: number;
   visibleKatex: number;
   overlayCount: number;
@@ -266,15 +270,7 @@ async function collectVisualContract(
     const frame = document.querySelector('.editor-frame');
     if (!frame) throw new Error('editor frame missing');
     const frameRect = frame.getBoundingClientRect();
-    const placeholderSelector = [
-      '.math-inline-node--placeholder',
-      '.math-block-node-placeholder',
-      '.image-node__placeholder',
-      '.mermaid-node__placeholder',
-      '.html-block-placeholder',
-      '.code-block-node--placeholder',
-      '.mermaid-node__empty'
-    ].join(',');
+    const probe = marivellCollectVisiblePlaceholderState(frame);
     const intersects = (element) => {
       const rect = element.getBoundingClientRect();
       return rect.bottom > frameRect.top &&
@@ -285,12 +281,12 @@ async function collectVisualContract(
     const visibleFormulas = Array.from(
       frame.querySelectorAll('.math-inline-node, .math-block-node')
     ).filter(intersects);
-    const visibleKatex = visibleFormulas.filter((element) =>
-      element.querySelector('.math-node-preview .katex, .katex')
-    ).length;
-    const placeholders = Array.from(
-      frame.querySelectorAll(placeholderSelector)
-    ).filter(intersects).length;
+    const visibleKatex = visibleFormulas.filter((element) => {
+      if (element.classList.contains('math-inline-node')) {
+        return marivellIsInlineMathRealKatex(element);
+      }
+      return Boolean(element.querySelector('.math-node-preview .katex, .katex'));
+    }).length;
     const overlayCount = document.querySelectorAll(
       '.editor-loading, .editor-loading--mode-switch'
     ).length;
@@ -367,7 +363,10 @@ async function collectVisualContract(
     const idleShifts = layoutShifts.slice(shiftsBeforeIdle);
     layoutObserver?.disconnect();
     return {
-      placeholders,
+      placeholders: probe.placeholderCount,
+      visibleUnrenderedInlineMathCount: probe.visibleUnrenderedInlineMathCount,
+      visibleUnloadedImageCount: probe.visibleUnloadedImageCount,
+      grayLatexDirectTextCount: probe.grayLatexDirectTextCount,
       visibleFormulas: visibleFormulas.length,
       visibleKatex,
       overlayCount,
@@ -438,6 +437,7 @@ async function main(): Promise<void> {
     console.log('Building first-frame contract bundle...');
     await buildRenderer(outDir);
     handle = await launchElectron(outDir, markdownPath, port, profile);
+    await installPlaceholderHelpers(handle.page);
     await waitForVisualReady(
       handle.page,
       Math.min(Math.max(source.length * 0.5, 10_000), 500_000),
@@ -528,7 +528,10 @@ async function main(): Promise<void> {
       'viewport has no placeholders and visible formulas are real .katex',
       visual.placeholders === 0 &&
         visual.visibleFormulas > 0 &&
-        visual.visibleKatex === visual.visibleFormulas,
+        visual.visibleKatex === visual.visibleFormulas &&
+        visual.visibleUnrenderedInlineMathCount === 0 &&
+        visual.visibleUnloadedImageCount === 0 &&
+        visual.grayLatexDirectTextCount === 0,
       JSON.stringify(visual),
     );
     assert(
@@ -588,6 +591,9 @@ async function main(): Promise<void> {
       visualAfterRoundTrip.placeholders === 0 &&
         visualAfterRoundTrip.visibleFormulas > 0 &&
         visualAfterRoundTrip.visibleKatex === visualAfterRoundTrip.visibleFormulas &&
+        visualAfterRoundTrip.visibleUnrenderedInlineMathCount === 0 &&
+        visualAfterRoundTrip.visibleUnloadedImageCount === 0 &&
+        visualAfterRoundTrip.grayLatexDirectTextCount === 0 &&
         visualAfterRoundTrip.overlayCount === 0 &&
         visualAfterRoundTrip.hitEditor &&
         visualAfterRoundTrip.nonNull === 5,

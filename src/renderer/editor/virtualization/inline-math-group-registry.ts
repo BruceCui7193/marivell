@@ -638,7 +638,7 @@ function observeGroup(group: InlineMathGroup): void {
   group.observedElement = element;
   registerIoPlaceholder(element, group.id, {
     getPosition: () => Number.isFinite(group.firstPmPos) ? group.firstPmPos : 0,
-    isActive: () => group.active,
+    isActive: () => !hasResidualPlaceholders(group),
     activate: () => activateGroupWithAnchor(group),
   });
 }
@@ -899,9 +899,38 @@ function collectGroupFormulaEntries(group: InlineMathGroup): FormulaIndexEntry[]
   return entries;
 }
 
+function registrationHasRenderedKatex(
+  registration: InlineMathRegistration,
+): boolean {
+  if (registration.destroyed) {
+    return false;
+  }
+  if (registration.element.classList.contains('math-inline-node--placeholder')) {
+    return false;
+  }
+  const preview = registration.preview;
+  if (!preview || !preview.isConnected) {
+    return false;
+  }
+  if (!preview.querySelector('.katex')) {
+    return false;
+  }
+  return !preview.querySelector(
+    '.katex-error, .math-node-empty-hint, .math-node-placeholder-hint, .math-inline-placeholder-hint',
+  );
+}
+
 function hasResidualPlaceholders(group: InlineMathGroup): boolean {
+  const groupElement = getGroupElement(group);
+  if (
+    groupElement.isConnected &&
+    (groupElement.matches('.math-inline-node--placeholder') ||
+      groupElement.querySelector('.math-inline-node--placeholder') !== null)
+  ) {
+    return true;
+  }
   for (const registration of group.formulas) {
-    if (!registration.destroyed && !registration.active) {
+    if (!registration.destroyed && !registrationHasRenderedKatex(registration)) {
       return true;
     }
   }
@@ -929,10 +958,15 @@ function activateGroup(group: InlineMathGroup): void {
   }
   activatingGroupId = group.id;
   try {
+    const groupElement = getGroupElement(group);
+    const groupHasPlaceholderDom =
+      groupElement.isConnected &&
+      (groupElement.matches('.math-inline-node--placeholder') ||
+        groupElement.querySelector('.math-inline-node--placeholder') !== null);
     group.active = true;
     group.requested = true;
     for (const registration of group.formulas) {
-      if (!registration.active) {
+      if (!registrationHasRenderedKatex(registration) || groupHasPlaceholderDom) {
         registration.active = true;
         removePlaceholderRegistration(registration);
         registration.activate();
@@ -1131,6 +1165,10 @@ export function activateInlineMathGroupsInViewport(
   }
   layoutRetryFrames.delete(frame);
 
+  const frameRect = frame.getBoundingClientRect();
+  const prefetchTop = frameRect.top - margin;
+  const prefetchBottom = frameRect.bottom + margin;
+
   const usePositionIndex =
     centerPosition !== undefined &&
     Number.isFinite(centerPosition) &&
@@ -1173,9 +1211,6 @@ export function activateInlineMathGroupsInViewport(
   }
 
   inlineMathGroupIndexTestCounters.fullGroupScans += 1;
-  const frameRect = frame.getBoundingClientRect();
-  const prefetchTop = frameRect.top - margin;
-  const prefetchBottom = frameRect.bottom + margin;
   const toActivate: InlineMathGroup[] = [];
   for (const group of sorted) {
     if (stats) {
@@ -1217,11 +1252,12 @@ export function activateInlineMathGroupsInViewport(
       }
     }
   }
+  let activated = 0;
   if (toActivate.length > 0) {
     const anchor = skipAnchorRestore
       ? null
       : inlineMathScrollAnchorProvider?.capture() ?? null;
-    const activated = withInlineMathActivationMeasurement(() => {
+    activated += withInlineMathActivationMeasurement(() => {
       for (const group of toActivate) {
         activateGroup(group);
       }
@@ -1230,9 +1266,70 @@ export function activateInlineMathGroupsInViewport(
     if (anchor !== null) {
       inlineMathScrollAnchorProvider?.restore(anchor);
     }
-    if (stats) {
-      stats.activated = toActivate.length;
+  }
+  // Group state can say "active" while the rendered DOM still shows a
+  // placeholder after a failed or racy activation. Reconcile visible nodes
+  // from the DOM so those placeholders get one final activation pass.
+  const activatedGroupKeys = new Set(toActivate.map((group) => group.key));
+  const directPlaceholderGroups: InlineMathGroup[] = [];
+  const seenDirectGroupKeys = new Set<string>();
+  for (const element of frame.querySelectorAll<HTMLElement>(
+    '.math-inline-node, .math-inline-node--placeholder',
+  )) {
+    if (!element.isConnected) {
+      continue;
     }
+    const rect = element.getBoundingClientRect();
+    if (rect.bottom < prefetchTop || rect.top > prefetchBottom) {
+      continue;
+    }
+    const registration = (
+      element as HTMLElement & {
+        __marivellInlineMathRegistration?: InlineMathRegistration;
+      }
+    ).__marivellInlineMathRegistration;
+    if (!registration || registration.destroyed) {
+      continue;
+    }
+    const group = registration.groupId ? groups.get(registration.groupId) : undefined;
+    if (
+      !group ||
+      activatedGroupKeys.has(group.key) ||
+      seenDirectGroupKeys.has(group.key)
+    ) {
+      continue;
+    }
+    const groupElement = getGroupElement(group);
+    if (!groupElement.isConnected) {
+      continue;
+    }
+    const groupRect = groupElement.getBoundingClientRect();
+    if (groupRect.bottom < prefetchTop || groupRect.top > prefetchBottom) {
+      continue;
+    }
+    if (!registrationHasRenderedKatex(registration)) {
+      seenDirectGroupKeys.add(group.key);
+      directPlaceholderGroups.push(group);
+    }
+  }
+  if (directPlaceholderGroups.length > 0) {
+    const anchor = skipAnchorRestore
+      ? null
+      : inlineMathScrollAnchorProvider?.capture() ?? null;
+    activated += withInlineMathActivationMeasurement(() => {
+      for (const group of directPlaceholderGroups) {
+        activateGroup(group);
+      }
+      return directPlaceholderGroups.length;
+    });
+    if (anchor !== null) {
+      inlineMathScrollAnchorProvider?.restore(anchor);
+    }
+  }
+  if (stats) {
+    stats.activated = activated;
+  }
+  if (activated > 0) {
     return activated;
   }
   return 0;
@@ -1308,7 +1405,10 @@ export function syncInlineMathIo(
   );
   const candidates: ExternalIoCandidate[] = [];
   for (const group of groupsInRange) {
-    if (group.active || !group.element.isConnected) {
+    if (
+      (group.active && !hasResidualPlaceholders(group)) ||
+      !group.element.isConnected
+    ) {
       continue;
     }
     candidates.push({
@@ -1344,31 +1444,34 @@ export function hydrateInlineMathGroupsAroundPosition(
 ): number {
   startFunctionTimer('hydrateInlineMathGroupsAroundPosition');
 
-  // Skip redundant scans: if the same center+radius already yielded zero
-  // activations and no new pending groups arrived, the result won't change.
-  const currentPendingCount = pendingGroups.size;
-  if (
-    lastHydrateCenter === centerPosition &&
-    lastHydrateRadius === viewportRadius &&
-    lastHydratePendingCount === currentPendingCount &&
-    lastHydrateActivated === 0
-  ) {
-    endFunctionTimer('hydrateInlineMathGroupsAroundPosition');
-    return 0;
-  }
-
   const radius = Math.max(Number.isFinite(viewportRadius) ? viewportRadius : 1, 1);
   const activationRadius = radius * 1.5;
   const groupsInRange = getInlineMathGroupsInPositionRange(centerPosition, radius * 6);
   const toActivate: InlineMathGroup[] = [];
   for (const group of groupsInRange) {
-    if (!group || group.active) {
+    if (!group || (group.active && !hasResidualPlaceholders(group))) {
       continue;
     }
     const distance = getGroupDistance(group, centerPosition);
     if (distance <= activationRadius) {
       toActivate.push(group);
     }
+  }
+
+  // Skip redundant scans only when the same range really has no residual
+  // inline math. A group can be marked active and then reverted to a
+  // placeholder by later updates, so activation count alone is not enough.
+  const currentPendingCount = pendingGroups.size;
+  if (
+    lastHydrateCenter === centerPosition &&
+    lastHydrateRadius === viewportRadius &&
+    lastHydratePendingCount === currentPendingCount &&
+    lastHydrateActivated === 0 &&
+    toActivate.length === 0
+  ) {
+    syncInlineMathIo(frame, centerPosition, viewportRadius);
+    endFunctionTimer('hydrateInlineMathGroupsAroundPosition');
+    return 0;
   }
 
   let activated = 0;

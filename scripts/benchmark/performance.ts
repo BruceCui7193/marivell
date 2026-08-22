@@ -6,6 +6,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { acquireExclusiveBenchmarkRun } from './exclusive-run';
+import {
+  installPlaceholderHelpers,
+  type VisiblePlaceholderProbe,
+} from '../tests/test-utils/placeholder';
 
 const execFileAsync = promisify(execFile);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -337,6 +341,11 @@ interface UiffViewportResult {
   placeholderCount: number;
   visibleFormulaCount: number;
   visibleRealKatexCount: number;
+  visibleInlineMathCount: number;
+  visibleUnrenderedInlineMathCount: number;
+  visibleImageCount: number;
+  visibleUnloadedImageCount: number;
+  grayLatexDirectTextCount: number;
   real: boolean;
 }
 
@@ -590,15 +599,13 @@ async function measureFirstFrameContract(page: Page): Promise<FirstFrameContract
       throw new Error('editor frame missing');
     }
     const frameRect = frame.getBoundingClientRect();
-    const placeholderSelector = [
-      '.math-inline-node--placeholder',
-      '.math-block-node-placeholder',
-      '.image-node__placeholder',
-      '.mermaid-node__placeholder',
-      '.html-block-placeholder',
-      '.code-block-node--placeholder',
-      '.mermaid-node__empty',
-    ].join(',');
+    const probe = (
+      window as unknown as {
+        marivellCollectVisiblePlaceholderState: (
+          frame: HTMLElement,
+        ) => VisiblePlaceholderProbe;
+      }
+    ).marivellCollectVisiblePlaceholderState(frame);
     const visibleFormulas = Array.from(
       frame.querySelectorAll<HTMLElement>('.math-inline-node, .math-block-node'),
     ).filter((element) => {
@@ -610,25 +617,32 @@ async function measureFirstFrameContract(page: Page): Promise<FirstFrameContract
         rect.left < frameRect.right
       );
     });
-    const visibleRealKatexCount = visibleFormulas.filter((element) =>
-      element.querySelector('.math-node-preview .katex, .katex'),
-    ).length;
-    const placeholderCount = Array.from(frame.querySelectorAll<HTMLElement>(placeholderSelector)).filter(
-      (element) => {
-        const rect = element.getBoundingClientRect();
+    const visibleRealKatexCount = visibleFormulas.filter((element) => {
+      if (element.classList.contains('math-inline-node')) {
         return (
-          rect.bottom > frameRect.top &&
-          rect.top < frameRect.bottom &&
-          rect.right > frameRect.left &&
-          rect.left < frameRect.right
-        );
-      },
-    ).length;
+          window as unknown as {
+            marivellIsInlineMathRealKatex: (element: HTMLElement) => boolean;
+          }
+        ).marivellIsInlineMathRealKatex(element);
+      }
+      return Boolean(element.querySelector('.math-node-preview .katex, .katex'));
+    }).length;
     return {
-      placeholderCount,
+      placeholderCount: probe.placeholderCount,
       visibleFormulaCount: visibleFormulas.length,
       visibleRealKatexCount,
-      real: visibleFormulas.length > 0 && visibleRealKatexCount === visibleFormulas.length && placeholderCount === 0,
+      visibleInlineMathCount: probe.visibleInlineMathCount,
+      visibleUnrenderedInlineMathCount: probe.visibleUnrenderedInlineMathCount,
+      visibleImageCount: probe.visibleImageCount,
+      visibleUnloadedImageCount: probe.visibleUnloadedImageCount,
+      grayLatexDirectTextCount: probe.grayLatexDirectTextCount,
+      real:
+        visibleFormulas.length > 0 &&
+        visibleRealKatexCount === visibleFormulas.length &&
+        probe.placeholderCount === 0 &&
+        probe.visibleUnrenderedInlineMathCount === 0 &&
+        probe.visibleUnloadedImageCount === 0 &&
+        probe.grayLatexDirectTextCount === 0,
     };
   });
 
@@ -814,9 +828,17 @@ async function measureBackgroundReadiness(
             )()
           : null,
       syntax: target.__marivellMathSyntaxDiagnostics ?? null,
-      placeholderCount: document.querySelectorAll(
-        '.math-inline-node--placeholder, .math-block-node-placeholder, .image-node__placeholder, .mermaid-node__placeholder, .html-block-placeholder, .code-block-node--placeholder, .mermaid-node__empty',
-      ).length,
+      placeholderCount:
+        Array.from(document.querySelectorAll<HTMLElement>('.math-inline-node')).filter((node) =>
+          (
+            window as unknown as {
+              marivellIsInlineMathPlaceholder: (element: HTMLElement) => boolean;
+            }
+          ).marivellIsInlineMathPlaceholder(node),
+        ).length +
+        document.querySelectorAll(
+          '.math-block-node-placeholder, .image-node__placeholder, .mermaid-node__placeholder, .html-block-placeholder, .code-block-node--placeholder, .mermaid-node__empty',
+        ).length,
       offscreenSyntaxDecorationCount,
     };
   }, expectedUnique);
@@ -1155,7 +1177,13 @@ async function measureScrollJumpScenario(
   placeholderReadyMs: number;
   settleOverheadMs: number;
   firstFramePlaceholders: number;
+  firstFrameVisibleUnrenderedInlineMathCount: number;
+  firstFrameVisibleUnloadedImageCount: number;
+  firstFrameGrayLatexDirectTextCount: number;
   finalPlaceholderCount: number;
+  finalVisibleUnrenderedInlineMathCount: number;
+  finalVisibleUnloadedImageCount: number;
+  finalGrayLatexDirectTextCount: number;
   scrollTopDrift: number;
   targetScrollTop: number;
   scrollHeight: number;
@@ -1194,89 +1222,12 @@ async function measureScrollJumpScenario(
     const frame = document.querySelector('.editor-frame');
     if (!frame) throw new Error('editor frame missing');
 
-    const placeholderSelectors = [
-      '[data-virtual-node-id].math-block-node-placeholder',
-      '[data-virtual-node-id].image-node__placeholder',
-      '[data-virtual-node-id].mermaid-node__placeholder',
-      '[data-virtual-node-id].html-block-placeholder',
-      '[data-virtual-node-id].code-block-node--placeholder',
-    ];
-    const isInlineMathPlaceholder = (element) => {
-      if (element.classList.contains('math-inline-node--placeholder')) {
-        return true;
-      }
-      const preview = element.querySelector(':scope > .math-node-preview');
-      if (!preview) {
-        return true;
-      }
-      if (preview.querySelector('.katex')) {
-        return false;
-      }
-      if (preview.querySelector('.katex-error')) {
-        return false;
-      }
-      if (preview.querySelector('.math-node-empty-hint, .math-node-placeholder-hint') !== null) {
-        return false;
-      }
-      const hasDirectErrorText = Array.from(preview.childNodes).some(
-        (child) => child.nodeType === Node.TEXT_NODE && Boolean(child.textContent?.trim()),
-      );
-      return !hasDirectErrorText;
-    };
-    const visiblePlaceholderCount = () => {
-      const frameRect = frame.getBoundingClientRect();
-      let count = 0;
-      for (const selector of placeholderSelectors) {
-        for (const element of frame.querySelectorAll(selector)) {
-          const rect = element.getBoundingClientRect();
-          if (rect.bottom > frameRect.top && rect.top < frameRect.bottom) {
-            count += 1;
-          }
-        }
-      }
-      for (const element of frame.querySelectorAll('.math-inline-node')) {
-        if (isInlineMathPlaceholder(element)) {
-          const rect = element.getBoundingClientRect();
-          if (rect.bottom > frameRect.top && rect.top < frameRect.bottom) {
-            count += 1;
-          }
-        }
-      }
-      return count;
-    };
-
-    const visibleInlineMathPlaceholderCount = () => {
-      const frameRect = frame.getBoundingClientRect();
-      let count = 0;
-      for (const element of frame.querySelectorAll('.math-inline-node')) {
-        if (!isInlineMathPlaceholder(element)) {
-          continue;
-        }
-        const rect = element.getBoundingClientRect();
-        if (rect.bottom > frameRect.top && rect.top < frameRect.bottom) {
-          count += 1;
-        }
-      }
-      return count;
-    };
-
-    const isInlineMathRealKatex = (element) => {
-      const preview = element.querySelector(':scope > .math-node-preview');
-      if (!preview) {
-        return false;
-      }
-      if (!preview.querySelector('.katex')) {
-        return false;
-      }
-      if (
-        preview.querySelector(
-          '.katex-error, .math-node-empty-hint, .math-node-placeholder-hint',
-        ) !== null
-      ) {
-        return false;
-      }
-      return true;
-    };
+    const isInlineMathPlaceholder = marivellIsInlineMathPlaceholder;
+    const isInlineMathRealKatex = marivellIsInlineMathRealKatex;
+    const visiblePlaceholderCount = () =>
+      marivellCollectVisiblePlaceholderState(frame).placeholderCount;
+    const visibleInlineMathPlaceholderCount = () =>
+      marivellCollectVisiblePlaceholderState(frame).visiblePlaceholderInlineMathCount;
 
     const visibleInlineMathKatexStats = () => {
       const frameRect = frame.getBoundingClientRect();
@@ -1523,6 +1474,9 @@ async function measureScrollJumpScenario(
       }));
     });
     let firstFramePlaceholders = -1;
+    let firstFrameVisibleUnrenderedInlineMathCount = -1;
+    let firstFrameVisibleUnloadedImageCount = -1;
+    let firstFrameGrayLatexDirectTextCount = -1;
     let firstFramePlaceholderDetails = [];
     let timedOut = false;
     let placeholderReadyAt = null;
@@ -1547,24 +1501,19 @@ async function measureScrollJumpScenario(
         inlineMathActivateReadyMs = performance.now() - inlineMathPlaceholderFirstSeenAt;
       }
       if (firstFramePlaceholders === -1) {
-        firstFramePlaceholders = placeholders;
+        const richState = marivellCollectVisiblePlaceholderState(frame);
+        firstFramePlaceholders = richState.placeholderCount;
+        firstFrameVisibleUnrenderedInlineMathCount =
+          richState.visibleUnrenderedInlineMathCount;
+        firstFrameVisibleUnloadedImageCount = richState.visibleUnloadedImageCount;
+        firstFrameGrayLatexDirectTextCount = richState.grayLatexDirectTextCount;
         if (placeholders > 0) {
-          firstFramePlaceholderDetails = Array.from(
-            frame.querySelectorAll(
-              placeholderSelectors.join(',') + ',.math-inline-node--placeholder',
-            ),
-          )
-            .filter((element) => {
-              const rect = element.getBoundingClientRect();
-              const frameRect = frame.getBoundingClientRect();
-              return rect.bottom > frameRect.top && rect.top < frameRect.bottom;
-            })
+          firstFramePlaceholderDetails = richState.placeholderDetails
             .slice(0, 8)
-            .map((element) => {
-              const node = element.querySelector('.math-node-content');
-              const text = node?.textContent?.slice(0, 40) ?? '';
-              return (element.id || element.className) + (text ? '|' + text : '');
-            });
+            .map(
+              (detail) =>
+                detail.type + ':' + detail.className + '|' + detail.text.slice(0, 40),
+            );
         }
       }
       if (placeholders === 0 || performance.now() > deadline) {
@@ -1604,16 +1553,21 @@ async function measureScrollJumpScenario(
     for (let settleFrame = 0; settleFrame < 3; settleFrame += 1) {
       await waitForFrame();
     }
-    const finalPlaceholderDetails = visiblePlaceholderCount() > 0
-      ? Array.from(frame.querySelectorAll(placeholderSelectors.join(',')))
-          .filter((element) => {
-            const rect = element.getBoundingClientRect();
-            const frameRect = frame.getBoundingClientRect();
-            return rect.bottom > frameRect.top && rect.top < frameRect.bottom;
-          })
-          .slice(0, 3)
-          .map((element) => element.id || element.className)
-      : [];
+    const finalRichState = marivellCollectVisiblePlaceholderState(frame);
+    const finalPlaceholderDetails =
+      finalRichState.placeholderCount > 0
+        ? finalRichState.placeholderDetails
+            .slice(0, 3)
+            .map(
+              (detail) =>
+                detail.type + ':' + detail.className + '|' + detail.text.slice(0, 40),
+            )
+        : [];
+    const finalVisibleUnrenderedInlineMathCount =
+      finalRichState.visibleUnrenderedInlineMathCount;
+    const finalVisibleUnloadedImageCount =
+      finalRichState.visibleUnloadedImageCount;
+    const finalGrayLatexDirectTextCount = finalRichState.grayLatexDirectTextCount;
     const currentMaxScrollTop = Math.round(Math.max(frame.scrollHeight - frame.clientHeight, 0));
     const scrollTopDrift = Math.abs(frame.scrollTop - targetScrollTop);
 
@@ -1667,7 +1621,13 @@ async function measureScrollJumpScenario(
           ? 0
           : performance.now() - placeholderReadyAt,
       firstFramePlaceholders,
+      firstFrameVisibleUnrenderedInlineMathCount,
+      firstFrameVisibleUnloadedImageCount,
+      firstFrameGrayLatexDirectTextCount,
       finalPlaceholderCount: visiblePlaceholderCount(),
+      finalVisibleUnrenderedInlineMathCount,
+      finalVisibleUnloadedImageCount,
+      finalGrayLatexDirectTextCount,
       scrollTopDrift,
       targetScrollTop,
       scrollHeight: frame.scrollHeight,
@@ -1724,7 +1684,13 @@ async function measureScrollJumpScenario(
     placeholderReadyMs: number;
     settleOverheadMs: number;
     firstFramePlaceholders: number;
+    firstFrameVisibleUnrenderedInlineMathCount: number;
+    firstFrameVisibleUnloadedImageCount: number;
+    firstFrameGrayLatexDirectTextCount: number;
     finalPlaceholderCount: number;
+    finalVisibleUnrenderedInlineMathCount: number;
+    finalVisibleUnloadedImageCount: number;
+    finalGrayLatexDirectTextCount: number;
     scrollTopDrift: number;
     targetScrollTop: number;
     scrollHeight: number;
@@ -2025,29 +1991,11 @@ async function measureDomSnapshot(page: Page): Promise<ReportEntry[]> {
       node.querySelector('.math-node-preview .katex'),
     ).length;
     const inlineMathPreviewPlaceholder = inlineMathNodes.filter((node) => {
-      if (node.classList.contains('math-inline-node--placeholder')) {
-        return true;
-      }
-      const preview = node.querySelector(':scope > .math-node-preview');
-      if (!preview) {
-        return true;
-      }
-      if (preview.querySelector('.katex')) {
-        return false;
-      }
-      if (preview.querySelector('.katex-error')) {
-        return false;
-      }
-      const hasCurrentActiveHint = preview.querySelector(
-        '.math-node-empty-hint, .math-node-placeholder-hint',
-      );
-      if (hasCurrentActiveHint !== null) {
-        return false;
-      }
-      const hasDirectErrorText = Array.from(preview.childNodes).some(
-        (child) => child.nodeType === Node.TEXT_NODE && Boolean(child.textContent?.trim()),
-      );
-      return !hasDirectErrorText;
+      return (
+        window as unknown as {
+          marivellIsInlineMathPlaceholder: (element: HTMLElement) => boolean;
+        }
+      ).marivellIsInlineMathPlaceholder(node);
     }).length;
     const syntaxSpanElements = Array.from(
       document.querySelectorAll<HTMLElement>('[class*="math-syntax-"]'),
@@ -2123,7 +2071,7 @@ async function measureDomSnapshot(page: Page): Promise<ReportEntry[]> {
       metric: 'inline-math-preview-placeholder',
       value: snapshot.inlineMathPreviewPlaceholder,
       unit: 'nodes',
-      note: 'contract: .math-inline-node--placeholder or preview without .katex (current hint/error text previews are not placeholder state)',
+      note: 'strict contract: .math-inline-node--placeholder, no .katex, or gray direct LaTeX text; final error/empty/hint previews are excluded',
     },
   ];
 }
@@ -2172,7 +2120,11 @@ async function measureVisualHostDomSnapshot(page: Page): Promise<ReportEntry[]> 
       node.querySelector(':scope > .math-node-preview .katex'),
     ).length;
     const inlinePreviewPlaceholder = inlineMathNodes.filter((node) =>
-      node.classList.contains('math-inline-node--placeholder'),
+      (
+        window as unknown as {
+          marivellIsInlineMathPlaceholder: (element: HTMLElement) => boolean;
+        }
+      ).marivellIsInlineMathPlaceholder(node),
     ).length;
     return {
       elements: all.length,
@@ -2289,6 +2241,7 @@ async function runBenchmark(): Promise<void> {
   console.log('Launching Electron in visual/render mode...');
 
   const handle = await launchElectron(outDir, markdownPath, port, profile);
+  await installPlaceholderHelpers(handle.page);
   const report: ReportEntry[] = [];
   const perfBudget = readPerfBudget();
   const spawnWallStart = handle.spawnedAt;
@@ -2790,6 +2743,28 @@ async function runBenchmark(): Promise<void> {
               note: jump.value.timedOut ? 'timed-out' : 'ready',
             },
             {
+              metric: `${jumpScenario.metric}-first-frame-unrendered-inline-math`,
+              value: jump.value.firstFrameVisibleUnrenderedInlineMathCount,
+              unit: 'nodes',
+              note: `gray-latex=${jump.value.firstFrameGrayLatexDirectTextCount}`,
+            },
+            {
+              metric: `${jumpScenario.metric}-first-frame-unloaded-images`,
+              value: jump.value.firstFrameVisibleUnloadedImageCount,
+              unit: 'images',
+            },
+            {
+              metric: `${jumpScenario.metric}-final-unrendered-inline-math`,
+              value: jump.value.finalVisibleUnrenderedInlineMathCount,
+              unit: 'nodes',
+              note: `gray-latex=${jump.value.finalGrayLatexDirectTextCount}`,
+            },
+            {
+              metric: `${jumpScenario.metric}-final-unloaded-images`,
+              value: jump.value.finalVisibleUnloadedImageCount,
+              unit: 'images',
+            },
+            {
               metric: `${jumpScenario.metric}-drift`,
               value: round(jump.value.scrollTopDrift),
               unit: 'px',
@@ -3102,7 +3077,7 @@ async function runBenchmark(): Promise<void> {
             metric: 'uiff-viewport-real',
             value: contract.viewport.real,
             unit: 'boolean',
-            note: `visible=${contract.viewport.visibleFormulaCount} katex=${contract.viewport.visibleRealKatexCount} placeholders=${contract.viewport.placeholderCount}`,
+            note: `visible=${contract.viewport.visibleFormulaCount} katex=${contract.viewport.visibleRealKatexCount} placeholders=${contract.viewport.placeholderCount} unrendered-inline=${contract.viewport.visibleUnrenderedInlineMathCount} unloaded-images=${contract.viewport.visibleUnloadedImageCount} gray-latex=${contract.viewport.grayLatexDirectTextCount}`,
           },
           {
             metric: 'uiff-scroll-stable',

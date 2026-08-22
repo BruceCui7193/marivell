@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright-core';
+import { installPlaceholderHelpers } from './test-utils/placeholder';
 
 const execFileAsync = promisify(execFile);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -159,6 +160,9 @@ interface StableScrollState {
   markerVisible: boolean;
   markerRect: { top: number; bottom: number } | null;
   visiblePlaceholders: number;
+  visibleUnrenderedInlineMathCount: number;
+  visibleUnloadedImageCount: number;
+  grayLatexDirectTextCount: number;
   inlineHeightDrift: number | 'n/a';
   inlineHeightDriftNote: string;
   settleScanDiagnostics: Record<string, unknown> | null;
@@ -238,11 +242,15 @@ const buildStableScrollScript = (
   }
   // D10: collect inline-height-drift and placeholder diagnostics
   let visiblePlaceholders = 0;
+  let visibleUnrenderedInlineMathCount = 0;
+  let visibleUnloadedImageCount = 0;
+  let grayLatexDirectTextCount = 0;
   try {
-    const ph = frame.querySelectorAll(
-      '.math-inline-node--placeholder, [data-virtual-type="inline-math"][data-placeholder="true"]',
-    );
-    visiblePlaceholders = ph.length;
+    const probe = window.marivellCollectVisiblePlaceholderState(frame);
+    visiblePlaceholders = probe.placeholderCount;
+    visibleUnrenderedInlineMathCount = probe.visibleUnrenderedInlineMathCount;
+    visibleUnloadedImageCount = probe.visibleUnloadedImageCount;
+    grayLatexDirectTextCount = probe.grayLatexDirectTextCount;
   } catch { visiblePlaceholders = -1; }
 
   let inlineHeightDrift = 'n/a';
@@ -272,6 +280,9 @@ const buildStableScrollScript = (
     markerVisible,
     markerRect,
     visiblePlaceholders,
+    visibleUnrenderedInlineMathCount,
+    visibleUnloadedImageCount,
+    grayLatexDirectTextCount,
     inlineHeightDrift,
     inlineHeightDriftNote,
     settleScanDiagnostics,
@@ -323,7 +334,7 @@ const buildPostReleaseMonitorScript = (target: number | null, ratio: number): st
   let previousTop = firstTop;
   let topChanges = 0;
   let sampledFrames = 0;
-  while (performance.now() - start < 500 && sampledFrames < 30) {
+  while (performance.now() - start < 1000 && sampledFrames < 60) {
     await new Promise((resolve) => requestAnimationFrame(resolve));
     const top = frame.scrollTop;
     if (top !== previousTop) topChanges += 1;
@@ -511,6 +522,7 @@ async function main(): Promise<void> {
     console.log('Building e2e bundle (no install needed)...');
     await buildRenderer(outDir);
     handle = await launchElectron(outDir, markdownPath, port, profile);
+    await installPlaceholderHelpers(handle.page);
 
     const ready = await withTimeout(
       waitForVisualReady(handle.page, Math.min(source.length * 0.5, 500_000), 60_000),
@@ -633,12 +645,12 @@ async function main(): Promise<void> {
     const releaseState = release.value;
     console.log(`  post-release monitor: ${JSON.stringify(releaseState)}`);
     assert(
-      'post-release keeps scrollTop stable for 500ms',
+      'post-release keeps scrollTop stable for 1000ms',
       releaseState.topChanges === 0 && releaseState.firstTop === releaseState.lastTop,
       JSON.stringify(releaseState),
     );
     assert(
-      'post-release emits no new scroll events for 500ms',
+      'post-release emits no new scroll events for 1000ms',
       releaseState.eventsAfterFirstRaf === 0,
       JSON.stringify(releaseState),
     );

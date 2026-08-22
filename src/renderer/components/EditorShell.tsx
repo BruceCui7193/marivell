@@ -2064,6 +2064,7 @@ export default function EditorShell({
     let sessionHydratedCenter: number | null = null;
     let sessionHydratedDocSize: number | null = null;
     let surfaceCompensationY = scrollAnchorCompensationRef.current;
+    let settleFallbackTimer: number | null = null;
     let scrollEventCount = 0;
     let hydrateRunCount = 0;
     let preciseCenterCount = 0;
@@ -2463,13 +2464,46 @@ export default function EditorShell({
       }
     };
 
+    const runSettleFallbackViewportScan = (): void => {
+      if (sourceModeRef.current || hydrationInProgress || !frame.isConnected) {
+        (window as unknown as Record<string, unknown>).__marivellSettleScanDiagnostics = {
+          ran: false,
+          reason: 'viewport-scan-guard',
+        };
+        return;
+      }
+      const settleInlineStats = {
+        scanned: 0,
+        visible: 0,
+        prepared: 0,
+        activated: 0,
+      };
+      activateInlineMathGroupsInViewport(
+        frame,
+        1600,
+        undefined,
+        undefined,
+        settleInlineStats,
+        false,
+        false,
+      );
+    };
+
     const runSettleFallbackScan = (): void => {
       const currentEditor = editorRef.current;
       if (!currentEditor || sourceModeRef.current || hydrationInProgress) {
+        (window as unknown as Record<string, unknown>).__marivellSettleScanDiagnostics = {
+          ran: false,
+          reason: 'scan-guard',
+        };
         return;
       }
       const centerAndRadius = getCheapViewportCenterAndRadius();
       if (!centerAndRadius) {
+        (window as unknown as Record<string, unknown>).__marivellSettleScanDiagnostics = {
+          ran: false,
+          reason: 'no-center',
+        };
         return;
       }
       const radius = Math.max(1, Math.ceil(centerAndRadius.radius * 2));
@@ -2481,11 +2515,57 @@ export default function EditorShell({
           radius,
         );
       }
-
+      // Reconcile residual visible inline math once after settle. New scrolls
+      // cancel the timer, so this cannot cascade while the user is interacting.
+      if (settleFallbackTimer !== null) {
+        clearTimeout(settleFallbackTimer);
+      }
+      settleFallbackTimer = window.setTimeout(() => {
+        settleFallbackTimer = null;
+        if (!sourceModeRef.current && !hydrationInProgress && frame.isConnected) {
+          runSettleFallbackViewportScan();
+        }
+      }, 500);
       const anchor =
         scrollHydrationAnchorForFallback ??
-        captureHydrationAnchor(currentEditor);
+        captureHydrationAnchor(currentEditor) ??
+        captureVisualScrollAnchor(frame, currentEditor);
+      let bottomDomAnchor: { pmPos: number; offsetTop: number } | null = null;
       if (anchor === null) {
+        try {
+          const frameRect = frame.getBoundingClientRect();
+          const point = posAtCoords(
+            currentEditor,
+            frameRect.left + frameRect.width / 2,
+            frameRect.bottom - Math.min(24, frameRect.height / 2),
+          );
+          const coords = point ? coordsAtPos(currentEditor, point.pos) : null;
+          if (
+            point &&
+            coords &&
+            !(coords.top === 0 && coords.bottom === 0 && coords.left === 0 && coords.right === 0)
+          ) {
+            bottomDomAnchor = {
+              pmPos: point.pos,
+              offsetTop: coords.top - frameRect.top,
+            };
+          }
+        } catch {
+          bottomDomAnchor = null;
+        }
+      }
+      const effectiveAnchor = anchor ?? bottomDomAnchor;
+      if (effectiveAnchor === null) {
+        (window as unknown as Record<string, unknown>).__marivellSettleScanDiagnostics = {
+          ran: true,
+          reason: 'no-anchor',
+          attempts: 0,
+          coordsOk: false,
+          finalDelta: null,
+          domFallbackUsed: false,
+          compensationApplied: 0,
+          source: 'anchor-capture',
+        };
         return;
       }
       const settleDiag: {
@@ -2500,25 +2580,30 @@ export default function EditorShell({
         source: string;
       } = {
         ran: true,
-        anchorPmPos: anchor.pmPos,
-        anchorOffsetTop: anchor.offsetTop,
+        anchorPmPos: effectiveAnchor.pmPos,
+        anchorOffsetTop: effectiveAnchor.offsetTop,
         attempts: 0,
         coordsOk: false,
         finalDelta: null,
         domFallbackUsed: false,
         compensationApplied: 0,
-        source: scrollHydrationAnchorForFallback !== null ? 'fallback' : 'fresh',
+        source:
+          scrollHydrationAnchorForFallback !== null
+            ? 'fallback'
+            : bottomDomAnchor !== null
+              ? 'bottom-dom'
+              : 'fresh',
       };
       try {
         for (let attempt = 0; attempt < 3; attempt += 1) {
           settleDiag.attempts = attempt + 1;
           const frameRect = frame.getBoundingClientRect();
-          const coords = coordsAtPos(currentEditor, anchor.pmPos);
+          const coords = coordsAtPos(currentEditor, effectiveAnchor.pmPos);
           if (!coords) {
             // domAtPos fallback when ProseMirror coords are unavailable (D10 fix)
             let anchorTop: number | null = null;
             try {
-              const domPosition = currentEditor.view.domAtPos(anchor.pmPos);
+              const domPosition = currentEditor.view.domAtPos(effectiveAnchor.pmPos);
               const anchorElement =
                 domPosition.node.nodeType === Node.ELEMENT_NODE
                   ? domPosition.node as Element
@@ -2536,7 +2621,7 @@ export default function EditorShell({
             }
             settleDiag.coordsOk = false;
             settleDiag.domFallbackUsed = true;
-            const delta = (anchorTop - frameRect.top) - anchor.offsetTop;
+            const delta = (anchorTop - frameRect.top) - effectiveAnchor.offsetTop;
             settleDiag.finalDelta = delta;
             if (Math.abs(delta) < 0.5) {
               break;
@@ -2546,7 +2631,7 @@ export default function EditorShell({
             break;
           }
           settleDiag.coordsOk = true;
-          const delta = (coords.top - frameRect.top) - anchor.offsetTop;
+          const delta = (coords.top - frameRect.top) - effectiveAnchor.offsetTop;
           settleDiag.finalDelta = delta;
           if (Math.abs(delta) < 0.5) {
             break;
@@ -2559,8 +2644,10 @@ export default function EditorShell({
       } catch {
         (window as unknown as Record<string, unknown>).__marivellSettleScanDiagnostics = {
           ran: true, attempts: 0, coordsOk: false, finalDelta: null,
-          compensationApplied: 0, anchorPmPos: anchor.pmPos,
-          anchorOffsetTop: anchor.offsetTop, source: 'exception',
+          compensationApplied: 0,
+          anchorPmPos: effectiveAnchor.pmPos,
+          anchorOffsetTop: effectiveAnchor.offsetTop,
+          source: 'exception',
         };
         // Anchor compensation is best-effort when PM layout is transient.
       }
@@ -2921,11 +3008,15 @@ export default function EditorShell({
         // for runSettleFallbackScan to use in compensation.
         if (shouldHydrate) {
           anchorCaptureCount += 1;
-          anchorBeforeHydrate = captureHydrationAnchor(currentEditor);
+          anchorBeforeHydrate =
+            captureHydrationAnchor(currentEditor) ??
+            captureVisualScrollAnchor(frame, currentEditor);
         }
       } else if (shouldHydrate) {
         anchorCaptureCount += 1;
-        anchorBeforeHydrate = captureHydrationAnchor(currentEditor);
+        anchorBeforeHydrate =
+          captureHydrationAnchor(currentEditor) ??
+          captureVisualScrollAnchor(frame, currentEditor);
       }
       if (!skipPositionHydration && anchorBeforeHydrate !== null) {
         hydrationSessionAnchor = anchorBeforeHydrate;
@@ -3286,6 +3377,10 @@ export default function EditorShell({
     const hydrateScrollTarget = (event: Event) => {
       // D10 cascade break: only cancel stabilizer on real large jumps, not compensation scrolls
       scrollEventCount += 1;
+      if (settleFallbackTimer !== null) {
+        clearTimeout(settleFallbackTimer);
+        settleFallbackTimer = null;
+      }
       const nextScrollTop = frame.scrollTop;
       const previousScrollTop = lastRecordedScrollTop;
       lastRecordedScrollTop = nextScrollTop;
@@ -3391,6 +3486,10 @@ export default function EditorShell({
       }
       pendingLargeJump = false;
       pendingSyncJumpScrollTop = null;
+      if (settleFallbackTimer !== null) {
+        clearTimeout(settleFallbackTimer);
+        settleFallbackTimer = null;
+      }
       sessionSettlePerformed = false;
       scrollSessionPhase = 'active';
       scrollSessionId += 1;
@@ -3418,6 +3517,10 @@ export default function EditorShell({
       if (heightPauseTimer !== null) {
         clearTimeout(heightPauseTimer);
         heightPauseTimer = null;
+      }
+      if (settleFallbackTimer !== null) {
+        clearTimeout(settleFallbackTimer);
+        settleFallbackTimer = null;
       }
       setHeightMeasurementScrollPaused(false);
       if (hydrationFrame !== null) {

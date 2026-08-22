@@ -5,6 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright-core';
+import {
+  installPlaceholderHelpers,
+} from './test-utils/placeholder';
 
 const execFileAsync = promisify(execFile);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -221,6 +224,7 @@ async function main(): Promise<void> {
     console.log('Building e2e bundle (no install needed)...');
     await buildRenderer(outDir);
     handle = await launchElectron(outDir, markdownPath, port, profile);
+    await installPlaceholderHelpers(handle.page);
 
     const ready = await withTimeout(
       waitForVisualReady(handle.page, Math.min(source.length * 0.5, 500_000), 60_000),
@@ -238,16 +242,16 @@ async function main(): Promise<void> {
       if (!frame) throw new Error('editor frame missing');
       const frameRect = frame.getBoundingClientRect();
       const nodes = Array.from(document.querySelectorAll<HTMLElement>('.math-inline-node'));
-      const placeholders = nodes.filter(
-        (element) => {
-          const rect = element.getBoundingClientRect();
-          return (
-            element.classList.contains('math-inline-node--placeholder') &&
-            rect.bottom > frameRect.top &&
-            rect.top < frameRect.bottom
-          );
-        },
-      );
+      const probe = (
+        window as unknown as {
+          marivellCollectVisiblePlaceholderState: (
+            frame: HTMLElement,
+          ) => {
+            placeholderCount: number;
+            visibleUnrenderedInlineMathCount: number;
+          };
+        }
+      ).marivellCollectVisiblePlaceholderState(frame);
       const active = nodes.filter(
         (element) => {
           const rect = element.getBoundingClientRect();
@@ -262,24 +266,16 @@ async function main(): Promise<void> {
         const rect = element.getBoundingClientRect();
         return rect.bottom > frameRect.top && rect.top < frameRect.bottom;
       });
-      const visibleNotReal = visibleInline.filter((element) => {
-        const preview = element.querySelector(':scope > .math-node-preview');
-        const hasKatex = Boolean(preview?.querySelector('.katex'));
-        const hasErrorOrHint = Boolean(
-          preview?.querySelector('.katex-error, .math-node-empty-hint, .math-node-placeholder-hint'),
-        );
-        return !hasKatex || hasErrorOrHint;
-      });
       const offscreen = nodes.filter((element) => {
         const rect = element.getBoundingClientRect();
         return !(rect.bottom > frameRect.top && rect.top < frameRect.bottom);
       });
       return {
         total: nodes.length,
-        visiblePlaceholders: placeholders.length,
+        visiblePlaceholders: probe.placeholderCount,
         visibleActive: active.length,
         visibleInlineCount: visibleInline.length,
-        visibleNotRealKatex: visibleNotReal.length,
+        visibleNotRealKatex: probe.visibleUnrenderedInlineMathCount,
         offscreenCount: offscreen.length,
         offscreenPlaceholders: offscreen.filter(
           (element) => element.classList.contains('math-inline-node--placeholder'),
@@ -403,27 +399,14 @@ async function main(): Promise<void> {
     await handle.page.waitForFunction(() => {
       const frame = document.querySelector('.editor-frame');
       if (!(frame instanceof HTMLElement)) return false;
-      const frameRect = frame.getBoundingClientRect();
-      let placeholders = 0;
-      let visibleInlineCount = 0;
-      let visibleNotRealKatex = 0;
-      Array.from(frame.querySelectorAll('.math-inline-node')).forEach((node) => {
-        const rect = node.getBoundingClientRect();
-        if (rect.bottom <= frameRect.top || rect.top >= frameRect.bottom) return;
-        visibleInlineCount += 1;
-        const preview = node.querySelector(':scope > .math-node-preview');
-        const hasKatex = preview?.querySelector('.katex') !== null;
-        const hasHintOrError = preview?.querySelector(
-          '.katex-error, .math-node-empty-hint, .math-node-placeholder-hint',
-        ) !== null;
-        if (!hasKatex && !hasHintOrError && node.classList.contains('math-inline-node--placeholder')) {
-          placeholders += 1;
+      const probe = (
+        window as unknown as {
+          marivellCollectVisiblePlaceholderState: (
+            frame: HTMLElement,
+          ) => { placeholderCount: number; visibleUnrenderedInlineMathCount: number };
         }
-        if (!hasKatex || hasHintOrError) {
-          visibleNotRealKatex += 1;
-        }
-      });
-      return placeholders === 0 && visibleNotRealKatex === 0;
+      ).marivellCollectVisiblePlaceholderState(frame);
+      return probe.placeholderCount === 0 && probe.visibleUnrenderedInlineMathCount === 0;
     }, undefined, { timeout: 10_000 }).catch(() => {});
     const fastScrollResult = await handle.page.evaluate(({ beforeHydrateCalls, beforeAnchorTop, anchorPos, targetScrollTop }) => {
       const frame = document.querySelector('.editor-frame');
@@ -450,44 +433,28 @@ async function main(): Promise<void> {
         anchor = null;
       }
       const afterHydrateCalls = (w.__marivellHydrateTargetRangeCalls as number | undefined) ?? 0;
-      let placeholders = 0;
-      Array.from(frame.querySelectorAll('.math-inline-node')).forEach((node) => {
-        const rect = node.getBoundingClientRect();
-        if (rect.bottom <= frameRect.top || rect.top >= frameRect.bottom) return;
-        const preview = node.querySelector(':scope > .math-node-preview');
-        const hasKatex = preview?.querySelector('.katex') !== null;
-        const hasHintOrError = preview?.querySelector(
-          '.katex-error, .math-node-empty-hint, .math-node-placeholder-hint',
-        ) !== null;
-        if (!hasKatex && !hasHintOrError && node.classList.contains('math-inline-node--placeholder')) {
-          placeholders += 1;
+      const probe = (
+        window as unknown as {
+          marivellCollectVisiblePlaceholderState: (
+            frame: HTMLElement,
+          ) => {
+            placeholderCount: number;
+            visibleInlineMathCount: number;
+            visibleRealKatexCount: number;
+            visibleUnrenderedInlineMathCount: number;
+          };
         }
-      });
+      ).marivellCollectVisiblePlaceholderState(frame);
       const drift = Math.abs(frame.scrollTop - targetScrollTop);
-      let visibleInlineCount = 0;
-      let visibleRealKatex = 0;
-      let visibleNotRealKatex = 0;
-      Array.from(frame.querySelectorAll('.math-inline-node')).forEach((node) => {
-        const rect = node.getBoundingClientRect();
-        if (rect.bottom <= frameRect.top || rect.top >= frameRect.bottom) return;
-        visibleInlineCount += 1;
-        const preview = node.querySelector(':scope > .math-node-preview');
-        const hasKatex = preview?.querySelector('.katex') !== null;
-        const hasHintOrError = preview?.querySelector(
-          '.katex-error, .math-node-empty-hint, .math-node-placeholder-hint',
-        ) !== null;
-        if (hasKatex) visibleRealKatex += 1;
-        if (!hasKatex || hasHintOrError) visibleNotRealKatex += 1;
-      });
       return {
         beforeHydrateCalls,
         afterHydrateCalls,
         targetScrollTop,
         finalScrollTop: frame.scrollTop,
-        finalPlaceholders: placeholders,
-        visibleInlineCount,
-        visibleRealKatex,
-        visibleNotRealKatex,
+        finalPlaceholders: probe.placeholderCount,
+        visibleInlineCount: probe.visibleInlineMathCount,
+        visibleRealKatex: probe.visibleRealKatexCount,
+        visibleNotRealKatex: probe.visibleUnrenderedInlineMathCount,
         drift,
         anchorConnected: anchor?.isConnected ?? false,
         anchorVisibleAfter: Boolean(anchor),

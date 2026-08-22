@@ -5,6 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright-core';
+import {
+  installPlaceholderHelpers,
+} from './test-utils/placeholder';
 
 const execFileAsync = promisify(execFile);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -158,6 +161,10 @@ interface JumpResult {
   hydrateTimings: Record<string, unknown> | null;
   phaseTimings: Record<string, unknown> | null;
   centerDebug: { center: number | null; top: number | null; bottom: number | null; scrollTop: number };
+  anchorDebug: {
+    before: { cls: string; text: string; relativeTop: number } | null;
+    after: { cls: string; text: string; relativeTop: number } | null;
+  };
   templateCacheHits: number;
   templateCacheMisses: number;
   templateBytes: number;
@@ -192,6 +199,7 @@ async function main(): Promise<void> {
     console.log('Building e2e bundle (no install needed)...');
     await buildRenderer(outDir);
     handle = await launchElectron(outDir, markdownPath, port, profile);
+    await installPlaceholderHelpers(handle.page);
 
     const ready = await withTimeout(
       waitForVisualReady(handle.page, Math.min(source.length * 0.5, 500_000), 60_000),
@@ -242,17 +250,7 @@ async function main(): Promise<void> {
       };
       const beforeTopAnchor = getTopAnchor();
 
-      const isInlineMathPlaceholder = (element) => {
-        if (element.classList.contains('math-inline-node--placeholder')) return true;
-        const preview = element.querySelector(':scope > .math-node-preview');
-        if (!preview) return true;
-        if (preview.querySelector('.katex')) return false;
-        if (preview.querySelector('.katex-error')) return false;
-        if (preview.querySelector('.math-node-empty-hint, .math-node-placeholder-hint')) return false;
-        return !Array.from(preview.childNodes).some(
-          (child) => child.nodeType === Node.TEXT_NODE && Boolean(child.textContent?.trim()),
-        );
-      };
+      const isInlineMathPlaceholder = marivellIsInlineMathPlaceholder;
       const countInline = () => {
         const currentRect = frame.getBoundingClientRect();
         let count = 0;
@@ -281,12 +279,7 @@ async function main(): Promise<void> {
         for (const element of frame.querySelectorAll('.math-inline-node')) {
           const rect = element.getBoundingClientRect();
           if (rect.bottom <= currentRect.top || rect.top >= currentRect.bottom) continue;
-          const preview = element.querySelector(':scope > .math-node-preview');
-          const hasKatex = Boolean(preview?.querySelector('.katex'));
-          const hasErrorOrHint = Boolean(
-            preview?.querySelector('.katex-error, .math-node-empty-hint, .math-node-placeholder-hint'),
-          );
-          if (!hasKatex || hasErrorOrHint) count += 1;
+          if (!marivellIsInlineMathRealKatex(element)) count += 1;
         }
         return count;
       };
@@ -356,6 +349,22 @@ async function main(): Promise<void> {
         hydrateTimings: null,
         phaseTimings: null,
         centerDebug: { center: null, top: null, bottom: null, scrollTop: frame.scrollTop },
+        anchorDebug: {
+          before: beforeTopAnchor
+            ? {
+                cls: beforeTopAnchor.element.className,
+                text: beforeTopAnchor.element.textContent?.slice(0, 60),
+                relativeTop: beforeTopAnchor.relativeTop,
+              }
+            : null,
+          after: afterTopAnchor
+            ? {
+                cls: afterTopAnchor.element.className,
+                text: afterTopAnchor.element.textContent?.slice(0, 60),
+                relativeTop: afterTopAnchor.relativeTop,
+              }
+            : null,
+        },
         templateCacheHits: templateCacheStats?.hits ?? 0,
         templateCacheMisses: templateCacheStats?.misses ?? 0,
         templateBytes: templateCacheStats?.bytes ?? 0,
@@ -461,17 +470,7 @@ async function main(): Promise<void> {
       const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
       const target = Math.round(maxScrollTop * 0.25);
 
-      const isInlineMathPlaceholder = (element) => {
-        if (element.classList.contains('math-inline-node--placeholder')) return true;
-        const preview = element.querySelector(':scope > .math-node-preview');
-        if (!preview) return true;
-        if (preview.querySelector('.katex')) return false;
-        if (preview.querySelector('.katex-error')) return false;
-        if (preview.querySelector('.math-node-empty-hint, .math-node-placeholder-hint')) return false;
-        return !Array.from(preview.childNodes).some(
-          (node) => node.nodeType === Node.TEXT_NODE && Boolean(node.textContent?.trim()),
-        );
-      };
+      const isInlineMathPlaceholder = marivellIsInlineMathPlaceholder;
       const countInline = () => {
         const frameRect = frame.getBoundingClientRect();
         let count = 0;
@@ -752,11 +751,13 @@ async function main(): Promise<void> {
       const frameRect = frame?.getBoundingClientRect();
       let visiblePlaceholders = 0;
       if (frame && frameRect) {
-        for (const element of frame.querySelectorAll('.math-inline-node')) {
-          if (!element.classList.contains('math-inline-node--placeholder')) continue;
-          const rect = element.getBoundingClientRect();
-          if (rect.bottom > frameRect.top && rect.top < frameRect.bottom) visiblePlaceholders += 1;
-        }
+        visiblePlaceholders =
+          (window as unknown as {
+            marivellCollectVisiblePlaceholderState: (
+              frame: HTMLElement,
+            ) => { placeholderCount: number };
+          }).marivellCollectVisiblePlaceholderState(frame)
+            .placeholderCount;
       }
       return {
         markerLeak: editor ? JSON.stringify(editor.getJSON()).includes('MDEDITORSELECTION') : true,

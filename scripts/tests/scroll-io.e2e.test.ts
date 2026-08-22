@@ -5,6 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright-core';
+import {
+  installPlaceholderHelpers,
+} from './test-utils/placeholder';
+import { buildFormulaDenseMarkdown } from './test-utils/markdown';
 
 const execFileAsync = promisify(execFile);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -156,7 +160,10 @@ interface IoState {
   enqueuedEntries: number;
   lastSyncObserved: number;
   placeholders: number;
+  placeholderDetails: Array<Record<string, unknown>>;
   drift: number;
+  scrollTop: number;
+  targetScrollTop: number;
 }
 
 async function scrollAndInspect(
@@ -167,34 +174,13 @@ async function scrollAndInspect(
     const frame = document.querySelector<HTMLElement>('.editor-frame');
     if (!frame) throw new Error('editor frame missing');
     const benchmarkWindow = window as unknown as Record<string, unknown>;
-    const isPlaceholder = (element: Element): boolean => {
-      if (element.classList.contains('math-inline-node--placeholder')) return true;
-      if (element.matches('[data-virtual-node-id].math-block-node-placeholder, [data-virtual-node-id].image-node__placeholder, [data-virtual-node-id].mermaid-node__placeholder, [data-virtual-node-id].html-block-placeholder, [data-virtual-node-id].code-block-node--placeholder')) {
-        return true;
-      }
-      if (!element.classList.contains('math-inline-node')) return false;
-      const preview = element.querySelector(':scope > .math-node-preview');
-      if (!preview) return true;
-      if (preview.querySelector('.katex, .katex-error, .math-node-empty-hint, .math-node-placeholder-hint')) {
-        return false;
-      }
-      return !Array.from(preview.childNodes).some(
-        (child) => child.nodeType === Node.TEXT_NODE && Boolean(child.textContent?.trim()),
-      );
+    const placeholderWindow = window as unknown as {
+      marivellCollectVisiblePlaceholderState: (
+        frame: HTMLElement,
+      ) => { placeholderCount: number };
     };
-    const countPlaceholders = (): number => {
-      const frameRect = frame.getBoundingClientRect();
-      let count = 0;
-      for (const element of frame.querySelectorAll<HTMLElement>(
-        '[data-virtual-node-id], .math-inline-node',
-      )) {
-        const rect = element.getBoundingClientRect();
-        if (rect.bottom > frameRect.top && rect.top < frameRect.bottom && isPlaceholder(element)) {
-          count += 1;
-        }
-      }
-      return count;
-    };
+    const countPlaceholders = (): number =>
+      placeholderWindow.marivellCollectVisiblePlaceholderState(frame).placeholderCount;
     const maxScrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
     const target = Math.round(maxScrollTop * ratio);
     frame.scrollTop = target;
@@ -218,6 +204,7 @@ async function scrollAndInspect(
         requestAnimationFrame(() => requestAnimationFrame(resolve)),
       );
     }
+    const finalProbe = placeholderWindow.marivellCollectVisiblePlaceholderState(frame);
     await new Promise((resolve) => setTimeout(resolve, 400));
     const placeholdersBeforeStep = placeholders;
     const driftBeforeStep = Math.abs(frame.scrollTop - target);
@@ -255,21 +242,17 @@ async function scrollAndInspect(
       enqueuedEntries: diagnostics?.enqueuedEntries ?? 0,
       lastSyncObserved: diagnostics?.lastSyncObserved ?? 0,
       placeholders: placeholdersBeforeStep,
+      placeholderDetails: finalProbe.placeholderDetails,
       drift: driftBeforeStep,
+      scrollTop: frame.scrollTop,
+      target,
     };
   }, ratio);
 }
 
 async function main(): Promise<void> {
   console.log('\n## scroll IO safety net e2e');
-  const lines: string[] = [];
-  for (let index = 0; index < 900; index += 1) {
-    lines.push(
-      `## Section ${index}\n\nParagraph ${index} has inline math $x_{${index}}^2$ ` +
-        `and enough filler text to keep this document scrollable and formula-heavy: ${index} ${index} ${index}.\n`,
-    );
-  }
-  const source = lines.join('\n');
+  const source = buildFormulaDenseMarkdown(900);
   const markdownPath = path.join(os.tmpdir(), `marivell-scroll-io-${process.pid}.md`);
   fs.writeFileSync(markdownPath, source, 'utf8');
 
@@ -282,6 +265,7 @@ async function main(): Promise<void> {
     console.log('Building e2e bundle (no install needed)...');
     await buildRenderer(outDir);
     handle = await launchElectron(outDir, markdownPath, port, profile);
+    await installPlaceholderHelpers(handle.page);
 
     const ready = await withTimeout(
       waitForVisualReady(handle.page, Math.min(source.length * 0.5, 500_000), 60_000),
