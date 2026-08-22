@@ -134,6 +134,7 @@ export function createEditorExtensions({
     // text in cells and warps the whole table. Add/remove rows & columns via toolbar.
     Table.configure({
       resizable: false,
+      renderWrapper: true,
       allowTableNodeSelection: false,
     }),
     TableRow,

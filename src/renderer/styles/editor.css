@@ -2109,7 +2109,9 @@
 }
 
 .editor-surface .tableWrapper {
+  max-width: 100%;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
   margin: 0.9rem 0;
 }
 
@@ -2123,6 +2125,7 @@
   vertical-align: top;
   /* Text selection first — avoid browser drag of cell contents as a block */
   cursor: text;
+  overflow-wrap: anywhere;
   user-select: text;
   -webkit-user-select: text;
 }

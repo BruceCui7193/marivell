@@ -43,7 +43,6 @@ export const LIQUID_GLASS_SURFACE_SELECTOR = [
   '.status-bar',
   '.search-panel',
   '.editor-loading',
-  '.code-block-node__language-menu',
   '.code-block-node__toolbar',
   '.math-completion',
   '.app-exporting',
@@ -58,7 +57,6 @@ const LIQUID_GLASS_ANIMATED_SURFACE_SELECTOR = [
   '.image-action-menu',
   '.app-dialog',
   '.settings-dialog',
-  '.code-block-node__language-menu',
   '.search-panel',
   '.math-completion',
 ].join(',');

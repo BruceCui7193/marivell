@@ -238,9 +238,11 @@ function Toolbar({
   const [menuOpen, setMenuOpen] = useState<'document' | 'edit' | 'view' | null>(null);
   const [menuRect, setMenuRect] = useState<{ left: number; top: number } | null>(null);
   const [formulaMenuRect, setFormulaMenuRect] = useState<{ left: number; top: number; transformOrigin: string } | null>(null);
+  const [tableMenuRect, setTableMenuRect] = useState<{ left: number; top: number; transformOrigin: string } | null>(null);
   const [themePanelRect, setThemePanelRect] = useState<{ left: number; top: number; transformOrigin: string } | null>(null);
   const [linkMenuRect, setLinkMenuRect] = useState<{ left: number; top: number; transformOrigin: string } | null>(null);
   const [formulaMenuOpen, setFormulaMenuOpen] = useState(false);
+  const [tableMenuOpen, setTableMenuOpen] = useState(false);
   const [linkMenuOpen, setLinkMenuOpen] = useState(false);
   const [linkDraft, setLinkDraft] = useState('https://');
   const [codeLanguageDraft, setCodeLanguageDraft] = useState('');
@@ -274,6 +276,7 @@ function Toolbar({
     ordered: translate('ordered'),
     task: translate('task'),
     table: translate('table'),
+    tableEditing: translate('tableEditing'),
     code: translate('code'),
     math: translate('math'),
     mathInline: translate('mathInline'),
@@ -332,6 +335,7 @@ function Toolbar({
   const currentCodeLanguage = String(editor?.getAttributes('codeBlock').language ?? '').trim();
   const hasLinkFloatingPanel = linkMenuOpen && !editingControlsHidden;
   const hasFormulaFloatingPanel = formulaMenuOpen && !editingControlsHidden;
+  const hasTableFloatingPanel = tableMenuOpen && !editingControlsHidden;
 
   const closeAllPanels = useCallback((keepCompactGroup = false) => {
     setThemePanelOpen(false);
@@ -341,6 +345,7 @@ function Toolbar({
     setMenuOpen(null);
     setMenuRect(null);
     setFormulaMenuOpen(false);
+    setTableMenuOpen(false);
     setLinkMenuOpen(false);
   }, []);
 
@@ -390,7 +395,7 @@ function Toolbar({
   }, [editor]);
 
   useEffect(() => {
-    if (!themePanelOpen && !compactGroupOpen && !menuOpen && !formulaMenuOpen && !linkMenuOpen) {
+    if (!themePanelOpen && !compactGroupOpen && !menuOpen && !formulaMenuOpen && !linkMenuOpen && !tableMenuOpen) {
       return;
     }
 
@@ -414,6 +419,7 @@ function Toolbar({
         setMenuOpen(null);
         setMenuRect(null);
         setFormulaMenuOpen(false);
+        setTableMenuOpen(false);
         setLinkMenuOpen(false);
         return;
       }
@@ -442,7 +448,7 @@ function Toolbar({
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('resize', handleResize);
     };
-  }, [closeAllPanels, compactGroupOpen, formulaMenuOpen, linkMenuOpen, menuOpen, themePanelOpen]);
+  }, [closeAllPanels, compactGroupOpen, formulaMenuOpen, linkMenuOpen, menuOpen, tableMenuOpen, themePanelOpen]);
 
   useEffect(() => {
     if (!toolbarVisible) {
@@ -502,6 +508,7 @@ function Toolbar({
     }
 
     setFormulaMenuOpen(false);
+    setTableMenuOpen(false);
     setLinkMenuOpen(false);
     setMenuOpen(null);
     setMenuRect(null);
@@ -518,7 +525,15 @@ function Toolbar({
     setMenuRect(null);
     setFormulaMenuOpen(false);
     setLinkMenuOpen(false);
+    setTableMenuOpen(false);
   }, [toolbarVisible]);
+
+  useEffect(() => {
+    if (!isTableActive) {
+      setTableMenuOpen(false);
+      setTableMenuRect(null);
+    }
+  }, [isTableActive]);
 
   useEffect(() => {
     if (!linkMenuOpen) {
@@ -750,62 +765,78 @@ function Toolbar({
   };
 
   const renderTableActions = () => {
-    if (!isTableActive) {
-      return null;
-    }
-
     return (
-      <>
+      <div
+        className={clsx(
+          'toolbar-submenu-anchor',
+          editingControlsHidden && 'is-source-hidden',
+          hasTableFloatingPanel && 'has-open-panel',
+        )}
+      >
         <ToolbarButton
           disabled={!editor}
           hidden={editingControlsHidden}
-          icon="rowAddBefore"
-          onClick={() => runCompactAction(() => editor?.chain().focus().addRowBefore().run())}
-          title={translate('insertRowAbove')}
+          icon="table"
+          onClick={(event) => {
+            if (!isTableActive) {
+              runCompactAction(() =>
+                editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(),
+              );
+              return;
+            }
+
+            const shouldOpen = !tableMenuOpen;
+            closeAllPanels(true);
+            if (shouldOpen) {
+              setTableMenuRect(
+                getFloatingPanelRect(event.currentTarget.getBoundingClientRect(), 240, 280),
+              );
+              setTableMenuOpen(true);
+            }
+          }}
+          panelTrigger={isTableActive}
+          title={isTableActive ? labels.tableEditing : labels.table}
         />
-        <ToolbarButton
-          disabled={!editor}
-          hidden={editingControlsHidden}
-          icon="rowAddAfter"
-          onClick={() => runCompactAction(() => editor?.chain().focus().addRowAfter().run())}
-          title={translate('insertRowBelow')}
-        />
-        <ToolbarButton
-          disabled={!editor}
-          hidden={editingControlsHidden}
-          icon="rowDelete"
-          onClick={() => runCompactAction(() => editor?.chain().focus().deleteRow().run())}
-          title={translate('deleteRow')}
-        />
-        <ToolbarButton
-          disabled={!editor}
-          hidden={editingControlsHidden}
-          icon="columnAddBefore"
-          onClick={() => runCompactAction(() => editor?.chain().focus().addColumnBefore().run())}
-          title={translate('insertColumnLeft')}
-        />
-        <ToolbarButton
-          disabled={!editor}
-          hidden={editingControlsHidden}
-          icon="columnAddAfter"
-          onClick={() => runCompactAction(() => editor?.chain().focus().addColumnAfter().run())}
-          title={translate('insertColumnRight')}
-        />
-        <ToolbarButton
-          disabled={!editor}
-          hidden={editingControlsHidden}
-          icon="columnDelete"
-          onClick={() => runCompactAction(() => editor?.chain().focus().deleteColumn().run())}
-          title={translate('deleteColumn')}
-        />
-        <ToolbarButton
-          disabled={!editor}
-          hidden={editingControlsHidden}
-          icon="tableDelete"
-          onClick={() => runCompactAction(() => editor?.chain().focus().deleteTable().run())}
-          title={translate('deleteTable')}
-        />
-      </>
+        {tableMenuRect ? createPortal(
+          <div
+            aria-hidden={!tableMenuOpen}
+            className={tableMenuOpen ? 'toolbar-submenu is-open is-portaled' : 'toolbar-submenu is-closed is-portaled'}
+            style={{
+              position: 'fixed',
+              left: tableMenuRect.left,
+              top: tableMenuRect.top,
+              right: 'auto',
+              transformOrigin: tableMenuRect.transformOrigin,
+            }}
+          >
+            {([
+              ['rowAddBefore', 'insertRowAbove', () => editor?.chain().focus().addRowBefore().run()],
+              ['rowAddAfter', 'insertRowBelow', () => editor?.chain().focus().addRowAfter().run()],
+              ['rowDelete', 'deleteRow', () => editor?.chain().focus().deleteRow().run()],
+              ['columnAddBefore', 'insertColumnLeft', () => editor?.chain().focus().addColumnBefore().run()],
+              ['columnAddAfter', 'insertColumnRight', () => editor?.chain().focus().addColumnAfter().run()],
+              ['columnDelete', 'deleteColumn', () => editor?.chain().focus().deleteColumn().run()],
+              ['tableDelete', 'deleteTable', () => editor?.chain().focus().deleteTable().run()],
+            ] as const).map(([, labelKey, command]) => (
+              <button
+                className="toolbar-submenu__item"
+                key={labelKey}
+                disabled={!editor}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  runCompactAction(command);
+                  setTableMenuOpen(false);
+                  setTableMenuRect(null);
+                }}
+                type="button"
+              >
+                {translate(labelKey)}
+              </button>
+            ))}
+          </div>,
+          document.body,
+        ) : null}
+      </div>
     );
   };
 
@@ -1292,18 +1323,6 @@ function Toolbar({
             onClick={() => runCompactAction(() => editor?.chain().focus().toggleTaskList().run())}
             shortcut={shortcutLabels.task}
             title={labels.task}
-          />
-          <ToolbarButton
-            active={isTableActive}
-            disabled={!editor}
-            hidden={editingControlsHidden}
-            icon="table"
-            onClick={() =>
-              runCompactAction(() =>
-                editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(),
-              )
-            }
-            title={labels.table}
           />
           {renderTableActions()}
           <ToolbarButton

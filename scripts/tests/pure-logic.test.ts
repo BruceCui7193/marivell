@@ -771,6 +771,10 @@ section('liquid glass configuration');
       LIQUID_GLASS_SURFACE_SELECTOR.includes(selector),
     );
   }
+  assert(
+    'code language menu is excluded from liquid glass surfaces',
+    !LIQUID_GLASS_SURFACE_SELECTOR.includes('.code-block-node__language-menu'),
+  );
 }
 
 // ---------------------------------------------------------------------------
