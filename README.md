@@ -51,7 +51,7 @@ One maximized workspace shows task lists, KaTeX math, Mermaid diagrams, code, ta
 From source, build and install the latest version:
 
 ```bash
-sudo npm run install:linux
+npm run install:linux
 ```
 
 If a release package is preferred, install the `.deb` or AppImage from [Releases](https://github.com/BruceCui7193/marivell/releases).
