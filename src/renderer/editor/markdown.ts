@@ -21,6 +21,7 @@ interface MathPlaceholder {
   openDelim: string;
   closeDelim: string;
   raw?: string;
+  trailingBlankLines?: number;
 }
 
 function normalizeMathDelimiters(markdown: string): {
@@ -146,9 +147,17 @@ function normalizeMathDelimiters(markdown: string): {
     openDelim: string,
     closeDelim: string,
     rawSource?: string,
+    trailingBlankLines?: number,
   ): string => {
     const token = `${tokenPrefix}${mathPlaceholders.size}\uE001`;
-    mathPlaceholders.set(token, { kind, value, openDelim, closeDelim, raw: rawSource });
+    mathPlaceholders.set(token, {
+      kind,
+      value,
+      openDelim,
+      closeDelim,
+      raw: rawSource,
+      ...(trailingBlankLines ? { trailingBlankLines } : {}),
+    });
     return token;
   };
 
@@ -194,6 +203,7 @@ function normalizeBlockMathPairs(
     openDelim: string,
     closeDelim: string,
     rawSource?: string,
+    trailingBlankLines?: number,
   ) => string,
   openDelim: string,
   closeDelim: string,
@@ -214,6 +224,19 @@ function normalizeBlockMathPairs(
     return markdown.startsWith(open, index);
   };
 
+  const countTrailingBlankLines = (start: number): number => {
+    let index = start;
+    while (markdown.startsWith('\r\n', index)) {
+      index += 2;
+    }
+    while (markdown[index] === '\n') {
+      index += 1;
+    }
+    const newlineCount = index - start;
+    const hasFollowingContent = markdown.slice(index).trim().length > 0;
+    return newlineCount >= 2 && hasFollowingContent ? newlineCount - 2 : 0;
+  };
+
   let result = '';
   let cursor = 0;
 
@@ -232,15 +255,18 @@ function normalizeBlockMathPairs(
     }
 
     const expression = markdown.slice(cursor + open.length, closeIndex).trim();
+    const closeEnd = closeIndex + close.length;
+    const separateFromNext = isImmediatelyFollowedByBlockMath(closeEnd);
+    const trailingBlankLines = separateFromNext ? 0 : countTrailingBlankLines(closeEnd);
     const token = createMathToken(
       'block',
       expression,
       openDelim,
       closeDelim,
       markdown.slice(cursor, closeIndex + close.length),
+      trailingBlankLines,
     );
-    const nextIndex = closeIndex + close.length;
-    const separateFromNext = isImmediatelyFollowedByBlockMath(nextIndex);
+    const nextIndex = closeEnd;
     result += separateFromNext ? `${token}\n\n` : token;
     if (separateFromNext && markdown.startsWith('\r\n', nextIndex)) {
       cursor = nextIndex + 2;
@@ -782,6 +808,7 @@ function flowToTiptap(
               display: 'yes',
               openDelim: blockMathPH.openDelim,
               closeDelim: blockMathPH.closeDelim,
+              trailingBlankLines: blockMathPH.trailingBlankLines ?? 0,
             },
             content: blockMathPH.value ? [{ type: 'text', text: blockMathPH.value }] : undefined,
           },
@@ -975,7 +1002,13 @@ function inlineToMarkdown(node: JSONContent): MarkdownNode[] {
       const closeDelim = node.attrs?.closeDelim;
       // Block math → $$...$$ (or \[...\]); inline math → $...$ (or \(...\))
       if (node.attrs?.display === 'yes') {
-        return [{ type: 'math', value: mathValue, openDelim, closeDelim }];
+        return [{
+          type: 'math',
+          value: mathValue,
+          openDelim,
+          closeDelim,
+          trailingBlankLines: Number(node.attrs.trailingBlankLines ?? 0),
+        }];
       }
       return [{ type: 'inlineMath', value: mathValue, openDelim, closeDelim }];
     }
@@ -1446,7 +1479,17 @@ function stringifyInlineNode(node: MarkdownNode): string {
 }
 
 function stringifyBlockNodes(children: MarkdownNode[] = []): string {
-  return children.map((child) => stringifyBlockNode(child)).join('\n\n');
+  return children.map((child) => stringifyBlockNode(child)).reduce(
+    (result, block, index) => {
+      if (index === 0) return block;
+      const previous = children[index - 1];
+      const blankLines = previous?.type === 'math'
+        ? Math.max(Number(previous.trailingBlankLines ?? 0), 0)
+        : 0;
+      return `${result}${'\n'.repeat(2 + blankLines)}${block}`;
+    },
+    '',
+  );
 }
 
 /** List item children stay tight (single newlines) to preserve nested list shape. */

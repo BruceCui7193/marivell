@@ -148,6 +148,20 @@ async function main() {
   console.log('\n## layout css regression');
 
   {
+    for (const [newlines, expected] of [[2, 0], [3, 1], [4, 2]] as const) {
+      const source = `$$\nx\n$$${'\n'.repeat(newlines)}abc\n`;
+      const editor = makeEditor(source);
+      const math = editor.getJSON().content?.find((node) => node.type === 'inlineMath');
+      assert(
+        `display math preserves ${expected} explicit trailing blanks`,
+        Number(math?.attrs?.trailingBlankLines ?? 0) === expected,
+        JSON.stringify(math?.attrs),
+      );
+      editor.destroy();
+    }
+  }
+
+  {
     assert(
       'task list uses flex row',
       /ul\[data-type='taskList'\] li\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*row|ul\[data-type='taskList'\] li\s*\{[^}]*display:\s*flex/.test(css),
@@ -158,6 +172,9 @@ async function main() {
     assert('footnote definition uses flex row', /\.footnote-definition-node\s*\{[^}]*display:\s*flex/.test(css));
     assert('footnote definition drops card border', /\.footnote-definition-node\s*\{[^}]*border:\s*none/.test(css));
     assert('footnote content sits inline with label', /\.footnote-definition-node__content\s*\{[^}]*padding:\s*0/.test(css));
+    assert('display math structural separator has no bottom margin', /\.editor-surface \.math-block-node\s*\{[^}]*margin-bottom:\s*0/.test(css));
+    assert('paragraph after display math has no top margin', /\.editor-surface \.math-block-node \+ p\s*\{[^}]*margin-top:\s*0/.test(css));
+    assert('explicit display math blanks render as line spacers', /\.editor-surface \.math-block-node\[data-trailing-blank-lines\]::after\s*\{[^}]*height:\s*calc\(/.test(css));
     assert(
       'dialog overlay does not isolate backdrop with will-change opacity',
       !/\.app-dialog-overlay\s*\{[^}]*will-change:\s*opacity/.test(css),

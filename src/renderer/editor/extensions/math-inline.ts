@@ -176,7 +176,16 @@ export const MathInline = Node.create({
         default: null,
         parseHTML: (element) => element.getAttribute('data-close-delim'),
         renderHTML: (attributes) =>
-          attributes.closeDelim ? { 'data-close-delim': attributes.closeDelim } : {},
+        attributes.closeDelim ? { 'data-close-delim': attributes.closeDelim } : {},
+      },
+      trailingBlankLines: {
+        default: 0,
+        parseHTML: (element) => Number(element.getAttribute('data-trailing-blank-lines') ?? 0),
+        renderHTML: (attributes) => (
+          Number(attributes.trailingBlankLines ?? 0) > 0
+            ? { 'data-trailing-blank-lines': Number(attributes.trailingBlankLines) }
+            : {}
+        ),
       },
     };
   },
@@ -212,6 +221,13 @@ export const MathInline = Node.create({
       // Create container
       const dom = document.createElement(isBlock ? 'div' : 'span');
       dom.className = isBlock ? 'math-block-node math-node-wrapper' : 'math-inline-node math-node-wrapper';
+      const syncTrailingBlankLines = (target: typeof node) => {
+        if (!isBlock) return;
+        const lines = Math.max(Number(target.attrs.trailingBlankLines ?? 0), 0);
+        dom.dataset.trailingBlankLines = String(lines);
+        dom.style.setProperty('--marivell-math-blank-lines', String(lines));
+      };
+      syncTrailingBlankLines(node);
       const nodeViewId = nextBlockMathNodeViewId();
       let unregisterActivation: (() => void) | null = null;
       let unregisterInlineGroup: (() => void) | null = null;
@@ -769,6 +785,7 @@ export const MathInline = Node.create({
           if (newNode.attrs.display !== node.attrs.display) return false;
           const textChanged = newNode.textContent !== node.textContent;
           node = newNode;
+          syncTrailingBlankLines(node);
           if (textChanged) {
             restoreU2Task();
             lastRenderedText = isBlock ? null : '';

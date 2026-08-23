@@ -166,6 +166,22 @@ a+b
   const mathOut = serializeMarkdown(parseMarkdown('See $E=mc^2$ here\n'));
   assert('real math survives', mathOut.includes('E=mc^2') || mathOut.includes('$E=mc^2$'));
 
+  for (const [newlines, expectedBlank] of [[2, 0], [3, 1], [4, 2]] as const) {
+    const source = `$$\nx\n$$${'\n'.repeat(newlines)}abc\n`;
+    const doc = parseMarkdown(source);
+    const attrs = doc.content?.[0]?.attrs as Record<string, unknown> | undefined;
+    assert(
+      `display math trailing blank ${expectedBlank} is preserved`,
+      Number(attrs?.trailingBlankLines ?? 0) === expectedBlank,
+      JSON.stringify(attrs),
+    );
+    assertEqual(
+      `display math trailing blank ${expectedBlank} round-trips`,
+      serializeMarkdown(doc),
+      source,
+    );
+  }
+
   const plainDoc = parseMarkdown('Hello plain world\n');
   assert('plain text parses as ordinary text', JSON.stringify(plainDoc).includes('"type":"text"'));
   assert('plain text serializes without math tokens', !serializeMarkdown(plainDoc).includes('\uE000'));
@@ -982,6 +998,23 @@ graph LR
   assert('export has h1', html.includes('<h1>'));
   assert('export task checkboxes', html.includes('type="checkbox"'));
   assert('export katex math', html.includes('katex'));
+  {
+    const mathGap = markdownToExportHtmlFragment({
+      markdown: '$$\nx\n$$\n\nabc\n',
+      title: 't',
+    });
+    assert('export structural math separator has no spacer', !mathGap.includes('data-trailing-blank-lines'), mathGap);
+    const mathBlank = markdownToExportHtmlFragment({
+      markdown: '$$\nx\n$$\n\n\nabc\n',
+      title: 't',
+    });
+    assert(
+      'export one explicit math blank line is marked',
+      mathBlank.includes('data-trailing-blank-lines="1"') &&
+        mathBlank.includes('--marivell-math-blank-lines:1'),
+      mathBlank,
+    );
+  }
   assert('export table', html.includes('<table'));
   assert('export code block', html.includes('code-block') || html.includes('<pre'));
   assert('export mermaid', html.includes('mermaid'));

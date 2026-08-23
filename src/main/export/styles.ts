@@ -220,6 +220,15 @@ export const EXPORT_PAGE_CSS = `
     text-align: center;
   }
 
+  /* One blank line after $$ separates blocks; it is not another visual gap. */
+  .math-block { margin-bottom: 0; }
+  .math-block + p { margin-top: 0; }
+  .math-block[data-trailing-blank-lines]::after {
+    content: "";
+    display: block;
+    height: calc(var(--marivell-math-blank-lines, 0) * 1.75em);
+  }
+
   .math-error {
     color: #b42318;
     background: #fef3f2;

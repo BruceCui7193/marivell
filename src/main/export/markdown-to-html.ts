@@ -11,6 +11,7 @@ type MdNode = Record<string, any>;
 interface MathPlaceholder {
   kind: 'inline' | 'block';
   value: string;
+  trailingBlankLines?: number;
 }
 
 const parser = unified().use(remarkParse).use(remarkGfm).use(remarkMath, {
@@ -50,10 +51,18 @@ function normalizeMathDelimiters(markdown: string): {
       return token;
     });
 
-  const createMathToken = (kind: 'inline' | 'block', value: string): string => {
+  const createMathToken = (kind: 'inline' | 'block', value: string, trailingBlankLines = 0): string => {
     const token = `@@EXPORT_MATH_${mathPlaceholders.size}@@`;
-    mathPlaceholders.set(token, { kind, value });
+    mathPlaceholders.set(token, { kind, value, ...(trailingBlankLines ? { trailingBlankLines } : {}) });
     return kind === 'block' ? `\n\n${token}\n\n` : token;
+  };
+
+  const countTrailingBlankLines = (start: number): number => {
+    let index = start;
+    while (normalized.startsWith('\r\n', index)) index += 2;
+    while (normalized[index] === '\n') index += 1;
+    const newlineCount = index - start;
+    return newlineCount >= 2 && normalized.slice(index).trim() ? newlineCount - 2 : 0;
   };
 
   let normalized = markdown;
@@ -81,8 +90,9 @@ function normalizeMathDelimiters(markdown: string): {
         continue;
       }
       const expression = normalized.slice(cursor + open.length, closeIndex).trim();
-      result += createMathToken('block', expression);
-      cursor = closeIndex + close.length;
+      const closeEnd = closeIndex + close.length;
+      result += createMathToken('block', expression, countTrailingBlankLines(closeEnd));
+      cursor = closeEnd;
     }
     normalized = result;
   }
@@ -182,7 +192,11 @@ function renderMathToken(token: string, placeholders: Map<string, MathPlaceholde
   if (!placeholder) return escapeHtml(token);
   const html = renderKatex(placeholder.value, placeholder.kind === 'block');
   if (placeholder.kind === 'block') {
-    return `<div class="math-block">${html}</div>`;
+    const blankLines = Number(placeholder.trailingBlankLines ?? 0);
+    const attrs = blankLines > 0
+      ? ` data-trailing-blank-lines="${blankLines}" style="--marivell-math-blank-lines:${blankLines}"`
+      : '';
+    return `<div class="math-block"${attrs}>${html}</div>`;
   }
   return `<span class="math-inline">${html}</span>`;
 }

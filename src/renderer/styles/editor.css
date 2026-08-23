@@ -2771,6 +2771,21 @@
   text-align: center;
 }
 
+/* Markdown's blank line after closing $$ is structural, not visible content. */
+.editor-surface .math-block-node {
+  margin-bottom: 0;
+}
+
+.editor-surface .math-block-node + p {
+  margin-top: 0;
+}
+
+.editor-surface .math-block-node[data-trailing-blank-lines]::after {
+  content: "";
+  display: block;
+  height: calc(var(--marivell-math-blank-lines, 0) * 1.78em);
+}
+
 /* Overlay contentDOM on top of the preview when not editing, keeping natural clickable size and shape */
 .math-node-wrapper.is-editing .math-node-content:empty {
   min-width: 1.2em;
