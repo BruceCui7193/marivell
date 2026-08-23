@@ -179,6 +179,19 @@ function buildMarkdown(): string {
     '',
     'A following paragraph keeps the tall block clearly separated from the inline check.',
     '',
+    '$$',
+    'x',
+    '$$',
+    '',
+    'Structural following paragraph has no extra visual gap.',
+    '',
+    '$$',
+    'y',
+    '$$',
+    '',
+    '',
+    'Explicit following paragraph keeps one requested blank line.',
+    '',
   ].join('\n');
 }
 async function main(): Promise<void> {
@@ -446,6 +459,66 @@ async function main(): Promise<void> {
     })()`);
     console.log('  math layout probe:', JSON.stringify(metrics));
 
+    await handle.page.evaluate(() => {
+      const frame = document.querySelector<HTMLElement>('.editor-frame');
+      if (frame) {
+        frame.scrollTop = Math.max(frame.scrollHeight - frame.clientHeight, 0);
+        frame.dispatchEvent(new Event('scroll'));
+      }
+    });
+    await withTimeout(
+      handle.page.waitForFunction(() => {
+        const blocks = Array.from(document.querySelectorAll('.math-block-node'));
+        return Boolean(
+          blocks.find((element) =>
+            element.parentElement?.nextElementSibling?.textContent?.startsWith('Structural following paragraph'),
+          )?.querySelector(':scope > .math-node-preview .katex') &&
+          blocks.find((element) =>
+            element.parentElement?.nextElementSibling?.textContent?.startsWith('Explicit following paragraph'),
+          )?.querySelector(':scope > .math-node-preview .katex'),
+        );
+      }, undefined, { timeout: 20_000 }),
+      25_000,
+      'spacing activation',
+    );
+    const spacingMetrics = await handle.page.evaluate(`(() => {
+      const frame = document.querySelector('.editor-frame');
+      if (!frame) throw new Error('editor frame missing');
+      const probeSpacing = (paragraphPrefix) => {
+        const entry = Array.from(frame.querySelectorAll('.math-block-node'))
+          .map((element) => ({ element, paragraph: element.closest('p') }))
+          .find(({ paragraph }) =>
+            paragraph?.tagName === 'P' &&
+            paragraph.nextElementSibling?.textContent?.startsWith(paragraphPrefix),
+          );
+        const katexDisplay = entry?.element.querySelector(':scope > .math-node-preview .katex-display');
+        const mathElement = entry?.element.querySelector(':scope > .math-node-preview .katex');
+        const wrapperRect = entry?.paragraph?.getBoundingClientRect();
+        const followingRect = entry?.paragraph?.nextElementSibling?.getBoundingClientRect();
+        const mathRect = mathElement?.getBoundingClientRect();
+        return {
+          active: Boolean(mathElement),
+          katexBottomOverflow: wrapperRect && mathRect ? mathRect.bottom - wrapperRect.bottom : null,
+          visualGap: mathRect && followingRect ? followingRect.top - mathRect.bottom : null,
+          blockMarginBottom: entry ? getComputedStyle(entry.element).marginBottom : null,
+          blockPaddingBottom: entry ? getComputedStyle(entry.element).paddingBottom : null,
+          wrapperMarginBottom: entry?.paragraph ? getComputedStyle(entry.paragraph).marginBottom : null,
+          wrapperMarginTop: entry?.paragraph ? getComputedStyle(entry.paragraph).marginTop : null,
+          displayMarginBottom: katexDisplay ? getComputedStyle(katexDisplay).marginBottom : null,
+          trailingBlankLines: entry?.element.dataset.trailingBlankLines ?? null,
+          pseudoHeight: entry ? getComputedStyle(entry.element, '::after').height : null,
+          previewMinHeight: entry?.element.querySelector(':scope > .math-node-preview')
+            ? getComputedStyle(entry.element.querySelector(':scope > .math-node-preview')).minHeight
+            : null,
+        };
+      };
+      return {
+        structural: probeSpacing('Structural following paragraph'),
+        explicit: probeSpacing('Explicit following paragraph'),
+      };
+    })()`);
+    console.log('  math spacing probe:', JSON.stringify(spacingMetrics));
+
     assert(
       'tall display math is active and taller than the 96px placeholder',
       metrics.block.active && metrics.block.katexHeight > 96,
@@ -489,6 +562,30 @@ async function main(): Promise<void> {
         metrics.highInline.extendsAboveText &&
         metrics.highInline.extendsBelowText,
       JSON.stringify(metrics.highInline),
+    );
+    assert(
+      'one structural newline after display math creates no extra visual gap',
+      spacingMetrics.structural.active &&
+        spacingMetrics.structural.trailingBlankLines === '0' &&
+        spacingMetrics.structural.blockMarginBottom === '0px' &&
+        spacingMetrics.structural.blockPaddingBottom === '0px' &&
+        spacingMetrics.structural.wrapperMarginBottom === '0px' &&
+        spacingMetrics.structural.wrapperMarginTop === '0px' &&
+        spacingMetrics.structural.displayMarginBottom === '0px' &&
+        spacingMetrics.structural.visualGap !== null &&
+        spacingMetrics.structural.visualGap >= -1 &&
+        spacingMetrics.structural.visualGap <= 8,
+      JSON.stringify(spacingMetrics.structural),
+    );
+    assert(
+      'additional newlines after display math remain explicit blank spacers',
+      spacingMetrics.explicit.active &&
+        spacingMetrics.explicit.trailingBlankLines === '1' &&
+        spacingMetrics.explicit.visualGap !== null &&
+        spacingMetrics.structural.visualGap !== null &&
+        spacingMetrics.explicit.visualGap - spacingMetrics.structural.visualGap >= 24 &&
+        spacingMetrics.explicit.visualGap - spacingMetrics.structural.visualGap <= 42,
+      JSON.stringify(spacingMetrics),
     );
     assert(
       'inline math stays on the surrounding text line',

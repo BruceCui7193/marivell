@@ -221,7 +221,11 @@ export const EXPORT_PAGE_CSS = `
   }
 
   /* One blank line after $$ separates blocks; it is not another visual gap. */
-  .math-block { margin-bottom: 0; }
+  .math-block {
+    margin-bottom: 0;
+    padding-bottom: 0;
+  }
+  .math-block .katex-display { margin-bottom: 0; }
   .math-block + p { margin-top: 0; }
   .math-block[data-trailing-blank-lines]::after {
     content: "";

@@ -431,7 +431,10 @@ export const MathInline = Node.create({
         ensurePreviewAttached();
         previewDOM.style.display = '';
         renderPreview(node.textContent);
-        const activeHeight = cachedHeight ?? BLOCK_MATH_DEFAULT_HEIGHT;
+        const renderedHeight = Math.max(previewDOM.scrollHeight, previewDOM.offsetHeight);
+        const activeHeight = renderedHeight > 1
+          ? renderedHeight
+          : (cachedHeight ?? BLOCK_MATH_DEFAULT_HEIGHT);
         previewDOM.style.boxSizing = 'border-box';
         previewDOM.style.overflow = 'visible';
         previewDOM.style.height = 'auto';

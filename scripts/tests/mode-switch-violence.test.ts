@@ -1144,6 +1144,25 @@ console.log('\n## visual scroll to bottom -> source switch');
           JSON.stringify({ value, visible }),
         );
       }
+
+      const reactPropsKey = Object.keys(input).find((key) => key.startsWith('__reactProps$'));
+      const reactProps = reactPropsKey
+        ? (input as Record<string, unknown>)[reactPropsKey] as Record<string, any> | undefined
+        : undefined;
+      reactProps?.onCompositionStart?.call(input, new Event('compositionstart'));
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      assert(
+        'source IME composition switches visibility to the native text layer',
+        input.dataset.composing === 'true',
+        String(input.dataset.composing),
+      );
+      reactProps?.onCompositionEnd?.call(input, new Event('compositionend'));
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      assert(
+        'source highlight returns immediately after IME commit',
+        input.dataset.composing === 'false',
+        String(input.dataset.composing),
+      );
     }
   } finally {
     shell.root.unmount();

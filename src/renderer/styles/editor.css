@@ -2776,6 +2776,40 @@
   margin-bottom: 0;
 }
 
+.editor-surface p:has(> .math-block-node) {
+  margin: 0;
+}
+
+.editor-surface p:has(> .math-block-node) > .ProseMirror-trailingBreak {
+  display: none;
+}
+
+.editor-surface p:has(> .math-block-node.is-editing) {
+  margin: 0.55em 0;
+}
+
+.editor-surface p:has(> .math-block-node:not(.is-editing)) + p {
+  margin-top: 0;
+}
+
+.editor-surface .math-block-node:not(.is-editing) {
+  padding-bottom: 0;
+}
+
+.editor-surface .math-block-node:not(.math-block-node-placeholder):not(.is-editing)
+  > .math-node-preview {
+  min-height: 0 !important;
+}
+
+.editor-surface .math-block-node:not(.math-block-node-placeholder):not(.is-editing) {
+  content-visibility: visible;
+  contain-intrinsic-size: none;
+}
+
+.editor-surface .math-block-node:not(.is-editing) .katex-display {
+  margin-bottom: 0;
+}
+
 .editor-surface .math-block-node + p {
   margin-top: 0;
 }
@@ -3080,6 +3114,18 @@
 .source-editor__input::placeholder {
   color: var(--ui-text-soft);
   -webkit-text-fill-color: var(--ui-text-soft);
+}
+
+/* Chromium paints IME composition text through the input's own text layer.
+   Expose that layer only while composing; the mirror returns immediately on
+   compositionend so committed Markdown is highlighted as usual. */
+.source-editor[data-composing='true'] .source-editor__input {
+  color: var(--ui-text);
+  -webkit-text-fill-color: var(--ui-text);
+}
+
+.source-editor[data-composing='true'] .source-editor__highlight {
+  visibility: hidden;
 }
 
 .source-editor__input::selection {

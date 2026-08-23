@@ -299,8 +299,10 @@ const processor: SingleNodeBatchProcessor<U2SingleNodeSwapRequest, HTMLElement |
         request.wrapper.style.verticalAlign = 'baseline';
         request.wrapper.style.overflow = 'visible';
       } else {
+        request.preview.style.minHeight = '0';
         request.preview.style.display = 'block';
         request.preview.style.overflow = 'visible';
+        request.wrapper.style.minHeight = '0';
         request.wrapper.style.display = 'block';
         request.wrapper.style.overflow = 'visible';
         request.wrapper.style.contain = 'none';

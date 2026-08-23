@@ -269,6 +269,7 @@ const SourceEditor = forwardRef<HTMLTextAreaElement, SourceEditorProps>(function
     lineHeight: SOURCE_LINE_HEIGHT_PX,
     paddingTop: SOURCE_PADDING_TOP_PX,
   });
+  const [compositionActive, setCompositionActive] = useState(false);
   const sourceMetricsRef = useRef(sourceMetrics);
   const lineCount = useMemo(
     () => profileSourceEditorPhase('source-count-lines', () => countSourceLines(value)),
@@ -491,7 +492,10 @@ const SourceEditor = forwardRef<HTMLTextAreaElement, SourceEditorProps>(function
         <textarea
           ref={setTextareaNode}
           className="source-editor__input"
+          data-composing={compositionActive ? 'true' : 'false'}
           onChange={handleChange}
+          onCompositionEnd={() => setCompositionActive(false)}
+          onCompositionStart={() => setCompositionActive(true)}
           onContextMenu={onContextMenu}
           onKeyDown={handleKeyDown}
           onScroll={handleScroll}
