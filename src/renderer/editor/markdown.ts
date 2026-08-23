@@ -157,6 +157,8 @@ function normalizeMathDelimiters(markdown: string): {
   normalized = protectFencedCodeBlocks(normalized, '~');
   normalized = protectCode(/`[^`\n]+`/g, normalized);
   normalized = protectIndentedCodeBlocks(normalized);
+  normalized = normalizeBlockMathInBlockQuotes(normalized, '$$', '$$', createMathToken, '$$', '$$');
+  normalized = normalizeBlockMathInBlockQuotes(normalized, '\\[', '\\]', createMathToken, '\\[', '\\]');
   normalized = normalizeBlockMathPairs(normalized, '\\[', '\\]', createMathToken, '\\[', '\\]');
   normalized = normalizeBlockMathPairs(normalized, '$$', '$$', createMathToken, '$$', '$$');
   normalized = normalizeInlineMathPairs(normalized, '\\(', '\\)', createMathToken, '\\(', '\\)');
@@ -250,6 +252,69 @@ function normalizeBlockMathPairs(
   }
 
   return result;
+}
+
+function normalizeBlockMathInBlockQuotes(
+  markdown: string,
+  open: string,
+  close: string,
+  createMathToken: (
+    kind: 'inline' | 'block',
+    value: string,
+    openDelim: string,
+    closeDelim: string,
+    rawSource?: string,
+  ) => string,
+  openDelim: string,
+  closeDelim: string,
+): string {
+  const parseQuoteLine = (line: string) => {
+    const match = line.match(/^([ \t]*(?:>[ \t]?)+)(.*)$/);
+    return match ? { quote: match[1]!, content: match[2]!.trim() } : null;
+  };
+
+  const hadTrailingNewline = /\r?\n$/.test(markdown);
+  const lines = markdown.replace(/\r\n/g, '\n').split('\n');
+  const result: string[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const opening = parseQuoteLine(lines[index] ?? '');
+    if (!opening || opening.content !== open) {
+      result.push(lines[index] ?? '');
+      index += 1;
+      continue;
+    }
+
+    const startIndex = index;
+    let closeIndex = -1;
+    for (let scan = index + 1; scan < lines.length; scan += 1) {
+      const quoted = parseQuoteLine(lines[scan] ?? '');
+      if (!quoted) break;
+      if (quoted.content === close) {
+        closeIndex = scan;
+        break;
+      }
+    }
+
+    if (closeIndex === -1) {
+      result.push(lines[index] ?? '');
+      index += 1;
+      continue;
+    }
+
+    const expression = lines
+      .slice(startIndex + 1, closeIndex)
+      .map((line) => parseQuoteLine(line)?.content ?? '')
+      .join('\n')
+      .trim();
+    const token = createMathToken('block', expression, openDelim, closeDelim);
+    const replacement = `${opening.quote}${/\s$/.test(opening.quote) ? '' : ' '}${token}`;
+    result.push(replacement);
+    index = closeIndex + 1;
+  }
+
+  return result.join('\n') + (hadTrailingNewline ? '\n' : '');
 }
 
 /**
@@ -743,21 +808,36 @@ function flowToTiptap(
         },
       ];
     case 'list': {
-      const isTaskList = (node.children ?? []).some(
-        (child: MarkdownNode) => child.checked !== null && child.checked !== undefined,
-      );
+      // CommonMark treats bullets and GFM task checkboxes as one list kind.
+      // Our editor models them separately, so split mixed runs instead of
+      // turning every item beside a checkbox into a task item.
+      const children = node.children ?? [];
+      const result: JSONContent[] = [];
+      let index = 0;
+      while (index < children.length) {
+        const isTaskRun = children[index]!.checked !== null && children[index]!.checked !== undefined;
+        const runStart = index;
+        const run: MarkdownNode[] = [];
+        while (
+          index < children.length &&
+          ((children[index]!.checked !== null && children[index]!.checked !== undefined) === isTaskRun)
+        ) {
+          run.push(children[index]!);
+          index += 1;
+        }
 
-      return [
-        {
-          type: isTaskList ? 'taskList' : node.ordered ? 'orderedList' : 'bulletList',
-          attrs: node.ordered ? { start: node.start ?? 1 } : undefined,
-          content: (node.children ?? []).map((child: MarkdownNode) => ({
-            type: isTaskList ? 'taskItem' : 'listItem',
-            attrs: isTaskList ? { checked: Boolean(child.checked) } : undefined,
+        result.push({
+          type: isTaskRun ? 'taskList' : node.ordered ? 'orderedList' : 'bulletList',
+          attrs: !isTaskRun && node.ordered ? { start: (node.start ?? 1) + runStart } : undefined,
+          content: run.map((child: MarkdownNode) => ({
+            type: isTaskRun ? 'taskItem' : 'listItem',
+            attrs: isTaskRun ? { checked: Boolean(child.checked) } : undefined,
             content: flowChildrenToTiptap(child.children ?? [], context, mathPlaceholders),
           })),
-        },
-      ];
+        });
+      }
+
+      return result;
     }
     case 'code':
       if (String(node.lang ?? '').toLowerCase() === 'mermaid') {
@@ -941,6 +1021,8 @@ function flowChildrenToMarkdown(children: JSONContent[] = []): MarkdownNode[] {
 
 function flowToMarkdown(node: JSONContent): MarkdownNode[] {
   switch (node.type) {
+    case 'inlineMath':
+      return inlineToMarkdown(node);
     case 'paragraph': {
       // Promote display math out of paragraphs so `$$...$$` / `\[...\]` stay
       // block-level and round-trip without accumulating blank lines.
@@ -1136,13 +1218,103 @@ function restoreUnderlineMarks(
       ];
     }
 
-    return [node];
+  return [node];
   });
+}
+
+function checkedItemBlockSource(rawItem: string): string | null {
+  const lines = rawItem.replace(/\r\n/g, '\n').split('\n');
+  const first = lines[0] ?? '';
+  const match = first.match(
+    /^([ \t]*(?:>[ \t]?)*)(?:[-*+]|\d{1,9}[.)])[ \t]+(?:\[[ xX]][ \t]+)?(.*)$/,
+  );
+  if (!match) return null;
+
+  const quotePrefix = match[1] ?? '';
+  const remainder = match[2] ?? '';
+  const markerWidth = Math.max(first.length - quotePrefix.length - remainder.length, 0);
+  const bodyLines = lines.map((line, index) => {
+    if (index === 0) return remainder;
+    let value = line;
+    if (quotePrefix) {
+      if (!value.startsWith(quotePrefix)) return '';
+      value = value.slice(quotePrefix.length);
+    }
+    const indent = value.match(/^[ \t]*/)?.[0].length ?? 0;
+    return value.slice(Math.min(indent, markerWidth));
+  });
+  return bodyLines.join('\n');
+}
+
+function checkedItemContainsBlock(source: string): boolean {
+  const trimmed = source.trim();
+  if (/^(?:`{3,}|~{3,})[\s\S]*(?:`{3,}|~{3,})$/.test(trimmed)) {
+    return true;
+  }
+
+  const lines = trimmed.split('\n');
+  return lines.length >= 2 && /\|/.test(lines[0] ?? '') &&
+    /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/.test(lines[1] ?? '');
+}
+
+function removeLeadingTaskCheckboxFromParagraph(paragraph: MarkdownNode): MarkdownNode | null {
+  let changed = false;
+  const visit = (node: MarkdownNode): void => {
+    if (!changed && typeof node.value === 'string') {
+      const next = node.value.replace(/^\[[ xX]][ \t]*/, '');
+      if (next !== node.value) {
+        node.value = next;
+        changed = true;
+      }
+      return;
+    }
+    if (!changed && Array.isArray(node.children)) {
+      for (const child of node.children) visit(child);
+    }
+  };
+
+  visit(paragraph);
+  if (!changed) return paragraph;
+  return paragraph.value || Array.isArray(paragraph.children) ? paragraph : null;
+}
+
+function normalizeCheckedListItemBlocks(tree: MarkdownNode, source: string): void {
+  const visit = (node: MarkdownNode): void => {
+    if (Array.isArray(node.children)) {
+      node.children.forEach((child: MarkdownNode) => visit(child));
+    }
+
+    if (node.type !== 'list') return;
+    for (const item of node.children ?? []) {
+      const position = item.position;
+      const startOffset = position?.start?.offset;
+      const endOffset = position?.end?.offset;
+      if (
+        item.checked === null || item.checked === undefined ||
+        typeof startOffset !== 'number' || typeof endOffset !== 'number'
+      ) continue;
+      const itemLineStart = source.lastIndexOf('\n', Math.max(startOffset - 1, 0)) + 1;
+      const rawItem = source.slice(itemLineStart, endOffset);
+      const blockSource = checkedItemBlockSource(rawItem);
+      if (!blockSource || !checkedItemContainsBlock(blockSource)) continue;
+
+      const parsed = parser.parse(blockSource) as MarkdownNode;
+      const blocks = parsed.children ?? [];
+      if (blocks[0]?.type === 'paragraph') {
+        const cleaned = removeLeadingTaskCheckboxFromParagraph(blocks[0]);
+        if (!cleaned) blocks.shift();
+      }
+      if (blocks.length > 0) item.children = blocks;
+    }
+  };
+
+  visit(tree);
 }
 
 export function parseMarkdown(markdown: string): JSONContent {
   const normalized = normalizeMathDelimiters(markdown);
   const tree = parser.parse(normalized.markdown) as MarkdownNode;
+  normalizeCheckedListItemBlocks(tree, normalized.markdown);
   const context = collectDefinitions(tree);
   const content = flowChildrenToTiptap(tree.children ?? [], context, normalized.placeholders);
   const restoredContent = restoreLeakedMathTokens(content, normalized.placeholders);

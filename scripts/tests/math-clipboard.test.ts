@@ -197,6 +197,22 @@ console.log('\n## math insertion and clipboard round-trips');
 }
 
 {
+  const target = makeEditor();
+  try {
+    target.commands.setContent(parseMarkdown(''), false);
+    pasteClipboardPayload(target, { text: '$$x$$\n\nx', html: '', markdown: '' });
+    const source = serializeMarkdown(target.getJSON());
+    assert(
+      'plain external display math paste restores block math',
+      source === '$$\nx\n$$\n\nx\n',
+      source,
+    );
+  } finally {
+    target.destroy();
+  }
+}
+
+{
   const editor = makeEditor('before $a$ after');
   try {
     selectWholeNode(editor, 'inlineMath');

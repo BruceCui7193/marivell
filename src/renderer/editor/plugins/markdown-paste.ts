@@ -26,7 +26,9 @@ function hasExclusiveMarkdownStructure(text: string): boolean {
 
   return [
     /^#{1,6}\s+\S/m,
+    /^ {0,3}(?:-{3,}|\*{3,}|_{3,})$/m,
     /^>\s+\S/m,
+    /^\[[^\]]+]:\s+\S+/m,
     /^```[\s\S]*```$/m,
     /^~~~[\s\S]*~~~$/m,
     /!\[[^\]]*]\([^)]+\)/,
@@ -37,13 +39,41 @@ function hasExclusiveMarkdownStructure(text: string): boolean {
   ].some((pattern) => pattern.test(trimmed));
 }
 
+function stripMarkdownContainerPrefixes(text: string): string {
+  return text.split('\n').map((line) => {
+    let value = line;
+    for (;;) {
+      const quote = value.match(/^[ \t]*(?:>[ \t]?)+/);
+      if (quote) {
+        value = value.slice(quote[0].length);
+      }
+
+      const list = value.match(
+        /^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+(?:\[[ xX]][ \t]+)?(.*)$/,
+      );
+      if (list) {
+        return list[1] ?? '';
+      }
+      if (!quote) {
+        return value;
+      }
+      break;
+    }
+    return value;
+  }).join('\n');
+}
+
 function looksLikeMarkdown(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed) {
     return false;
   }
 
-  if (hasExclusiveMarkdownStructure(trimmed) || hasMarkdownListStructure(trimmed)) {
+  if (
+    hasExclusiveMarkdownStructure(trimmed) ||
+    hasExclusiveMarkdownStructure(stripMarkdownContainerPrefixes(trimmed)) ||
+    hasMarkdownListStructure(trimmed)
+  ) {
     return true;
   }
 
@@ -55,6 +85,12 @@ function looksLikeMarkdown(text: string): boolean {
   }
 
   if (/\$\$[\s\S]+?\$\$/.test(trimmed)) {
+    return true;
+  }
+
+  // CommonMark escapable punctuation is meaningful Markdown even when the escaped source
+  // would otherwise look like ordinary prose (for example: \# not a heading).
+  if (/\\[!"#$%&'()*+,./:;<=>?@[\\\]^_`{|}~-]/.test(trimmed)) {
     return true;
   }
 
@@ -163,6 +199,30 @@ function extractHtmlTableElement(html: string): HTMLTableElement | null {
   return documentFragment.querySelector('table');
 }
 
+const TRANSPARENT_HTML_WRAPPERS = new Set([
+  'article', 'aside', 'div', 'figure', 'figcaption', 'font', 'footer',
+  'header', 'main', 'nav', 'section', 'span', 'template',
+]);
+
+function containsMeaningfulHtmlOutsideTables(root: ParentNode): boolean {
+  for (const node of Array.from(root.childNodes)) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      if ((node.textContent ?? '').trim()) return true;
+      continue;
+    }
+    if (!(node instanceof HTMLElement)) continue;
+
+    const tagName = node.tagName.toLowerCase();
+    if (tagName === 'table' || ['script', 'style', 'noscript'].includes(tagName)) continue;
+    if (TRANSPARENT_HTML_WRAPPERS.has(tagName)) {
+      if (containsMeaningfulHtmlOutsideTables(node)) return true;
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
 function insertHtmlTable(view: EditorView, tableElement: HTMLTableElement): boolean {
   const wrapper = window.document.createElement('div');
   wrapper.appendChild(tableElement.cloneNode(true));
@@ -185,7 +245,17 @@ function insertHtmlTable(view: EditorView, tableElement: HTMLTableElement): bool
  */
 function insertContentDirect(editor: any, content: JSONContent[]): boolean {
   const { state, view } = editor;
-  const nodes = content.map((node) => state.schema.nodeFromJSON(node));
+  // Markdown parsing promotes display math to a top-level inline node.  When
+  // it is followed by another block, maxOpen would unwrap that node and turn
+  // the formula into ordinary text, so give it a paragraph boundary instead.
+  const normalizedContent = content.length > 1
+    ? content.map((node) => (
+      node.type === 'inlineMath'
+        ? { type: 'paragraph', content: [node] }
+        : node
+    ))
+    : content;
+  const nodes = normalizedContent.map((node) => state.schema.nodeFromJSON(node));
   const fragment = Fragment.from(nodes);
 
   if (!fragment.size) {
@@ -219,8 +289,26 @@ function insertContentDirect(editor: any, content: JSONContent[]): boolean {
     // and paste only the raw LaTeX body as plain text.
     slice = new Slice(fragment, 0, 0);
   } else {
-    // Multi-block (or block-level) paste: open edges as far as the structure allows.
-    slice = Slice.maxOpen(fragment, true);
+    // Open only a boundary paragraph/heading so mid-paragraph paste can merge.
+    // Opening through containers such as lists, quotes, tables, code or math
+    // destroys the outer structure and turns rich content back into text.
+    let openStart = 0;
+    for (
+      let node = fragment.firstChild;
+      node && (node.type.name === 'paragraph' || node.type.name === 'heading');
+      node = node.firstChild
+    ) {
+      openStart += 1;
+    }
+    let openEnd = 0;
+    for (
+      let node = fragment.lastChild;
+      node && (node.type.name === 'paragraph' || node.type.name === 'heading');
+      node = node.lastChild
+    ) {
+      openEnd += 1;
+    }
+    slice = new Slice(fragment, openStart, openEnd);
   }
 
   const tr = state.tr.replaceSelection(slice);
@@ -291,7 +379,9 @@ export function pasteClipboardPayload(editor: any, payload: ClipboardPastePayloa
   const clipboardMarkdown = payload.markdown ?? '';
   const imageFiles = (payload.files ?? []).filter((file) => file.type.startsWith('image/'));
   const hasStructuredHtml = looksLikeStructuredHtml(html) && !isOurMarkdownHtml(html);
-  const hasExclusiveMarkdown = hasExclusiveMarkdownStructure(clipboardMarkdown || text);
+  const hasExclusiveMarkdown = hasExclusiveMarkdownStructure(
+    clipboardMarkdown || (hasStructuredHtml ? '' : text),
+  );
   const htmlTable = extractHtmlTableElement(html);
   const hasTabularText = looksLikeTabularPlainText(text);
   const insideTable = isInsideTableCell(view);
@@ -338,8 +428,15 @@ export function pasteClipboardPayload(editor: any, payload: ClipboardPastePayloa
     }
   }
 
-  if (htmlTable && !hasExclusiveMarkdown) {
-    return insertHtmlTable(view, htmlTable);
+  // A browser selection often contains a table *and* surrounding paragraphs.
+  // The direct-table fast path is only for an actual table-only fragment;
+  // mixed selections must go through full HTML → Markdown conversion.
+  if (htmlTable && !hasExclusiveMarkdown && html.trim()) {
+    const parsedHtml = new window.DOMParser().parseFromString(html, 'text/html');
+    const isSingleTable = parsedHtml.querySelectorAll('table').length === 1;
+    if (isSingleTable && !containsMeaningfulHtmlOutsideTables(parsedHtml.body)) {
+      return insertHtmlTable(view, htmlTable);
+    }
   }
 
   if (hasStructuredHtml && !hasExclusiveMarkdown) {

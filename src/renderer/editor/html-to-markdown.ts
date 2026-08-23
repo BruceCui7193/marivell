@@ -231,7 +231,7 @@ function getHeadingLevelFromPresentation(element: HTMLElement): number | null {
 }
 
 function escapeTableCell(text: string): string {
-  return text.replace(/\|/g, '\\|').trim();
+  return text.replace(/\|/g, '\\|').replace(/\s*\n+\s*/g, ' ').trim();
 }
 
 function extractCodeLanguage(element: Element): string {
@@ -334,12 +334,25 @@ function renderInlineNode(node: Node, context: InlineFormatContext = DEFAULT_INL
   }
 
   const tagName = node.tagName.toLowerCase();
+  if (tagName === 'script' || tagName === 'style') {
+    return '';
+  }
+
   const math = extractMathSource(node);
   if (math && !math.display) {
     return `$${math.value}$`;
   }
 
   switch (tagName) {
+    case 'table':
+    case 'tr':
+    case 'td':
+    case 'th': {
+      // GFM cells are inline-only. Flatten a nested layout into one line while
+      // keeping token boundaries so nested tables do not duplicate or merge text.
+      const content = renderInlineChildren(node, context).replace(/\s+/g, ' ').trim();
+      return ` ${content} `;
+    }
     case 'code':
       if (node.closest('pre')) {
         return node.textContent ?? '';
@@ -389,8 +402,14 @@ function renderInlineNode(node: Node, context: InlineFormatContext = DEFAULT_INL
   }
 }
 
-function renderListItem(element: HTMLElement, ordered: boolean, index: number): string {
-  const prefix = ordered ? `${index + 1}. ` : '- ';
+function renderListItem(element: HTMLElement, ordered: boolean, index: number, start = 1): string {
+  const checkbox = element.querySelector(':scope > input[type="checkbox"]');
+  const checked = checkbox?.hasAttribute('checked') || (checkbox as HTMLInputElement)?.checked;
+  const prefix = checkbox
+    ? `- [${checked ? 'x' : ' '}] `
+    : ordered
+      ? `${index + start}. `
+      : '- ';
   const nestedBlocks: string[] = [];
   const inlineParts: string[] = [];
 
@@ -404,9 +423,26 @@ function renderListItem(element: HTMLElement, ordered: boolean, index: number): 
     }
 
     if (child instanceof HTMLElement && ['p', 'div'].includes(child.tagName.toLowerCase())) {
+      if (hasDirectBlockChildren(child)) {
+        const nested = renderBlockNode(child);
+        if (nested) nestedBlocks.push(nested);
+        return;
+      }
       const value = renderInlineChildren(child).trim();
       if (value) {
         inlineParts.push(value);
+      }
+      return;
+    }
+
+    if (child === checkbox) {
+      return;
+    }
+
+    if (child instanceof HTMLElement && BLOCK_TAGS.has(child.tagName.toLowerCase())) {
+      const nested = renderBlockNode(child);
+      if (nested) {
+        nestedBlocks.push(nested);
       }
       return;
     }
@@ -426,9 +462,13 @@ function renderListItem(element: HTMLElement, ordered: boolean, index: number): 
 }
 
 function renderTable(element: HTMLElement): string {
-  const rows = Array.from(element.querySelectorAll('tr')).map((row) =>
-    Array.from(row.children).map((cell) => escapeTableCell(renderInlineChildren(cell).trim())),
-  );
+  const caption = element.querySelector(':scope > caption');
+  const captionMarkdown = caption ? renderInlineChildren(caption).trim() : '';
+  const rows = Array.from(
+    element.querySelectorAll(':scope > tr, :scope > thead > tr, :scope > tbody > tr, :scope > tfoot > tr'),
+  ).map((row) => {
+    return Array.from(row.children).map((cell) => escapeTableCell(renderInlineNode(cell).trim()));
+  });
 
   if (rows.length === 0) {
     return '';
@@ -441,12 +481,15 @@ function renderTable(element: HTMLElement): string {
   const header = normalizeRow(rows[0]);
   const separator = Array.from({ length: columnCount }, () => '---');
   const body = rows.slice(1).map(normalizeRow);
-
-  return [
+  const table = [
     `| ${header.join(' | ')} |`,
     `| ${separator.join(' | ')} |`,
     ...body.map((row) => `| ${row.join(' | ')} |`),
   ].join('\n');
+
+  return trimMarkdownBlock(
+    captionMarkdown ? `${captionMarkdown}\n\n${table}` : table,
+  );
 }
 
 function hasDirectBlockChildren(element: HTMLElement): boolean {
@@ -465,12 +508,38 @@ function renderBlockNode(node: Node): string {
   }
 
   const tagName = node.tagName.toLowerCase();
+  if (['script', 'style'].includes(tagName)) {
+    return '';
+  }
+
   const standaloneDisplayMath = extractStandaloneDisplayMath(node);
   if (standaloneDisplayMath) {
     return `$$\n${standaloneDisplayMath}\n$$`;
   }
 
   switch (tagName) {
+    case 'details': {
+      const summary = node.querySelector(':scope > summary');
+      const summaryText = summary ? renderInlineChildren(summary).trim() : '';
+      const body = node.cloneNode(true) as HTMLElement;
+      body.querySelector(':scope > summary')?.remove();
+      return trimMarkdownBlock([
+        ...(summaryText ? [`**${summaryText}**`] : []),
+        renderChildren(body),
+      ].filter(Boolean).join('\n\n'));
+    }
+    case 'summary':
+      return renderInlineChildren(node).trim();
+    case 'dl': {
+      return trimMarkdownBlock(Array.from(node.children)
+        .map((child) => {
+          if (!(child instanceof HTMLElement)) return '';
+          const text = renderInlineChildren(child).trim();
+          return child.tagName.toLowerCase() === 'dt' && text ? `**${text}**` : text;
+        })
+        .filter(Boolean)
+        .join('\n\n'));
+    }
     case 'h1':
     case 'h2':
     case 'h3':
@@ -519,10 +588,13 @@ function renderBlockNode(node: Node): string {
         .map((child, index) => renderListItem(child, false, index))
         .join('\n');
     case 'ol':
+    {
+      const start = Math.max(Number(node.getAttribute('start') ?? '1') || 1, 1);
       return Array.from(node.children)
         .filter((child): child is HTMLElement => child instanceof HTMLElement && child.tagName.toLowerCase() === 'li')
-        .map((child, index) => renderListItem(child, true, index))
+        .map((child, index) => renderListItem(child, true, index, start))
         .join('\n');
+    }
     case 'pre': {
       const code = node.querySelector('code');
       const language = code ? extractCodeLanguage(code) : '';

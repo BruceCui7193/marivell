@@ -225,9 +225,26 @@ export function insertSelectionMarkersIntoMarkdown(
     findNearestTextOffset(markdown, clampedEnd),
   );
 
-  // Caret/range at document end after a block whose closing syntax has no text
-  // node (for example a code fence or an image) still needs a separate
-  // paragraph line so the marker cannot be swallowed by the previous block.
+  // A fenced code block has a real text node immediately before its closing
+  // fence. Keep an end-of-document caret there instead of creating a separate
+  // paragraph after the block; the extra block can change the preceding layout
+  // when the document also starts with a void inline node such as an image.
+  if (clampedEnd === markdown.length && (markdown.endsWith('\r\n') || markdown.endsWith('\n'))) {
+    const withoutFinalNewline = markdown.replace(/\r?\n$/, '');
+    const closingFence = withoutFinalNewline.match(
+      /(?:\r?\n)([ \t]*(?:`{3,}|~{3,})[ \t]*)$/,
+    );
+    if (closingFence?.index != null) {
+      return `${markdown.slice(0, closingFence.index)}${
+        SELECTION_START_MARKER
+      }${markdown.slice(selectionStart, selectionEnd)}${SELECTION_END_MARKER}${markdown.slice(
+        closingFence.index,
+      )}`;
+    }
+  }
+
+  // Unlike fenced code, an image has no text node in which to place the
+  // end-of-document marker, so give it a separate paragraph line instead.
   if (
     clampedStart === clampedEnd &&
     clampedStart === markdown.length &&

@@ -590,7 +590,7 @@ const featureCases: FeatureCase[] = [
     },
     changed: false,
     undoable: false,
-    targetExact: '\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n',
+    targetExact: '| A | B |\n| --- | --- |\n| 1 | 2 |\n',
     targetNodeType: 'table',
     targetNodeCount: 1,
     searchTerm: 'A',
