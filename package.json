@@ -1,7 +1,7 @@
 {
   "name": "marivell",
   "productName": "Marivell",
-  "version": "1.2.0-beta.1",
+  "version": "1.2.0-beta.2",
   "description": "A Markdown editor built with Electron, React, TypeScript, and Vite.",
   "main": "./out/main/index.js",
   "author": {
