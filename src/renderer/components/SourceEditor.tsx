@@ -259,17 +259,6 @@ const SourceEditor = forwardRef<HTMLTextAreaElement, SourceEditorProps>(function
   const highlightContentRef = useRef<HTMLSpanElement | null>(null);
   const gutterRef = useRef<HTMLDivElement | null>(null);
   const gutterWindowRef = useRef<HTMLDivElement | null>(null);
-  const highlightTimerRef = useRef<number | null>(null);
-  const [highlightHtml, setHighlightHtml] = useState(() =>
-    profileSourceEditorPhase(
-      'source-initial-highlight',
-      () => highlightVisibleSourceRange(
-        value,
-        0,
-        Math.min(countSourceLines(value), SOURCE_INITIAL_HIGHLIGHT_LINES),
-      ),
-    ),
-  );
   const [visibleRange, setVisibleRange] = useState<SourceVisibleRange>(() =>
     profileSourceEditorPhase(
       'source-initial-visible-range',
@@ -290,6 +279,17 @@ const SourceEditor = forwardRef<HTMLTextAreaElement, SourceEditorProps>(function
     const start = Math.min(visibleRange.start, Math.max(0, endExclusive - 1));
     return { start, endExclusive };
   }, [lineCount, visibleRange]);
+  const highlightHtml = useMemo(
+    () => profileSourceEditorPhase(
+      'source-visible-highlight',
+      () => highlightVisibleSourceRange(
+        value,
+        safeVisibleRange.start,
+        safeVisibleRange.endExclusive,
+      ),
+    ),
+    [safeVisibleRange, value],
+  );
   const visibleLineNumbers = useMemo(() => {
     const numbers: number[] = [];
     for (let line = safeVisibleRange.start; line < safeVisibleRange.endExclusive; line += 1) {
@@ -339,30 +339,9 @@ const SourceEditor = forwardRef<HTMLTextAreaElement, SourceEditorProps>(function
     updateVirtualRange();
   }, [updateVirtualRange]);
 
-  // Debounced highlight so typing and scrolling stay snappy on large documents.
-  useEffect(() => {
-    if (highlightTimerRef.current !== null) {
-      window.clearTimeout(highlightTimerRef.current);
-    }
-
-    const delay = value.length > 80_000 ? 80 : value.length > 20_000 ? 60 : 24;
-    highlightTimerRef.current = window.setTimeout(() => {
-      setHighlightHtml(
-        highlightVisibleSourceRange(
-          value,
-          safeVisibleRange.start,
-          safeVisibleRange.endExclusive,
-        ),
-      );
-      highlightTimerRef.current = null;
-    }, delay);
-
-    return () => {
-      if (highlightTimerRef.current !== null) {
-        window.clearTimeout(highlightTimerRef.current);
-      }
-    };
-  }, [safeVisibleRange, value]);
+  // The textarea's own glyphs are transparent. Computing the visible highlight
+  // during render keeps new input visible; debouncing makes it disappear while
+  // the user keeps typing.
 
   const syncScroll = useCallback((range: SourceVisibleRange = safeVisibleRange) => {
     const textarea = textareaRef.current;
@@ -380,16 +359,7 @@ const SourceEditor = forwardRef<HTMLTextAreaElement, SourceEditorProps>(function
   const handleScroll = useCallback(() => {
     const nextRange = updateVirtualRange();
     syncScroll(nextRange ?? safeVisibleRange);
-    if (nextRange) {
-      setHighlightHtml(
-        highlightVisibleSourceRange(
-          value,
-          nextRange.start,
-          nextRange.endExclusive,
-        ),
-      );
-    }
-  }, [safeVisibleRange, syncScroll, updateVirtualRange, value]);
+  }, [safeVisibleRange, syncScroll, updateVirtualRange]);
   const setTextareaNode = useCallback(
     (node: HTMLTextAreaElement | null) => {
       textareaRef.current = node;

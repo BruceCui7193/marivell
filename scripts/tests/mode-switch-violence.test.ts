@@ -1124,6 +1124,34 @@ const scrollShellScenarios: Array<{ name: string; source: string }> = [
 
 console.log('\n## visual scroll to bottom -> source switch');
 
+{
+  const shell = await mountEditorShell('base\n');
+  try {
+    await shell.toggle();
+    const input = shell.sourceTextarea;
+    assert('source typing fixture has textarea', Boolean(input), String(Boolean(input)));
+    if (input) {
+      for (const value of ['base\nX\n', 'base\nXY\n', 'base\nXYZ\n']) {
+        setTextareaValue(input, value);
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const visible = shell.container.querySelector<HTMLElement>(
+          '.source-editor__highlight-content',
+        )?.textContent ?? '';
+        const token = value.trimEnd().split('\n').at(-1) ?? '';
+        assert(
+          `source typing renders ${token} before the next frame`,
+          visible.includes(token),
+          JSON.stringify({ value, visible }),
+        );
+      }
+    }
+  } finally {
+    shell.root.unmount();
+    shell.container.remove();
+    (window as unknown as Record<string, unknown>).__marivellEditor = undefined;
+  }
+}
+
 for (const scrollScenario of scrollShellScenarios) {
   const shell = await mountEditorShell(scrollScenario.source);
   try {

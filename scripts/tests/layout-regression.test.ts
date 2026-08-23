@@ -157,6 +157,12 @@ async function main() {
         Number(math?.attrs?.trailingBlankLines ?? 0) === expected,
         JSON.stringify(math?.attrs),
       );
+      const mathDom = document.querySelector<HTMLElement>('.math-block-node');
+      assert(
+        `display math DOM exposes ${expected} trailing blanks`,
+        Number(mathDom?.dataset.trailingBlankLines ?? 0) === expected,
+        String(mathDom?.outerHTML.slice(0, 300)),
+      );
       editor.destroy();
     }
   }
