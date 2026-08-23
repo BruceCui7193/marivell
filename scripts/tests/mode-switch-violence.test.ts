@@ -1131,6 +1131,18 @@ console.log('\n## visual scroll to bottom -> source switch');
     const input = shell.sourceTextarea;
     assert('source typing fixture has textarea', Boolean(input), String(Boolean(input)));
     if (input) {
+      for (const value of ['X', 'XY', 'XYZ']) {
+        setTextareaValue(input, value);
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const visible = shell.container.querySelector<HTMLElement>(
+          '.source-editor__highlight-content',
+        )?.textContent ?? '';
+        assert(
+          `source typing without a final newline renders ${value}`,
+          visible.includes(value),
+          JSON.stringify({ value, visible }),
+        );
+      }
       for (const value of ['base\nX\n', 'base\nXY\n', 'base\nXYZ\n']) {
         setTextareaValue(input, value);
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));

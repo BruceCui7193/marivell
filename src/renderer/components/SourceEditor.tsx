@@ -155,11 +155,8 @@ function getSourceLineRange(
     }
   }
 
-  if (line <= safeStart) {
+  if (line < safeStart) {
     return '';
-  }
-  if (line < safeEnd) {
-    return markdown.slice(startOffset);
   }
   return markdown.slice(startOffset);
 }

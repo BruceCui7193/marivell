@@ -714,6 +714,24 @@ section('source markdown highlight');
   assert('highlight strong', html.includes('md-token--strong'));
   assert('highlight math', html.includes('md-token--math'));
   assert('empty highlight non-empty string', highlightMarkdownSource('').length > 0);
+  const firstUncommittedLine = highlightVisibleSourceRange('abc', 0, 1);
+  assert(
+    'source typing is visible before the first newline',
+    firstUncommittedLine.includes('abc'),
+    JSON.stringify(firstUncommittedLine),
+  );
+  const lastUncommittedLine = highlightVisibleSourceRange('a\nbc', 1, 2);
+  assert(
+    'source virtualization includes a final line without a newline',
+    lastUncommittedLine.includes('bc') && !lastUncommittedLine.includes('a\n'),
+    JSON.stringify(lastUncommittedLine),
+  );
+  const beyondLastLine = highlightVisibleSourceRange('abc', 1, 2);
+  assert(
+    'source virtualization leaves absent lines empty',
+    beyondLastLine === '\n' || beyondLastLine === '',
+    JSON.stringify(beyondLastLine),
+  );
   const visibleRange = getSourceEditorVisibleRange(10_000, 24_000, 600, {
     lineHeight: 24,
     paddingTop: 28,
