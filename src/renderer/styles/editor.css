@@ -2776,8 +2776,11 @@
   margin-bottom: 0;
 }
 
-.editor-surface p:has(> .math-block-node) {
-  margin: 0;
+.editor-surface p:has(> .math-block-node:not(.is-editing)) {
+  margin-top: 0;
+  /* A structural newline is a normal paragraph break, not an extra blank
+     line and not a hard-zero gap. */
+  margin-bottom: 0.9rem;
 }
 
 .editor-surface p:has(> .math-block-node) > .ProseMirror-trailingBreak {

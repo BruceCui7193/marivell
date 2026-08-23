@@ -564,17 +564,19 @@ async function main(): Promise<void> {
       JSON.stringify(metrics.highInline),
     );
     assert(
-      'one structural newline after display math creates no extra visual gap',
+      'one structural newline after display math uses normal paragraph spacing',
       spacingMetrics.structural.active &&
         spacingMetrics.structural.trailingBlankLines === '0' &&
         spacingMetrics.structural.blockMarginBottom === '0px' &&
         spacingMetrics.structural.blockPaddingBottom === '0px' &&
-        spacingMetrics.structural.wrapperMarginBottom === '0px' &&
+        spacingMetrics.structural.wrapperMarginBottom !== null &&
+        Number.parseFloat(spacingMetrics.structural.wrapperMarginBottom) >= 12 &&
+        Number.parseFloat(spacingMetrics.structural.wrapperMarginBottom) <= 18 &&
         spacingMetrics.structural.wrapperMarginTop === '0px' &&
         spacingMetrics.structural.displayMarginBottom === '0px' &&
         spacingMetrics.structural.visualGap !== null &&
-        spacingMetrics.structural.visualGap >= -1 &&
-        spacingMetrics.structural.visualGap <= 8,
+        spacingMetrics.structural.visualGap >= 10 &&
+        spacingMetrics.structural.visualGap <= 24,
       JSON.stringify(spacingMetrics.structural),
     );
     assert(

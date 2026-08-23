@@ -179,6 +179,7 @@ async function main() {
     assert('footnote definition drops card border', /\.footnote-definition-node\s*\{[^}]*border:\s*none/.test(css));
     assert('footnote content sits inline with label', /\.footnote-definition-node__content\s*\{[^}]*padding:\s*0/.test(css));
     assert('display math structural separator has no bottom margin', /\.editor-surface \.math-block-node\s*\{[^}]*margin-bottom:\s*0/.test(css));
+    assert('math wrapper keeps normal paragraph spacing after a structural newline', /\.editor-surface p:has\(> \.math-block-node:not\(\.is-editing\)\)\s*\{[^}]*margin-bottom:\s*0\.9rem/.test(css));
     assert('paragraph after display math has no top margin', /\.editor-surface \.math-block-node \+ p\s*\{[^}]*margin-top:\s*0/.test(css));
     assert('explicit display math blanks render as line spacers', /\.editor-surface \.math-block-node\[data-trailing-blank-lines\]::after\s*\{[^}]*height:\s*calc\(/.test(css));
     assert(
